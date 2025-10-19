@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/chsoares/gummy/internal/ui"
@@ -109,8 +110,14 @@ func (l *Listener) handleConnection(conn net.Conn) {
 	remoteAddr := conn.RemoteAddr().String()
 	sessionID := generateSessionID()
 
+	// Extract only IP (remove port) for directory naming
+	remoteIP := remoteAddr
+	if idx := strings.LastIndex(remoteAddr, ":"); idx != -1 {
+		remoteIP = remoteAddr[:idx]
+	}
+
 	// Adiciona sessão ao gerenciador
-	l.sessionManager.AddSession(sessionID, conn, remoteAddr)
+	l.sessionManager.AddSession(sessionID, conn, remoteIP)
 
 	// Handle the session's I/O
 	// defer ensures cleanup happens when function returns
