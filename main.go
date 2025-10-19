@@ -33,6 +33,13 @@ func main() {
 	fmt.Println(ui.HelpInfo("Type 'help' for available commands"))
 	fmt.Println()
 
+	// Initialize runtime configuration
+	runtimeConfig, err := internal.InitRuntimeConfig(config.IP)
+	if err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("Config initialization failed: %v (using defaults)", err)))
+	}
+	internal.GlobalRuntimeConfig = runtimeConfig
+
 	// Initialize listener with resolved IP
 	l := internal.NewListener(config.Host, config.Port)
 	l.SetListenerIP(config.IP) // Set the IP for payload generation
@@ -43,6 +50,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Print binbag status if enabled (after listener starts)
+	if runtimeConfig.BinbagEnabled {
+		fmt.Println(ui.Info(fmt.Sprintf("Binbag enabled (serving %s on http://%s:%d/)", runtimeConfig.BinbagPath, runtimeConfig.ListenerIP, runtimeConfig.HTTPPort)))
+	}
+
 	// Setup signal handling - only for cleanup, not for exit
 	// Exit is only via exit/quit/q commands
 	sigChan := make(chan os.Signal, 1)
@@ -51,6 +63,11 @@ func main() {
 	go func() {
 		<-sigChan
 		fmt.Println()
+		// Stop HTTP server if running
+		if internal.GlobalRuntimeConfig.BinbagEnabled {
+			internal.GlobalRuntimeConfig.DisableBinbag()
+		}
+		// Stop listener
 		if err := l.Stop(); err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("Error stopping listener: %v", err)))
 		}

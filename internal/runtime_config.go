@@ -2,8 +2,45 @@ package internal
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
+
+	"github.com/BurntSushi/toml"
 )
+
+// InitRuntimeConfig initializes the runtime config from file (or defaults)
+func InitRuntimeConfig(listenerIP string) (*RuntimeConfig, error) {
+	// Load config from file (or defaults if doesn't exist)
+	config, err := LoadConfig()
+	if err != nil {
+		// File doesn't exist, use defaults
+		config = DefaultConfig()
+	}
+
+	// Create runtime config from loaded config
+	rc := &RuntimeConfig{
+		ExecutionMode: config.Execution.DefaultMode,
+		BinbagEnabled: config.Binbag.Enabled,
+		BinbagPath:    os.ExpandEnv(config.Binbag.Path), // Expand ~/
+		HTTPPort:      config.Binbag.HTTPPort,
+		PivotEnabled:  config.Pivot.Enabled,
+		PivotHost:     config.Pivot.Host,
+		PivotPort:     config.Pivot.Port,
+		ListenerIP:    listenerIP,
+	}
+
+	// If binbag is enabled in config, start HTTP server
+	if rc.BinbagEnabled {
+		if err := rc.EnableBinbag(rc.BinbagPath); err != nil {
+			// Failed to start server, disable binbag
+			rc.BinbagEnabled = false
+			return rc, fmt.Errorf("failed to enable binbag: %w", err)
+		}
+	}
+
+	return rc, nil
+}
 
 // RuntimeConfig holds mutable configuration that can be changed during runtime
 // Thread-safe with RWMutex
@@ -61,42 +98,89 @@ func (rc *RuntimeConfig) GetMode() string {
 
 // SetExecutionMode changes execution mode at runtime
 func (rc *RuntimeConfig) SetExecutionMode(mode string) error {
-	// TODO: Validate mode ("stealth" or "speed")
-	// TODO: Lock, set, unlock
-	// TODO: Print confirmation message
+	if mode != "stealth" && mode != "speed" {
+		return fmt.Errorf("invalid mode: %s (must be 'stealth' or 'speed')", mode)
+	}
+
+	rc.mu.Lock()
+	rc.ExecutionMode = mode
+	rc.mu.Unlock()
+
 	return nil
 }
 
 // EnableBinbag enables binbag and starts HTTP server
 func (rc *RuntimeConfig) EnableBinbag(path string) error {
-	// TODO: Validate path exists
-	// TODO: Start FileServer
-	// TODO: Lock, set enabled=true, unlock
-	// TODO: Count files in binbag
-	// TODO: Print confirmation with file count
+	// Validate path exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("binbag path does not exist: %s", path)
+	}
+
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+
+	// Stop existing server if running
+	if rc.FileServer != nil {
+		rc.FileServer.Stop()
+	}
+
+	// Create and start new server
+	rc.BinbagPath = path
+	rc.BinbagEnabled = true
+	rc.FileServer = NewFileServer(path, rc.HTTPPort)
+
+	if err := rc.FileServer.Start(); err != nil {
+		rc.BinbagEnabled = false
+		rc.FileServer = nil
+		return fmt.Errorf("failed to start HTTP server: %w", err)
+	}
+
 	return nil
 }
 
 // DisableBinbag disables binbag and stops HTTP server
 func (rc *RuntimeConfig) DisableBinbag() error {
-	// TODO: Stop FileServer if running
-	// TODO: Lock, set enabled=false, unlock
-	// TODO: Print confirmation
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+
+	// Stop server if running
+	if rc.FileServer != nil {
+		rc.FileServer.Stop()
+		rc.FileServer = nil
+	}
+
+	rc.BinbagEnabled = false
+
 	return nil
 }
 
 // SetPivot configures pivot point for HTTP downloads
 func (rc *RuntimeConfig) SetPivot(host string, port int) error {
-	// TODO: Validate host:port
-	// TODO: Lock, set pivot config, unlock
-	// TODO: Print confirmation
+	// Validate port
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid port: %d (must be 1-65535)", port)
+	}
+
+	// Validate host (basic check - not empty)
+	if host == "" {
+		return fmt.Errorf("host cannot be empty")
+	}
+
+	rc.mu.Lock()
+	rc.PivotEnabled = true
+	rc.PivotHost = host
+	rc.PivotPort = port
+	rc.mu.Unlock()
+
 	return nil
 }
 
 // DisablePivot disables pivot configuration
 func (rc *RuntimeConfig) DisablePivot() error {
-	// TODO: Lock, set enabled=false, unlock
-	// TODO: Print confirmation
+	rc.mu.Lock()
+	rc.PivotEnabled = false
+	rc.mu.Unlock()
+
 	return nil
 }
 
@@ -121,9 +205,42 @@ func (rc *RuntimeConfig) GetHTTPURL(filename string) string {
 
 // SaveToFile persists current runtime config to ~/.gummy/config.toml
 func (rc *RuntimeConfig) SaveToFile() error {
-	// TODO: Read current config
-	// TODO: Update with runtime values
-	// TODO: Write back to TOML
-	// TODO: Print confirmation
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	configPath := filepath.Join(home, ".gummy", "config.toml")
+
+	// Load current config (or defaults if doesn't exist)
+	config, err := LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load current config: %w", err)
+	}
+
+	// Update with runtime values
+	config.Execution.DefaultMode = rc.ExecutionMode
+	config.Binbag.Enabled = rc.BinbagEnabled
+	config.Binbag.Path = rc.BinbagPath
+	config.Binbag.HTTPPort = rc.HTTPPort
+	config.Pivot.Enabled = rc.PivotEnabled
+	config.Pivot.Host = rc.PivotHost
+	config.Pivot.Port = rc.PivotPort
+
+	// Write to file
+	file, err := os.Create(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to create config file: %w", err)
+	}
+	defer file.Close()
+
+	encoder := toml.NewEncoder(file)
+	if err := encoder.Encode(config); err != nil {
+		return fmt.Errorf("failed to encode config: %w", err)
+	}
+
 	return nil
 }

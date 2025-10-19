@@ -1645,6 +1645,11 @@ func (m *Manager) handleCommand(command string) {
 			}
 		}
 
+		// Stop HTTP server if running
+		if GlobalRuntimeConfig.BinbagEnabled {
+			GlobalRuntimeConfig.DisableBinbag()
+		}
+
 		fmt.Println(ui.Success("Goodbye!"))
 		os.Exit(0)
 	case "clear", "cls":
@@ -1678,6 +1683,28 @@ func (m *Manager) handleCommand(command string) {
 			return
 		}
 		m.handleRunModule(parts[1], parts[2:])
+	case "config":
+		// config - show current config
+		// config save - save to file
+		if len(parts) == 1 {
+			m.handleShowConfig()
+		} else if parts[1] == "save" {
+			m.handleSaveConfig()
+		} else {
+			fmt.Println(ui.CommandHelp("Usage: config [save]"))
+		}
+	case "set":
+		// set mode <stealth|speed>
+		// set binbag <path|disable>
+		// set pivot <host> <port> | disable
+		if len(parts) < 2 {
+			fmt.Println(ui.CommandHelp("Usage: set <option> <value>"))
+			fmt.Println(ui.Command("  set mode <stealth|speed>"))
+			fmt.Println(ui.Command("  set binbag <path|disable>"))
+			fmt.Println(ui.Command("  set pivot <host> <port> | disable"))
+			return
+		}
+		m.handleSet(parts[1:])
 	default:
 		fmt.Println(ui.Warning(fmt.Sprintf("Unknown command: %s (type 'help' for available commands)", parts[0])))
 	}
@@ -1719,6 +1746,15 @@ func (m *Manager) showHelp() {
 	lines = append(lines, ui.CommandHelp("modules"))
 	lines = append(lines, ui.Command("modules                      - List available modules"))
 	lines = append(lines, ui.Command("run <module> [args]          - Run a module (e.g., run enum, run lse)"))
+	lines = append(lines, "")
+
+	// Config category
+	lines = append(lines, ui.CommandHelp("config"))
+	lines = append(lines, ui.Command("config                       - Show current configuration"))
+	lines = append(lines, ui.Command("config save                  - Save configuration to file"))
+	lines = append(lines, ui.Command("set mode <stealth|speed>     - Set execution mode"))
+	lines = append(lines, ui.Command("set binbag <path|disable>    - Set binbag path or disable"))
+	lines = append(lines, ui.Command("set pivot <host> <port>      - Set pivot host:port or disable"))
 	lines = append(lines, "")
 
 	// Program category
@@ -1784,12 +1820,6 @@ func (m *Manager) handleUpload(localPath, remotePath string) {
 		return
 	}
 
-	// Check if local file exists
-	if _, err := os.Stat(localPath); os.IsNotExist(err) {
-		fmt.Println(ui.Error(fmt.Sprintf("Local file not found: %s", localPath)))
-		return
-	}
-
 	// Create transferer
 	t := NewTransferer(m.selectedSession.Conn, m.selectedSession.ID)
 	t.SetPlatform(m.selectedSession.Platform)
@@ -1804,8 +1834,20 @@ func (m *Manager) handleUpload(localPath, remotePath string) {
 	// Show hint
 	fmt.Println(ui.CommandHelp("Press Ctrl+D to cancel"))
 
-	// Perform upload
-	err := t.Upload(ctx, localPath, remotePath)
+	// Perform upload (use SmartUpload if binbag is enabled)
+	var err error
+	if GlobalRuntimeConfig.BinbagEnabled {
+		// SmartUpload handles binbag lookup, URL download, and local file paths
+		err = t.SmartUpload(ctx, localPath, remotePath)
+	} else {
+		// Traditional upload requires local file to exist
+		if _, statErr := os.Stat(localPath); os.IsNotExist(statErr) {
+			fmt.Println(ui.Error(fmt.Sprintf("Local file not found: %s", localPath)))
+			return
+		}
+		err = t.Upload(ctx, localPath, remotePath)
+	}
+
 	if err != nil {
 		// Check if it was cancelled by user
 		if ctx.Err() == context.Canceled {
@@ -1816,12 +1858,8 @@ func (m *Manager) handleUpload(localPath, remotePath string) {
 		return
 	}
 
-	// Drain any output from transfer commands
-	t.DrainOutput()
-
-	// Minimal cleanup (ESC cancel disabled for debugging)
-	time.Sleep(100 * time.Millisecond)
-	os.Stdout.Sync()
+	// Note: WatchForCancel goroutine will consume first character typed after upload
+	// This is a known limitation - trade-off for having Ctrl+D cancel support
 }
 
 // handleDownload handles file download command
@@ -1858,12 +1896,8 @@ func (m *Manager) handleDownload(remotePath, localPath string) {
 		return
 	}
 
-	// Drain any output from transfer commands
-	t.DrainOutput()
-
-	// Minimal cleanup (ESC cancel disabled for debugging)
-	time.Sleep(100 * time.Millisecond)
-	os.Stdout.Sync()
+	// Note: WatchForCancel goroutine will consume first character typed after download
+	// This is a known limitation - trade-off for having Ctrl+D cancel support
 }
 
 // handleRev generates and displays reverse shell payloads
@@ -2003,4 +2037,153 @@ func (m *Manager) handleSSH(target string) {
 
 	// Success - session should appear in list automatically via SessionOpened()
 	// No need to print anything here, the notification will appear when session connects
+}
+
+// handleShowConfig displays current runtime configuration
+func (m *Manager) handleShowConfig() {
+	rc := GlobalRuntimeConfig
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+
+	var lines []string
+
+	// Execution section
+	lines = append(lines, ui.CommandHelp("execution"))
+	lines = append(lines, ui.Command(fmt.Sprintf("mode: %s", rc.ExecutionMode)))
+	lines = append(lines, "")
+
+	// Binbag section
+	lines = append(lines, ui.CommandHelp("binbag"))
+	lines = append(lines, ui.Command(fmt.Sprintf("enabled: %v", rc.BinbagEnabled)))
+	if rc.BinbagEnabled {
+		lines = append(lines, ui.Command(fmt.Sprintf("path: %s", rc.BinbagPath)))
+		lines = append(lines, ui.Command(fmt.Sprintf("http_port: %d", rc.HTTPPort)))
+		lines = append(lines, ui.Command(fmt.Sprintf("http_url: http://%s:%d/", rc.ListenerIP, rc.HTTPPort)))
+	}
+	lines = append(lines, "")
+
+	// Pivot section
+	lines = append(lines, ui.CommandHelp("pivot"))
+	lines = append(lines, ui.Command(fmt.Sprintf("enabled: %v", rc.PivotEnabled)))
+	if rc.PivotEnabled {
+		lines = append(lines, ui.Command(fmt.Sprintf("host: %s", rc.PivotHost)))
+		lines = append(lines, ui.Command(fmt.Sprintf("port: %d", rc.PivotPort)))
+	}
+
+	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Configuration", ui.SymbolGem), lines))
+}
+
+// handleSaveConfig saves current runtime config to file
+func (m *Manager) handleSaveConfig() {
+	if err := GlobalRuntimeConfig.SaveToFile(); err != nil {
+		fmt.Println(ui.Error(fmt.Sprintf("Failed to save config: %v", err)))
+		return
+	}
+
+	home, _ := os.UserHomeDir()
+	configPath := filepath.Join(home, ".gummy", "config.toml")
+	fmt.Println(ui.Success(fmt.Sprintf("Configuration saved to: %s", configPath)))
+}
+
+// handleSet handles the 'set' command
+func (m *Manager) handleSet(args []string) {
+	if len(args) < 2 {
+		fmt.Println(ui.Error("Not enough arguments"))
+		return
+	}
+
+	option := args[0]
+	value := args[1]
+
+	switch option {
+	case "mode":
+		if value != "stealth" && value != "speed" {
+			fmt.Println(ui.Error("Invalid mode. Use: stealth or speed"))
+			return
+		}
+		if err := GlobalRuntimeConfig.SetExecutionMode(value); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Failed to set mode: %v", err)))
+			return
+		}
+		fmt.Println(ui.Success(fmt.Sprintf("Execution mode set to: %s", value)))
+
+	case "binbag":
+		if value == "disable" {
+			if err := GlobalRuntimeConfig.DisableBinbag(); err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Failed to disable binbag: %v", err)))
+				return
+			}
+			fmt.Println(ui.Success("Binbag disabled"))
+		} else {
+			// Treat value as path (with optional "enable" keyword)
+			path := value
+			if value == "enable" {
+				if len(args) < 3 {
+					fmt.Println(ui.Error("Path required: set binbag <path>"))
+					return
+				}
+				path = args[2]
+			}
+
+			// Expand ~ to home directory
+			if strings.HasPrefix(path, "~/") {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					fmt.Println(ui.Error(fmt.Sprintf("Failed to get home directory: %v", err)))
+					return
+				}
+				path = filepath.Join(home, path[2:])
+			}
+
+			if err := GlobalRuntimeConfig.EnableBinbag(path); err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Failed to enable binbag: %v", err)))
+				return
+			}
+			fmt.Println(ui.Info(fmt.Sprintf("Binbag enabled (serving %s on http://%s:%d/)", path, GlobalRuntimeConfig.ListenerIP, GlobalRuntimeConfig.HTTPPort)))
+		}
+
+	case "pivot":
+		if value == "disable" {
+			if err := GlobalRuntimeConfig.DisablePivot(); err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Failed to disable pivot: %v", err)))
+				return
+			}
+			fmt.Println(ui.Success("Pivot disabled"))
+		} else {
+			// Treat value as host (with optional "enable" keyword)
+			host := value
+			portArg := ""
+
+			if value == "enable" {
+				if len(args) < 4 {
+					fmt.Println(ui.Error("Host and port required: set pivot <host> <port>"))
+					return
+				}
+				host = args[2]
+				portArg = args[3]
+			} else {
+				if len(args) < 3 {
+					fmt.Println(ui.Error("Port required: set pivot <host> <port>"))
+					return
+				}
+				portArg = args[2]
+			}
+
+			port, err := strconv.Atoi(portArg)
+			if err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Invalid port: %s", portArg)))
+				return
+			}
+
+			if err := GlobalRuntimeConfig.SetPivot(host, port); err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Failed to set pivot: %v", err)))
+				return
+			}
+			fmt.Println(ui.Success(fmt.Sprintf("Pivot enabled: %s:%d", host, port)))
+		}
+
+	default:
+		fmt.Println(ui.Error(fmt.Sprintf("Unknown option: %s", option)))
+		fmt.Println(ui.CommandHelp("Available options: mode, binbag, pivot"))
+	}
 }
