@@ -90,7 +90,7 @@ func sanitizePath(s string) string {
 }
 
 // getCachedFile checks if file already exists in scripts dir (without timestamp)
-// If it exists, returns the existing path. Otherwise, returns new path with timestamp.
+// Returns path without timestamp and whether it already exists
 func (s *SessionInfo) getCachedFile(url string) (string, bool) {
 	filename := filepath.Base(url)
 	cachedPath := filepath.Join(s.ScriptsDir(), filename)
@@ -101,9 +101,8 @@ func (s *SessionInfo) getCachedFile(url string) (string, bool) {
 		return cachedPath, true
 	}
 
-	// File doesn't exist, return path with timestamp for new download
-	timestamp := time.Now().Format("2006_01_02-15_04_05")
-	return filepath.Join(s.ScriptsDir(), timestamp+"-"+filename), false
+	// File doesn't exist, return same path (no timestamp) for new download
+	return cachedPath, false
 }
 
 // RunScript downloads (if URL), uploads to victim, executes, streams output
