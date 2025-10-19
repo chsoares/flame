@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,7 +12,7 @@ import (
 )
 
 // DownloadFile downloads a file from URL with progress indication
-func DownloadFile(url, destPath string) error {
+func DownloadFile(ctx context.Context, url, destPath string) error {
 	spinner := ui.NewSpinner()
 	spinner.Start(fmt.Sprintf("Downloading %s...", filepath.Base(url)))
 	defer spinner.Stop()
@@ -40,6 +41,13 @@ func DownloadFile(url, destPath string) error {
 	buf := make([]byte, 32*1024) // 32KB buffer
 
 	for {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("download cancelled by user")
+		default:
+		}
+
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
 			out.Write(buf[:n])

