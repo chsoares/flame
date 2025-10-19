@@ -1,0 +1,18 @@
+# Binaries
+gummy
+
+# Session directories
+.gummy/
+
+# Temporary files
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
