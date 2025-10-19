@@ -52,15 +52,15 @@ func (s *Spinner) Start(message string) {
 		for {
 			select {
 			case <-ticker.C:
-				// Clear line, move to start, and redraw with current message
-				fmt.Printf("\r\033[K%s%s %s%s", s.color, s.frames[s.index], s.message, ColorReset)
+				// Clear entire line, move to start, and redraw with current message
+				fmt.Printf("\r\033[2K%s%s %s%s", s.color, s.frames[s.index], s.message, ColorReset)
 				s.index = (s.index + 1) % len(s.frames)
 			case newMsg := <-s.messageCh:
 				// Update message
 				s.message = newMsg
 			case <-s.stopCh:
 				// Clear the spinner line completely
-				fmt.Print("\r\033[K")
+				fmt.Print("\r\033[2K")
 				return
 			}
 		}

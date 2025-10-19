@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,13 +14,13 @@ import (
 	"time"
 
 	"github.com/chsoares/gummy/internal/ui"
-	"golang.org/x/term"
 )
 
 // Transferer handles file upload/download operations
 type Transferer struct {
 	conn      net.Conn
 	sessionID string
+	platform  string // "windows", "linux", or "unknown"
 }
 
 // Config holds transfer configuration
@@ -41,7 +42,13 @@ func NewTransferer(conn net.Conn, sessionID string) *Transferer {
 	return &Transferer{
 		conn:      conn,
 		sessionID: sessionID,
+		platform:  "linux", // Default to linux for backwards compatibility
 	}
+}
+
+// SetPlatform sets the detected platform
+func (t *Transferer) SetPlatform(platform string) {
+	t.platform = platform
 }
 
 // Upload sends a local file to the remote system
@@ -79,17 +86,30 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 
 	// Send file in chunks
 	config := DefaultConfig()
-	chunks := splitIntoChunks(encoded, config.ChunkSize)
 
-	// Create remote file and prepare for writing (silently)
-	setupCommands := []string{
-		fmt.Sprintf("rm -f %s.b64 2>/dev/null", remotePath), // Clean any previous temp file
-		fmt.Sprintf("touch %s.b64", remotePath),              // Create temp base64 file
+	// Platform-specific chunk sizes
+	chunkSize := config.ChunkSize
+	if t.platform == "windows" {
+		chunkSize = 1024 // 1KB chunks for Windows (safe from quote escaping issues)
 	}
+	chunks := splitIntoChunks(encoded, chunkSize)
 
-	for _, cmd := range setupCommands {
-		t.conn.Write([]byte(cmd + "\n"))
-		time.Sleep(50 * time.Millisecond)
+	// Create temp file for base64 data
+	if t.platform == "windows" {
+		// Windows: Remove old file and create empty file
+		setupCmd := fmt.Sprintf("if (Test-Path '%s.b64') { Remove-Item '%s.b64' -Force }; New-Item '%s.b64' -ItemType File -Force | Out-Null\r\n", remotePath, remotePath, remotePath)
+		t.conn.Write([]byte(setupCmd))
+		time.Sleep(100 * time.Millisecond)
+	} else {
+		// Linux: Create temp file
+		setupCommands := []string{
+			fmt.Sprintf("rm -f %s.b64 2>/dev/null", remotePath),
+			fmt.Sprintf("touch %s.b64", remotePath),
+		}
+		for _, cmd := range setupCommands {
+			t.conn.Write([]byte(cmd + "\n"))
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 
 	// Send chunks with progress updates
@@ -103,15 +123,32 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 		default:
 		}
 
-		// Append chunk to remote file
-		cmd := fmt.Sprintf("echo '%s' >> %s.b64", chunk, remotePath)
-		_, err := t.conn.Write([]byte(cmd + "\n"))
-		if err != nil {
-			return fmt.Errorf("connection lost during upload: %w", err)
+		// Append chunk (platform-specific)
+		if t.platform == "windows" {
+			// PowerShell: Add-Content with 1KB chunks (safe size)
+			// Escape single quotes for PowerShell (double them)
+			escapedChunk := strings.ReplaceAll(chunk, "'", "''")
+			cmd := fmt.Sprintf("Add-Content -Path '%s.b64' -Value '%s' -NoNewline\r\n", remotePath, escapedChunk)
+			_, err := t.conn.Write([]byte(cmd))
+			if err != nil {
+				return fmt.Errorf("connection lost during upload: %w", err)
+			}
+		} else {
+			// Linux/Unix: printf to temp file (more reliable than echo)
+			cmd := fmt.Sprintf("printf '%%s' '%s' >> %s.b64\n", chunk, remotePath)
+			_, err := t.conn.Write([]byte(cmd))
+			if err != nil {
+				return fmt.Errorf("connection lost during upload: %w", err)
+			}
 		}
 
-		// Longer sleep for larger chunks to avoid overwhelming the shell
-		time.Sleep(50 * time.Millisecond)
+		// Small sleep to avoid overwhelming the shell
+		// Optimized for speed while maintaining stability
+		if t.platform == "windows" {
+			time.Sleep(15 * time.Millisecond) // Windows: 1KB every 15ms = ~67KB/s
+		} else {
+			time.Sleep(5 * time.Millisecond) // Linux: 32KB every 5ms = ~6.4MB/s
+		}
 
 		bytesSent += len(chunk)
 
@@ -135,19 +172,33 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 		}
 	}
 
-	// Decode base64 and save final file
-	decodeCmd := fmt.Sprintf("base64 -d %s.b64 > %s && rm %s.b64", remotePath, remotePath, remotePath)
-	t.conn.Write([]byte(decodeCmd + "\n"))
-	time.Sleep(200 * time.Millisecond)
+	// Decode base64 and save final file (platform-specific)
+	var decodeCmd string
+	if t.platform == "windows" {
+		// PowerShell: Read base64 from file, decode, write binary, remove temp file
+		decodeCmd = fmt.Sprintf("$b64 = Get-Content '%s.b64' -Raw; [IO.File]::WriteAllBytes((Resolve-Path '.').Path+'\\%s', [Convert]::FromBase64String($b64)); Remove-Item '%s.b64' -Force\r\n", remotePath, remotePath, remotePath)
+	} else {
+		// Linux/Unix: Decode from temp file
+		decodeCmd = fmt.Sprintf("base64 -d %s.b64 > %s && rm %s.b64\n", remotePath, remotePath, remotePath)
+	}
+	t.conn.Write([]byte(decodeCmd))
+	time.Sleep(300 * time.Millisecond)
 
 	// Drain output from all commands
 	t.drainConnection()
 
-	// Verify checksum with markers (like download)
+	// Verify checksum with markers (platform-specific)
 	marker := "GUMMY_MD5_START"
 	endMarker := "GUMMY_MD5_END"
-	cmd := fmt.Sprintf("echo %s; md5sum %s 2>/dev/null | awk '{print $1}'; echo %s", marker, remotePath, endMarker)
-	t.conn.Write([]byte(cmd + "\n"))
+	var checksumCmd string
+	if t.platform == "windows" {
+		// PowerShell: Calculate MD5 hash
+		checksumCmd = fmt.Sprintf("echo %s; (Get-FileHash '%s' -Algorithm MD5).Hash.ToLower(); echo %s", marker, remotePath, endMarker)
+	} else {
+		// Linux/Unix
+		checksumCmd = fmt.Sprintf("echo %s; md5sum %s 2>/dev/null | awk '{print $1}'; echo %s", marker, remotePath, endMarker)
+	}
+	t.conn.Write([]byte(checksumCmd + "\r\n"))
 	time.Sleep(300 * time.Millisecond)
 
 	// Read MD5 response
@@ -315,9 +366,8 @@ func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, 
 	t.conn.Write([]byte(initCmd))
 	time.Sleep(100 * time.Millisecond)
 
-	// PowerShell has 8191 char limit for cmd.exe, 32767 for PowerShell.exe
-	// Use smaller chunk size to be safe
-	const psChunkSize = 8000
+	// Use small chunk size (1KB) to avoid quote escaping issues
+	const psChunkSize = 1024
 	chunks := splitIntoChunks(encoded, psChunkSize)
 
 	bytesSent := 0
@@ -333,13 +383,15 @@ func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, 
 		}
 
 		// Append chunk to variable (PowerShell += operator)
-		cmd := fmt.Sprintf("$%s += '%s'\r\n", varName, chunk)
+		// Escape single quotes by doubling them
+		escapedChunk := strings.ReplaceAll(chunk, "'", "''")
+		cmd := fmt.Sprintf("$%s += '%s'\r\n", varName, escapedChunk)
 		_, err := t.conn.Write([]byte(cmd))
 		if err != nil {
 			return fmt.Errorf("connection lost during upload: %w", err)
 		}
 
-		time.Sleep(100 * time.Millisecond) // PowerShell may be slower
+		time.Sleep(15 * time.Millisecond) // Optimized for speed while maintaining stability
 
 		bytesSent += len(chunk)
 
@@ -397,9 +449,9 @@ func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varN
 	t.conn.Write([]byte(initCmd))
 	time.Sleep(50 * time.Millisecond)
 
-	// Python has similar ARG_MAX constraints as bash
-	config := DefaultConfig()
-	chunks := splitIntoChunks(encoded, config.ChunkSize)
+	// Use small chunk size (1KB) to avoid quote escaping issues
+	const pyChunkSize = 1024
+	chunks := splitIntoChunks(encoded, pyChunkSize)
 
 	bytesSent := 0
 
@@ -414,13 +466,15 @@ func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varN
 		}
 
 		// Append chunk to variable (Python += operator)
-		cmd := fmt.Sprintf("%s += '%s'\n", varName, chunk)
+		// Escape single quotes for Python strings
+		escapedChunk := strings.ReplaceAll(chunk, "'", "\\'")
+		cmd := fmt.Sprintf("%s += '%s'\n", varName, escapedChunk)
 		_, err := t.conn.Write([]byte(cmd))
 		if err != nil {
 			return fmt.Errorf("connection lost during upload: %w", err)
 		}
 
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(15 * time.Millisecond)
 
 		bytesSent += len(chunk)
 
@@ -473,9 +527,17 @@ func (t *Transferer) Download(ctx context.Context, remotePath, localPath string)
 	marker := "GUMMY_B64_START"
 	endMarker := "GUMMY_B64_END"
 
-	// Send command with markers
-	cmd := fmt.Sprintf("echo %s; base64 -w 0 %s 2>/dev/null; echo; echo %s", marker, remotePath, endMarker)
-	t.conn.Write([]byte(cmd + "\n"))
+	// Send command with markers (platform-specific)
+	var cmd string
+	if t.platform == "windows" {
+		// PowerShell: Read file as bytes, convert to base64
+		// Use Resolve-Path to get absolute path
+		cmd = fmt.Sprintf("echo %s; [Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path '%s').Path)); echo %s\r\n", marker, remotePath, endMarker)
+	} else {
+		// Linux/Unix
+		cmd = fmt.Sprintf("echo %s; base64 -w 0 %s 2>/dev/null; echo; echo %s\n", marker, remotePath, endMarker)
+	}
+	t.conn.Write([]byte(cmd))
 
 	time.Sleep(500 * time.Millisecond)
 
@@ -672,35 +734,30 @@ func min(a, b int) int {
 	return b
 }
 
-// WatchForCancel watches for ESC key press and cancels context
+// WatchForCancel watches for Ctrl+D (EOF) and cancels context
+// Ctrl+D is detected by reading from stdin, doesn't conflict with readline or signals
 func WatchForCancel(ctx context.Context, cancel context.CancelFunc) {
-	// Save terminal state
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return
-	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
+	// Read from stdin in a goroutine
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				// Try to read one byte with timeout
+				os.Stdin.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+				n, err := os.Stdin.Read(buf)
+				os.Stdin.SetReadDeadline(time.Time{}) // Clear deadline
 
-	buf := make([]byte, 3)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			// Set read timeout to check context periodically
-			os.Stdin.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-			n, err := os.Stdin.Read(buf)
-			if err != nil {
-				continue
-			}
-
-			if n > 0 {
-				// ESC key is byte 27
-				if buf[0] == 27 {
+				if err == io.EOF || (n == 0 && err == nil) {
+					// Ctrl+D pressed (EOF) - cancel without printing newline
+					// Spinner will handle cleanup and message will appear cleanly
 					cancel()
 					return
 				}
+				// Ignore other input and errors (timeout is expected)
 			}
 		}
-	}
+	}()
 }
