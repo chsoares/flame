@@ -105,11 +105,24 @@ func (s *SessionInfo) getCachedFile(url string) (string, bool) {
 	return cachedPath, false
 }
 
+// getOutputPath generates output file path with script name and timestamp
+// Format: ScriptName-YYYY_MM_DD-HH_MM_SS-output.txt
+func (s *SessionInfo) getOutputPath(scriptPath string) string {
+	timestamp := time.Now().Format("2006_01_02-15_04_05")
+
+	// Extract base name without extension
+	baseName := filepath.Base(scriptPath)
+	ext := filepath.Ext(baseName)
+	nameWithoutExt := strings.TrimSuffix(baseName, ext)
+
+	// Generate output filename: ScriptName-timestamp-output.txt
+	outputFilename := fmt.Sprintf("%s-%s-output.txt", nameWithoutExt, timestamp)
+	return filepath.Join(s.ScriptsDir(), outputFilename)
+}
+
 // RunScript downloads (if URL), uploads to victim, executes, streams output
 // Simple approach that actually works with clean output
 func (s *SessionInfo) RunScript(ctx context.Context, scriptSource string, args []string) error {
-	timestamp := time.Now().Format("2006_01_02-15_04_05")
-
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
@@ -126,8 +139,8 @@ func (s *SessionInfo) RunScript(ctx context.Context, scriptSource string, args [
 		scriptPath = scriptSource
 	}
 
-	// Output file
-	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+	// Output file (named after script for easy identification)
+	outputPath := s.getOutputPath(scriptPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
@@ -181,8 +194,6 @@ func (s *SessionInfo) RunScript(ctx context.Context, scriptSource string, args [
 // scriptSource: URL or local path to script file
 // args: arguments to pass to the script
 func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string, args []string) error {
-	timestamp := time.Now().Format("2006_01_02-15_04_05")
-
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
@@ -199,8 +210,8 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 		scriptPath = scriptSource
 	}
 
-	// Output file
-	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+	// Output file (named after script for easy identification)
+	outputPath := s.getOutputPath(scriptPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
@@ -256,8 +267,6 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 // RunBinary downloads (if URL), uploads to victim, makes executable, runs
 // Same as RunScript but for binary executables (no bash interpreter)
 func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args []string) error {
-	timestamp := time.Now().Format("2006_01_02-15_04_05")
-
 	// Download if URL
 	var binaryPath string
 	if strings.HasPrefix(binarySource, "http://") || strings.HasPrefix(binarySource, "https://") {
@@ -274,8 +283,8 @@ func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args [
 		binaryPath = binarySource
 	}
 
-	// Output file
-	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+	// Output file (named after script for easy identification)
+	outputPath := s.getOutputPath(binaryPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
@@ -338,8 +347,6 @@ func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args [
 // RunPowerShellInMemory executes PowerShell scripts in-memory (Windows, zero disk writes)
 // Similar to RunScriptInMemory but for PowerShell on Windows
 func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource string, args []string) error {
-	timestamp := time.Now().Format("2006_01_02-15_04_05")
-
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
@@ -356,8 +363,8 @@ func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource st
 		scriptPath = scriptSource
 	}
 
-	// Output file
-	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+	// Output file (named after script for easy identification)
+	outputPath := s.getOutputPath(scriptPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
@@ -416,8 +423,6 @@ func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource st
 // RunDotNetInMemory executes .NET assemblies in-memory (Windows, zero disk writes)
 // Uses reflection to load and execute assembly from memory
 func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource string, args []string) error {
-	timestamp := time.Now().Format("2006_01_02-15_04_05")
-
 	// Download if URL
 	var assemblyPath string
 	if strings.HasPrefix(assemblySource, "http://") || strings.HasPrefix(assemblySource, "https://") {
@@ -434,8 +439,8 @@ func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource stri
 		assemblyPath = assemblySource
 	}
 
-	// Output file
-	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+	// Output file (named after script for easy identification)
+	outputPath := s.getOutputPath(assemblyPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
@@ -532,8 +537,6 @@ Remove-Variable -Name %s -ErrorAction SilentlyContinue
 // RunPythonInMemory executes Python scripts in-memory (Linux/Windows, zero disk writes)
 // Similar to RunScriptInMemory but for Python
 func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string, args []string) error {
-	timestamp := time.Now().Format("2006_01_02-15_04_05")
-
 	// Download if URL
 	var scriptPath string
 	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
@@ -550,8 +553,8 @@ func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string
 		scriptPath = scriptSource
 	}
 
-	// Output file
-	outputPath := filepath.Join(s.ScriptsDir(), timestamp+"-output.txt")
+	// Output file (named after script for easy identification)
+	outputPath := s.getOutputPath(scriptPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
