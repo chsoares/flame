@@ -112,7 +112,9 @@ func (h *Handler) Start() error {
 		go h.relayLocalToRemote(errorChan)
 	} else {
 		// Modo readline: line-buffered input, Ctrl-D para sair
-		fmt.Println("(readline mode: Ctrl-D to exit, Ctrl-C sends ^C to remote)")
+		// Envia comando vazio para forçar exibição do prompt
+		h.conn.Write([]byte("\r\n"))
+		time.Sleep(200 * time.Millisecond) // Aguarda prompt aparecer
 		go h.readlineLoop(errorChan)
 	}
 

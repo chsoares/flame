@@ -15,15 +15,28 @@ type Spinner struct {
 	message   string
 	stopped   bool
 	wg        sync.WaitGroup
+	color     string
 }
 
-// NewSpinner creates a new spinner
+// NewSpinner creates a new spinner with yellow color (default)
 func NewSpinner() *Spinner {
 	return &Spinner{
 		frames:    []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
 		index:     0,
 		stopCh:    make(chan struct{}),
 		messageCh: make(chan string, 10),
+		color:     ColorYellow,
+	}
+}
+
+// NewSpinnerWithColor creates a new spinner with custom color
+func NewSpinnerWithColor(color string) *Spinner {
+	return &Spinner{
+		frames:    []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+		index:     0,
+		stopCh:    make(chan struct{}),
+		messageCh: make(chan string, 10),
+		color:     color,
 	}
 }
 
@@ -40,7 +53,7 @@ func (s *Spinner) Start(message string) {
 			select {
 			case <-ticker.C:
 				// Clear line, move to start, and redraw with current message
-				fmt.Printf("\r\033[K%s%s %s%s", ColorYellow, s.frames[s.index], s.message, ColorReset)
+				fmt.Printf("\r\033[K%s%s %s%s", s.color, s.frames[s.index], s.message, ColorReset)
 				s.index = (s.index + 1) % len(s.frames)
 			case newMsg := <-s.messageCh:
 				// Update message

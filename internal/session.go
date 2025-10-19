@@ -791,6 +791,15 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.sessions[id] = session
 	m.nextID++
 
+	// Mostra mensagem IMEDIATAMENTE quando conexão é recebida
+	if !m.silent {
+		if m.menuActive {
+			fmt.Printf("\r%s\n", ui.SessionOpened(session.NumID, remoteIP))
+		} else {
+			fmt.Printf("\r\n%s\n", ui.SessionOpened(session.NumID, remoteIP))
+		}
+	}
+
 	// Detecta whoami e platform SINCRONAMENTE antes de iniciar handler
 	// Isso garante que Platform está definido antes de Start() decidir sobre raw mode
 	m.detectSessionInfo(session)
@@ -801,15 +810,13 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	// Inicia monitoramento da sessão
 	go m.monitorSession(session)
 
-	// Only print if not in silent mode
+	// Mostra info de detecção ao finalizar
 	if !m.silent {
+		infoMsg := fmt.Sprintf("Session %d: %s (%s)", session.NumID, session.Whoami, session.Platform)
 		if m.menuActive {
-			// Se estivermos no menu, quebrar a linha atual, mostrar notificação e novo prompt
-			fmt.Printf("\r%s\n%s", ui.SessionOpened(session.NumID, remoteIP), ui.Prompt())
+			fmt.Printf("%s\n%s", ui.Info(infoMsg), ui.Prompt())
 		} else {
-			// Se estivermos em uma shell interativa, apenas quebrar linha e mostrar notificação
-			// Deixa o usuário continuar na shell atual (pode apertar Enter para novo prompt)
-			fmt.Printf("\r\n%s\n", ui.SessionOpened(session.NumID, remoteIP))
+			fmt.Printf("%s\n", ui.Info(infoMsg))
 		}
 	}
 }
@@ -1025,15 +1032,20 @@ func (m *Manager) handleRunModule(moduleName string, args []string) {
 
 // detectSessionInfo detecta user@host e plataforma da sessão
 func (m *Manager) detectSessionInfo(session *SessionInfo) {
-	// Aguarda shell enviar algo
-	time.Sleep(1000 * time.Millisecond)
+	// Inicia spinner em cyan (info)
+	spinner := ui.NewSpinnerWithColor(ui.ColorCyan)
+	spinner.Start("Detecting shell info...")
+	defer spinner.Stop()
 
-	// Lê o que tiver disponível (com múltiplas tentativas)
+	// Aguarda shell enviar algo
+	time.Sleep(500 * time.Millisecond)
+
+	// Lê o que tiver disponível (reduzido de 10 para 5 tentativas)
 	initialPrompt := ""
 	buffer := make([]byte, 4096)
 
-	for attempt := 0; attempt < 10; attempt++ {
-		session.Conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	for attempt := 0; attempt < 5; attempt++ {
+		session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 		n, err := session.Conn.Read(buffer)
 		session.Conn.SetReadDeadline(time.Time{})
 
@@ -1042,38 +1054,40 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 		}
 
 		if err == nil && n > 0 {
-			// Continue lendo se tiver mais dados
-			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 
-		// Se já temos dados suficientes, pode parar
 		if len(initialPrompt) > 0 {
 			break
 		}
 
-		// Senão, espera mais um pouco
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 	}
 
-	// Detecta platform baseado no prompt recebido
+
+	// Detecta platform baseado no prompt recebido (inspirado no Penelope)
+	// IMPORTANTE: Prompt pode estar vazio! Algumas shells não enviam nada até receber comando.
 	detectedPlatform := "unknown"
 
-	if strings.Contains(initialPrompt, "PS ") || strings.Contains(initialPrompt, "C:\\") || strings.Contains(initialPrompt, "C:/") {
+	// PowerShell prompts: "PS C:\>" ou "PS >"
+	if strings.Contains(initialPrompt, "PS ") && strings.Contains(initialPrompt, ">") {
+		detectedPlatform = "windows"
+	} else if strings.Contains(initialPrompt, "Microsoft Windows") {
+		// Banner do cmd.exe
+		detectedPlatform = "windows"
+	} else if strings.Contains(initialPrompt, "C:\\") || strings.Contains(initialPrompt, "C:/") {
+		// Prompt do cmd.exe
 		detectedPlatform = "windows"
 	} else if strings.Contains(initialPrompt, "$") || strings.Contains(initialPrompt, "#") {
+		// Unix shells (bash, sh, etc.)
 		detectedPlatform = "linux"
+	} else {
 	}
 
 	session.Platform = detectedPlatform
 
-	// Para Windows, tenta comando diferente que funcione com WinRM reverse shells
-	var detectionCmd string
-	if detectedPlatform == "windows" {
-		detectionCmd = "echo $env:USERNAME@$env:COMPUTERNAME\r\n"
-	} else {
-		detectionCmd = "echo $(whoami 2>/dev/null)@$(hostname 2>/dev/null)\n"
-	}
+	// Envia comando universal que funciona em ambos (Linux vai executar, Windows vai mostrar prompt)
+	detectionCmd := "echo $(whoami 2>/dev/null)@$(hostname 2>/dev/null)\n"
 
 	_, err := session.Conn.Write([]byte(detectionCmd))
 	if err != nil {
@@ -1081,10 +1095,10 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 		return
 	}
 
-	// Aguarda execução
-	time.Sleep(800 * time.Millisecond)
+	// Aguarda execução - shells remotas podem ser lentas (HTB, VPN, etc.)
+	time.Sleep(1000 * time.Millisecond)
 
-	// Lê toda a resposta em múltiplas tentativas com timeout curto
+	// Lê toda a resposta em múltiplas tentativas com timeout adaptativo
 	allData := ""
 	readBuffer := make([]byte, 2048)
 	foundWhoami := false
@@ -1095,101 +1109,171 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 		foundPlatform = true
 	}
 
-	for i := 0; i < 20; i++ { // mais tentativas
-		// Timeout curto por tentativa (não timeout total)
-		session.Conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	// 10 tentativas com timeout de 1s cada = até 10 segundos para shells lentas
+	for i := 0; i < 10; i++ {
+		// Timeout de 1s por tentativa (HTB pode ser lento!)
+		session.Conn.SetReadDeadline(time.Now().Add(1000 * time.Millisecond))
 		n, err := session.Conn.Read(readBuffer)
 
 		if err != nil {
-			// Se é timeout mas já encontramos tudo, pode sair
+			// Se é timeout mas já encontramos tudo, pode sair IMEDIATAMENTE
 			if foundWhoami && foundPlatform {
 				break
 			}
-			// Se é timeout mas já lemos algo, continua tentando
-			if len(allData) > 0 {
+			// Se é timeout mas já lemos algo, continua tentando (até 5 retries)
+			if len(allData) > 0 && i < 5 {
 				time.Sleep(200 * time.Millisecond)
 				continue
 			}
-			// Timeout no primeiro read = falha real
-			if i == 0 {
-				session.Whoami = "unknown"
-				session.Platform = "unknown"
-				return
+			// Timeout sem dados = desistir
+			if len(allData) == 0 {
+				break
 			}
+			// Timeout com dados mas já tentou muito = desistir
 			break
 		}
 
 		chunk := string(readBuffer[:n])
 		allData += chunk
 
-		// Se temos pelo menos uma linha completa, processa
-		if strings.Contains(allData, "\n") {
-			lines := strings.Split(allData, "\n")
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
+		// Processa os dados recebidos (pode ou não ter line endings)
+		// Normaliza line endings
+		normalized := strings.ReplaceAll(allData, "\r\n", "\n")
+		normalized = strings.ReplaceAll(normalized, "\r", "\n")
 
-				// Detecta whoami
-				if !foundWhoami && strings.Contains(line, "@") &&
-					!strings.Contains(line, "echo") &&
-					!strings.Contains(line, "whoami") &&
-					!strings.Contains(line, "hostname") &&
-					!strings.Contains(line, "USERNAME") &&
-					!strings.Contains(line, "COMPUTERNAME") &&
-					!strings.Contains(line, "$") &&
-					!strings.Contains(line, "%") {
+		// Se tem quebras de linha, split normal. Senão, trata como linha única
+		var lines []string
+		if strings.Contains(normalized, "\n") {
+			lines = strings.Split(normalized, "\n")
+		} else {
+			// Sem line ending - trata dados completos como uma linha
+			lines = []string{normalized}
+		}
 
-					// Limpa a linha
-					cleaned := strings.ReplaceAll(line, "\r", "")
-					cleaned = strings.TrimSpace(cleaned)
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if len(line) > 0 {
+			}
 
-					// Valida formato básico: palavra@palavra
-					parts := strings.Split(cleaned, "@")
-					if len(parts) == 2 && len(parts[0]) > 0 && len(parts[1]) > 0 && len(cleaned) < 50 {
-						session.Whoami = cleaned
-						foundWhoami = true
-					}
+			// Detecta plataforma PRIMEIRO (importante para shells silenciosas)
+			// Se vemos um prompt PowerShell na resposta, é Windows!
+			if !foundPlatform {
+				if strings.Contains(line, "PS ") && strings.Contains(line, ">") && strings.Contains(line, ":\\") {
+					// Prompt PowerShell: "PS C:\Users\...\Documents> "
+					session.Platform = "windows"
+					foundPlatform = true
+					detectedPlatform = "windows" // Atualiza para parsing de whoami
+
+					// Agora que sabemos que é Windows, envia whoami
+					session.Conn.Write([]byte("whoami\r\n"))
+				} else if strings.Contains(line, "C:\\") && strings.Contains(line, ">") {
+					// Prompt cmd.exe
+					session.Platform = "windows"
+					foundPlatform = true
+					detectedPlatform = "windows"
+
+					// Envia whoami para Windows
+					session.Conn.Write([]byte("whoami\r\n"))
 				}
 
-				// Detecta plataforma
-				if !foundPlatform {
-					lowerLine := strings.ToLower(line)
-					if strings.Contains(lowerLine, "linux") {
-						session.Platform = "linux"
-						foundPlatform = true
-					} else if strings.Contains(lowerLine, "windows") {
-						session.Platform = "windows"
-						foundPlatform = true
-					} else if strings.Contains(lowerLine, "darwin") {
-						session.Platform = "macos"
-						foundPlatform = true
-					}
+				// Detecção tradicional por keywords
+				lowerLine := strings.ToLower(line)
+				if strings.Contains(lowerLine, "linux") {
+					session.Platform = "linux"
+					foundPlatform = true
+					detectedPlatform = "linux"
+				} else if strings.Contains(lowerLine, "windows") {
+					session.Platform = "windows"
+					foundPlatform = true
+					detectedPlatform = "windows"
+				} else if strings.Contains(lowerLine, "darwin") {
+					session.Platform = "macos"
+					foundPlatform = true
+					detectedPlatform = "macos"
 				}
+			}
 
-				// Se encontrou ambos, drena restante e termina
-				if foundWhoami && foundPlatform {
-					// Drena o restante SINCRONAMENTE (importante!)
-					// Isso garante que quando Start() é chamado, não há mais output de detecção
-					time.Sleep(200 * time.Millisecond)
-					drainBuffer := make([]byte, 4096)
-					session.Conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-					for {
-						n, err := session.Conn.Read(drainBuffer)
-						if err != nil || n == 0 {
-							break
+			// Para Windows, procura formato "DOMAIN\user" ou "COMPUTER\user"
+			// AGORA aceita detecção de platform pela resposta, não só pelo prompt inicial!
+			if detectedPlatform == "windows" && !foundWhoami {
+				// Formato Windows whoami: "domain\username" ou "computername\username"
+				if strings.Contains(line, "\\") {
+
+					// Caso especial: whoami grudado no prompt "PS C:\...\Documents> htb\svc-alfresco"
+					// Extrai a parte depois do último ">" se existir
+					extracted := line
+					if strings.Contains(line, ">") {
+						parts := strings.Split(line, ">")
+						if len(parts) > 1 {
+							// Pega a última parte depois do ">"
+							extracted = strings.TrimSpace(parts[len(parts)-1])
 						}
 					}
-					session.Conn.SetReadDeadline(time.Time{})
-					return
+
+					// Valida o whoami extraído
+					if strings.Contains(extracted, "\\") &&
+						!strings.Contains(extracted, "whoami") &&
+						!strings.Contains(extracted, "PS ") &&
+						!strings.Contains(extracted, ">") &&
+						len(extracted) > 3 && len(extracted) < 50 {
+
+						// Valida formato: palavra\palavra
+						parts := strings.Split(extracted, "\\")
+						if len(parts) == 2 && len(parts[0]) > 0 && len(parts[1]) > 0 {
+							session.Whoami = extracted
+							foundWhoami = true
+						}
+					}
 				}
+			} else if (detectedPlatform == "linux" || detectedPlatform == "unknown") && !foundWhoami {
+				// Linux: formato user@hostname
+				if strings.Contains(line, "@") {
+					if !strings.Contains(line, "echo") &&
+						!strings.Contains(line, "whoami") &&
+						!strings.Contains(line, "hostname") &&
+						!strings.Contains(line, "$") &&
+						!strings.Contains(line, "%") {
+
+						// Valida formato básico: palavra@palavra
+						parts := strings.Split(line, "@")
+						if len(parts) == 2 && len(parts[0]) > 0 && len(parts[1]) > 0 && len(line) < 50 {
+							session.Whoami = line
+							foundWhoami = true
+							detectedPlatform = "linux" // Se achou formato Linux, é Linux
+							session.Platform = "linux"
+							foundPlatform = true
+						} else {
+						}
+					} else {
+					}
+				}
+			}
+
+			// Se encontrou ambos, drena restante e termina IMEDIATAMENTE
+			if foundWhoami && foundPlatform {
+				// Drena o restante SINCRONAMENTE (importante!)
+				// Isso garante que quando Start() é chamado, não há mais output de detecção
+				time.Sleep(100 * time.Millisecond) // Reduzido de 200ms
+				drainBuffer := make([]byte, 4096)
+				session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // Reduzido de 500ms
+				for {
+					n, err := session.Conn.Read(drainBuffer)
+					if err != nil || n == 0 {
+						break
+					}
+				}
+				session.Conn.SetReadDeadline(time.Time{})
+				return // Sai IMEDIATAMENTE
 			}
 		}
 
-		// Pequena pausa entre tentativas
-		time.Sleep(100 * time.Millisecond)
+		// NÃO dorme entre tentativas - desperdiça tempo!
+		// O timeout de Read já controla o timing
 	}
 
 	// Remove timeout
 	session.Conn.SetReadDeadline(time.Time{})
+
 
 	if !foundWhoami {
 		session.Whoami = "unknown"
@@ -1259,7 +1343,7 @@ func (m *Manager) ShellSession() error {
 	m.mu.Unlock()
 
 	fmt.Println(ui.Info("Entering interactive shell"))
-	fmt.Println(ui.CommandHelp("Press F12 to return to menu"))
+	fmt.Println(ui.CommandHelp("Press Ctrl-D to return to menu"))
 
 	// Inicia shell handler (bloqueia até sair)
 	err := targetSession.Handler.Start()
