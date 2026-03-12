@@ -5,14 +5,17 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // PTYUpgrader gerencia upgrade de shells raw para PTY
 type PTYUpgrader struct {
-	conn      net.Conn
-	sessionID string
+	conn       net.Conn
+	sessionID  string
+	stopResize chan struct{} // Signal to stop resize handler goroutine
 }
 
 // NewPTYUpgrader cria um novo upgrader de PTY
@@ -227,8 +230,32 @@ func (p *PTYUpgrader) getTerminalSize() (int, int) {
 	return width, height
 }
 
-// SetupResizeHandler configura handler para redimensionamento
+// SetupResizeHandler listens for SIGWINCH and sends stty resize commands to remote shell
 func (p *PTYUpgrader) SetupResizeHandler() {
-	// TODO: Implementar SIGWINCH handler para redimensionamento automático
-	// Por enquanto, dimensões são fixas no upgrade
+	p.stopResize = make(chan struct{})
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGWINCH)
+
+	go func() {
+		defer signal.Stop(sigChan)
+
+		for {
+			select {
+			case <-p.stopResize:
+				return
+			case <-sigChan:
+				width, height := p.getTerminalSize()
+				cmd := fmt.Sprintf("stty rows %d cols %d\n", height, width)
+				p.conn.Write([]byte(cmd))
+			}
+		}
+	}()
+}
+
+// StopResizeHandler stops the SIGWINCH handler goroutine
+func (p *PTYUpgrader) StopResizeHandler() {
+	if p.stopResize != nil {
+		close(p.stopResize)
+	}
 }

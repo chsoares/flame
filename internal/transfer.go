@@ -759,26 +759,32 @@ func WatchForCancel(ctx context.Context, cancel context.CancelFunc) {
 		defer os.Stdin.SetReadDeadline(time.Time{})
 
 		for {
+			// Check context BEFORE attempting any read to avoid consuming input
+			// after the transfer has completed
 			select {
 			case <-ctx.Done():
-				// Context cancelled - exit immediately and clear stdin deadline
 				return
 			default:
-				// Try to read one byte with timeout
-				os.Stdin.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-				n, err := os.Stdin.Read(buf)
-
-				if err == io.EOF || (n == 0 && err == nil) {
-					// Ctrl+D pressed (EOF) - cancel without printing newline
-					cancel()
-					return
-				}
-				// Ignore other input and timeout errors (timeout is expected)
-
-				// Small sleep to allow context cancellation to propagate
-				// This prevents the goroutine from immediately reading the next user input
-				time.Sleep(10 * time.Millisecond)
 			}
+
+			// Use a short deadline so we can re-check context frequently
+			os.Stdin.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			n, err := os.Stdin.Read(buf)
+
+			// Re-check context AFTER read - if cancelled during the read,
+			// discard whatever we got and exit cleanly
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			if err == io.EOF || (n == 0 && err == nil) {
+				// Ctrl+D pressed (EOF) - cancel without printing newline
+				cancel()
+				return
+			}
+			// Ignore other input and timeout errors (timeout is expected)
 		}
 	}()
 }
@@ -814,14 +820,18 @@ func (t *Transferer) SmartUpload(ctx context.Context, source, remotePath string)
 // Returns: (localPath, cleanupFunc, error)
 // cleanupFunc should be called to remove temporary files (can be nil)
 func (t *Transferer) resolveSource(source string) (string, func(), error) {
-	// Case 1: URL - download to binbag as tmp_*
+	// Case 1: URL - download to binbag (if enabled) or /tmp
 	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
-		if !GlobalRuntimeConfig.BinbagEnabled {
-			return "", nil, fmt.Errorf("URLs require binbag to be enabled")
-		}
-
 		filename := filepath.Base(source)
-		tmpPath := filepath.Join(GlobalRuntimeConfig.BinbagPath, "tmp_"+filename)
+
+		var tmpPath string
+		if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
+			// Binbag enabled: download to binbag dir so HTTP server can serve it
+			tmpPath = filepath.Join(GlobalRuntimeConfig.BinbagPath, "tmp_"+filename)
+		} else {
+			// Binbag disabled: download to /tmp for local use
+			tmpPath = filepath.Join("/tmp", "gummy_"+filename)
+		}
 
 		// Download file
 		if err := DownloadFile(context.Background(), source, tmpPath); err != nil {

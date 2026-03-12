@@ -26,9 +26,6 @@ type Config struct {
 	} `toml:"pivot"`
 }
 
-// Global config instance
-var GlobalConfig *Config
-
 // DefaultConfig returns config with sensible defaults
 func DefaultConfig() *Config {
 	home, _ := os.UserHomeDir()
@@ -117,9 +114,9 @@ http_port = 8080
 
 [execution]
 # Default execution mode on startup: "stealth" or "speed"
-# - stealth: in-memory execution (slow, no disk artifacts)
-# - speed: disk+cleanup execution (fast, shredded after)
-# Can be changed at runtime with: set execution <mode>
+# - stealth: in-memory (curl|bash, Reflection.Load) - no disk artifacts
+# - speed: disk-based (SmartUpload -> execute -> shred) - for large binaries
+# Can be changed at runtime with: set mode <mode>
 default_mode = "stealth"
 
 [pivot]

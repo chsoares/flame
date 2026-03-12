@@ -21,7 +21,6 @@ type Listener struct {
 	sessionManager *Manager // Gerenciador de múltiplas sessões
 	mu             sync.RWMutex     // Protects concurrent access to listener state
 	shutdown       bool             // Flag to indicate graceful shutdown
-	silent         bool             // Suppress console output (reserved for future use)
 }
 
 // New creates a new Listener instance
@@ -31,13 +30,7 @@ func NewListener(host string, port int) *Listener {
 		host:           host,
 		port:           port,
 		sessionManager: NewManager(),
-		silent:         false,
 	}
-}
-
-// SetSilent enables/disables console output
-func (l *Listener) SetSilent(silent bool) {
-	l.silent = silent
 }
 
 // SetListenerIP sets the IP address for payload generation
