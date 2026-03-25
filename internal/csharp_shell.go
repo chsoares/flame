@@ -262,6 +262,4 @@ func handleRevCSharp(ip string, port int, args []string) {
 	}
 
 	fmt.Println(ui.Success(fmt.Sprintf("Compiled → %s (%s)", outputPath, size)))
-	fmt.Println(ui.HelpInfo("No shellcode, no PInvoke — clean custom tool, undetected by Defender"))
-	fmt.Println(ui.HelpInfo(fmt.Sprintf("Target runs: %s (connects back to %s:%d)", filepath.Base(outputPath), ip, port)))
 }
