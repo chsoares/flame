@@ -1811,6 +1811,18 @@ func (m *Manager) handleCommand(command string) {
 		}
 		m.handleSSH(parts[1])
 	case "rev":
+		// Subcommand: rev csharp [output.exe]
+		if len(parts) >= 2 && parts[1] == "csharp" {
+			ip := m.listenerIP
+			port := m.listenerPort
+			if ip == "" {
+				fmt.Println(ui.Error("No IP address available. Start listener first."))
+				return
+			}
+			handleRevCSharp(ip, port, parts[2:])
+			return
+		}
+
 		// Optional: rev [ip] [port]
 		ip := m.listenerIP
 		port := m.listenerPort
@@ -1952,6 +1964,7 @@ func (m *Manager) showHelp() {
 	// Connect category
 	lines = append(lines, ui.CommandHelp("connect"))
 	lines = append(lines, ui.Command("rev [ip] [port]              - Generate reverse shell payloads"))
+	lines = append(lines, ui.Command("rev csharp [output.exe]      - Generate custom C# reverse shell"))
 	lines = append(lines, ui.Command("ssh user@host                - Connect via SSH and execute revshell"))
 	lines = append(lines, "")
 

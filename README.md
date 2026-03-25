@@ -12,7 +12,7 @@ A modern reverse shell handler for CTF competitions, written in Go. Inspired by 
 - **In-memory execution** — Run scripts and .NET assemblies without touching disk
 - **Binbag integration** — Local HTTP file server for instant tool deployment
 - **SSH automation** — Connect via SSH and auto-inject reverse shell
-- **Payload generation** — Bash, Base64, and PowerShell reverse shell payloads
+- **Payload generation** — Bash, Base64, PowerShell, and compiled C# reverse shell payloads
 - **Session logging** — Automatic I/O logging per session
 - **Beautiful CLI** — Lipgloss styling, Bubble Tea confirmations, animated spinners
 
@@ -58,6 +58,7 @@ Back in gummy:
 | `run <module> [args]` | Run a module |
 | `spawn` | Spawn new shell from current session |
 | `rev` | Generate reverse shell payloads |
+| `rev csharp [output.exe]` | Generate custom C# reverse shell (compiled) |
 | `ssh user@host` | SSH + auto reverse shell |
 | `config` | Show/save configuration |
 | `set <option> <value>` | Change runtime settings |
@@ -122,6 +123,7 @@ See the [`docs/`](docs/) directory for detailed guides:
 ## Requirements
 
 - Go 1.21+
+- .NET 8+ SDK (optional — only needed for `rev csharp` compilation)
 - A terminal with [Nerd Fonts](https://www.nerdfonts.com/) for best experience (optional, degrades gracefully)
 
 ## Project Structure
@@ -141,6 +143,7 @@ gummy/
 │   ├── fileserver.go    # HTTP file server
 │   ├── ssh.go           # SSH automation
 │   ├── payloads.go      # Reverse shell payloads
+│   ├── csharp_shell.go  # C# reverse shell generator + compiler
 │   ├── netutil.go       # Network utilities
 │   ├── downloader.go    # HTTP downloader
 │   ├── terminal.go      # Terminal opener
