@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/chsoares/gummy/internal/ui"
-	"github.com/peterh/liner"
 	"golang.org/x/term"
 )
 
@@ -26,7 +25,6 @@ type Handler struct {
 	platform     string        // Platform detected ("windows", "linux", "unknown")
 	ptyUpgrader  *PTYUpgrader  // PTY upgrader (for resize handler cleanup)
 	logWriter    *os.File      // Optional log file for session I/O
-	remotePrompt chan string   // Channel to pass detected prompts from remote output to readline
 	relayDone    chan struct{} // Signal to stop relayRemoteToLocal when exiting shell
 }
 
@@ -121,9 +119,8 @@ func (h *Handler) Start() error {
 		// Modo PTY: raw input, relay direto
 		go h.relayLocalToRemote(errorChan)
 	} else {
-		// Modo readline: line-buffered input, Ctrl-D para sair
-		// Initialize prompt channel for relay→readline communication
-		h.remotePrompt = make(chan string, 1)
+		// Modo raw stdin: remote output (including prompt) flows directly to stdout.
+		// Local input is sent as-is to the remote shell. No local prompt rendering.
 		// Envia comando vazio para forçar exibição do prompt
 		h.conn.Write([]byte("\r\n"))
 		time.Sleep(200 * time.Millisecond) // Aguarda prompt aparecer
@@ -138,7 +135,6 @@ func (h *Handler) Start() error {
 
 	// Stop the relay goroutine so output doesn't leak into the menu
 	close(h.relayDone)
-	h.remotePrompt = nil
 
 	// Drain any pending output briefly to avoid stale data on next shell entry
 	h.conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
@@ -159,103 +155,68 @@ func (h *Handler) Start() error {
 	return err
 }
 
-// readlineLoop lê input linha por linha (para shells não-PTY como PowerShell)
-// Usa liner para edição de linha com suporte a setas
+// readlineLoop reads input line by line for non-PTY shells (e.g. Windows PowerShell).
+// Uses raw stdin reading so the remote prompt (printed by relayRemoteToLocal) serves
+// as the visible prompt — no local prompt rendering. Inspired by Penelope's approach.
 func (h *Handler) readlineLoop(errorChan chan error) {
-	// Cria instância liner
-	line := liner.NewLiner()
-	defer line.Close()
-
-	// Configura comportamento
-	line.SetCtrlCAborts(false) // Ctrl-C não aborta (gera erro especial)
-	line.SetMultiLineMode(false)
-	line.SetBeep(false) // Sem beep em erros
-
-	// Carrega histórico se existir (da sessão do menu principal)
-	historyPath := os.ExpandEnv("$HOME/.gummy/shell_history")
-	if f, err := os.Open(historyPath); err == nil {
-		line.ReadHistory(f)
-		f.Close()
+	// Put terminal in raw mode so we get keystrokes immediately
+	// and the remote shell's output (including prompt) is the only thing displayed.
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		// Fallback: can't do raw mode, use simple line reading
+		h.readlineLoopSimple(errorChan)
+		return
 	}
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
-	// Channel para capturar Ctrl-C
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT)
-	defer signal.Stop(sigChan)
-
-	// Goroutine para processar Ctrl-C
-	ctrlCPressed := make(chan struct{}, 1)
-	go func() {
-		for range sigChan {
-			// Notifica que Ctrl-C foi pressionado
-			select {
-			case ctrlCPressed <- struct{}{}:
-			default:
-			}
-		}
-	}()
-
+	buf := make([]byte, 4096)
 	for {
-		// Wait for remote prompt (or use empty if none arrives)
-		prompt := ""
-		if h.remotePrompt != nil {
-			select {
-			case p := <-h.remotePrompt:
-				prompt = p
-			case <-time.After(500 * time.Millisecond):
-				// No prompt received — use empty
-			}
-		}
-
-		// Tenta ler linha
-		input, err := line.Prompt(prompt)
-
-		// Verifica se Ctrl-C foi pressionado
-		select {
-		case <-ctrlCPressed:
-			// Envia ^C para shell remota
-			h.conn.Write([]byte{0x03})
-			fmt.Println("^C")
-			continue
-		default:
-		}
-
+		n, err := os.Stdin.Read(buf)
 		if err != nil {
-			if err == liner.ErrPromptAborted {
-				// Ctrl-C durante o prompt
-				h.conn.Write([]byte{0x03})
-				fmt.Println("^C")
-				continue
-			}
+			errorChan <- fmt.Errorf("stdin read error: %w", err)
+			return
+		}
 
+		data := buf[:n]
+
+		// Ctrl-D (0x04) — exit shell, return to menu
+		for _, b := range data {
+			if b == 0x04 {
+				term.Restore(int(os.Stdin.Fd()), oldState)
+				fmt.Print("\r\n" + ui.ReturningToMenu())
+				errorChan <- io.EOF
+				return
+			}
+		}
+
+		// Send everything to the remote shell as-is
+		_, writeErr := h.conn.Write(data)
+		if writeErr != nil {
+			errorChan <- fmt.Errorf("write to remote error: %w", writeErr)
+			return
+		}
+	}
+}
+
+// readlineLoopSimple is a fallback for when raw mode is unavailable.
+func (h *Handler) readlineLoopSimple(errorChan chan error) {
+	scanner := strings.NewReader("")
+	_ = scanner
+	buf := make([]byte, 4096)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil {
 			if err == io.EOF {
-				// Ctrl-D - save history and exit
-				if f, err := os.Create(historyPath); err == nil {
-					line.WriteHistory(f)
-					f.Close()
-				}
 				fmt.Print(ui.ReturningToMenu())
 				errorChan <- io.EOF
 				return
 			}
-
-			// Erro real
-			errorChan <- fmt.Errorf("liner error: %w", err)
+			errorChan <- fmt.Errorf("stdin error: %w", err)
 			return
 		}
-
-		// Adiciona ao histórico local
-		line.AppendHistory(input)
-
-		// Envia linha completa
-		_, writeErr := h.conn.Write([]byte(input + "\n"))
+		_, writeErr := h.conn.Write(buf[:n])
 		if writeErr != nil {
-			// Save history before exiting
-			if f, err := os.Create(historyPath); err == nil {
-				line.WriteHistory(f)
-				f.Close()
-			}
-			errorChan <- fmt.Errorf("write to remote error: %w", writeErr)
+			errorChan <- fmt.Errorf("write error: %w", writeErr)
 			return
 		}
 	}
@@ -348,15 +309,6 @@ func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 			h.logWriter.Write(output)
 		}
 
-		// In readline mode, detect trailing prompt and pass it to readline
-		// instead of printing it (so liner displays it inline with the cursor)
-		if h.remotePrompt != nil {
-			output = h.extractAndForwardPrompt(output)
-			if len(output) == 0 {
-				continue
-			}
-		}
-
 		_, writeErr := os.Stdout.Write(output)
 		if writeErr != nil {
 			errorChan <- fmt.Errorf("write to stdout error: %w", writeErr)
@@ -365,60 +317,6 @@ func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 	}
 }
 
-// extractAndForwardPrompt detects a shell prompt at the end of output,
-// strips it, and sends it to the readline loop via channel.
-// Returns the output with the prompt removed.
-func (h *Handler) extractAndForwardPrompt(data []byte) []byte {
-	s := string(data)
-
-	// Find the last line (after last \n)
-	lastNL := strings.LastIndex(s, "\n")
-	var lastLine string
-	var prefix string
-	if lastNL >= 0 {
-		prefix = s[:lastNL+1]
-		lastLine = s[lastNL+1:]
-	} else {
-		prefix = ""
-		lastLine = s
-	}
-
-	lastLine = strings.TrimRight(lastLine, " ")
-
-	// Detect common prompt patterns:
-	// PowerShell: "PS C:\Users\foo> "
-	// CMD: "C:\Users\foo>"
-	// Bash: "user@host:~$ " or "# "
-	isPrompt := false
-	if strings.HasPrefix(lastLine, "PS ") && strings.HasSuffix(lastLine, ">") {
-		isPrompt = true
-	} else if strings.HasSuffix(lastLine, ">") && len(lastLine) > 2 && lastLine[1] == ':' {
-		isPrompt = true
-	} else if strings.HasSuffix(lastLine, "$ ") || strings.HasSuffix(lastLine, "$") {
-		isPrompt = true
-	} else if strings.HasSuffix(lastLine, "# ") || strings.HasSuffix(lastLine, "#") {
-		isPrompt = true
-	}
-
-	if isPrompt {
-		// Restore trailing space for the prompt display
-		promptStr := strings.TrimRight(string(data[len(prefix):]), " ") + " "
-		// Non-blocking send — drop old prompt if channel is full
-		select {
-		case h.remotePrompt <- promptStr:
-		default:
-			// Drain old and send new
-			select {
-			case <-h.remotePrompt:
-			default:
-			}
-			h.remotePrompt <- promptStr
-		}
-		return []byte(prefix)
-	}
-
-	return data
-}
 
 // normalizeOutput aplica normalizações básicas para melhorar output de raw shells
 func (h *Handler) normalizeOutput(data []byte) []byte {
