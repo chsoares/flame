@@ -26,6 +26,8 @@ type Handler struct {
 	platform     string        // Platform detected ("windows", "linux", "unknown")
 	ptyUpgrader  *PTYUpgrader  // PTY upgrader (for resize handler cleanup)
 	logWriter    *os.File      // Optional log file for session I/O
+	remotePrompt chan string   // Channel to pass detected prompts from remote output to readline
+	relayDone    chan struct{} // Signal to stop relayRemoteToLocal when exiting shell
 }
 
 // NewHandler cria um novo handler para reverse shell
@@ -111,6 +113,7 @@ func (h *Handler) Start() error {
 
 	// Inicia goroutines para relay bidirecional de I/O
 	errorChan := make(chan error, 2)
+	h.relayDone = make(chan struct{})
 
 	// Se temos PTY (raw mode), usa relay normal
 	// Se não temos PTY, usa readline loop (line-buffered)
@@ -119,6 +122,8 @@ func (h *Handler) Start() error {
 		go h.relayLocalToRemote(errorChan)
 	} else {
 		// Modo readline: line-buffered input, Ctrl-D para sair
+		// Initialize prompt channel for relay→readline communication
+		h.remotePrompt = make(chan string, 1)
 		// Envia comando vazio para forçar exibição do prompt
 		h.conn.Write([]byte("\r\n"))
 		time.Sleep(200 * time.Millisecond) // Aguarda prompt aparecer
@@ -130,6 +135,21 @@ func (h *Handler) Start() error {
 
 	// Aguarda até uma das goroutines terminar (erro ou EOF)
 	err = <-errorChan
+
+	// Stop the relay goroutine so output doesn't leak into the menu
+	close(h.relayDone)
+	h.remotePrompt = nil
+
+	// Drain any pending output briefly to avoid stale data on next shell entry
+	h.conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	drain := make([]byte, 4096)
+	for {
+		_, derr := h.conn.Read(drain)
+		if derr != nil {
+			break
+		}
+	}
+	h.conn.SetReadDeadline(time.Time{})
 
 	// Notifica que conexão fechou se callback foi definido
 	if h.onClose != nil && err != nil && err != io.EOF {
@@ -176,8 +196,19 @@ func (h *Handler) readlineLoop(errorChan chan error) {
 	}()
 
 	for {
+		// Wait for remote prompt (or use empty if none arrives)
+		prompt := ""
+		if h.remotePrompt != nil {
+			select {
+			case p := <-h.remotePrompt:
+				prompt = p
+			case <-time.After(500 * time.Millisecond):
+				// No prompt received — use empty
+			}
+		}
+
 		// Tenta ler linha
-		input, err := line.Prompt("")
+		input, err := line.Prompt(prompt)
 
 		// Verifica se Ctrl-C foi pressionado
 		select {
@@ -288,8 +319,20 @@ func (h *Handler) containsF12(data []byte) bool {
 func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 	buffer := make([]byte, 4096)
 	for {
+		// Check if we should stop (shell exited back to menu)
+		select {
+		case <-h.relayDone:
+			return
+		default:
+		}
+
+		// Use a short read deadline so we can check relayDone periodically
+		h.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		n, err := h.conn.Read(buffer)
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue // Just a timeout, check relayDone and retry
+			}
 			if err == io.EOF {
 				errorChan <- io.EOF
 			} else {
@@ -305,12 +348,76 @@ func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 			h.logWriter.Write(output)
 		}
 
+		// In readline mode, detect trailing prompt and pass it to readline
+		// instead of printing it (so liner displays it inline with the cursor)
+		if h.remotePrompt != nil {
+			output = h.extractAndForwardPrompt(output)
+			if len(output) == 0 {
+				continue
+			}
+		}
+
 		_, writeErr := os.Stdout.Write(output)
 		if writeErr != nil {
 			errorChan <- fmt.Errorf("write to stdout error: %w", writeErr)
 			return
 		}
 	}
+}
+
+// extractAndForwardPrompt detects a shell prompt at the end of output,
+// strips it, and sends it to the readline loop via channel.
+// Returns the output with the prompt removed.
+func (h *Handler) extractAndForwardPrompt(data []byte) []byte {
+	s := string(data)
+
+	// Find the last line (after last \n)
+	lastNL := strings.LastIndex(s, "\n")
+	var lastLine string
+	var prefix string
+	if lastNL >= 0 {
+		prefix = s[:lastNL+1]
+		lastLine = s[lastNL+1:]
+	} else {
+		prefix = ""
+		lastLine = s
+	}
+
+	lastLine = strings.TrimRight(lastLine, " ")
+
+	// Detect common prompt patterns:
+	// PowerShell: "PS C:\Users\foo> "
+	// CMD: "C:\Users\foo>"
+	// Bash: "user@host:~$ " or "# "
+	isPrompt := false
+	if strings.HasPrefix(lastLine, "PS ") && strings.HasSuffix(lastLine, ">") {
+		isPrompt = true
+	} else if strings.HasSuffix(lastLine, ">") && len(lastLine) > 2 && lastLine[1] == ':' {
+		isPrompt = true
+	} else if strings.HasSuffix(lastLine, "$ ") || strings.HasSuffix(lastLine, "$") {
+		isPrompt = true
+	} else if strings.HasSuffix(lastLine, "# ") || strings.HasSuffix(lastLine, "#") {
+		isPrompt = true
+	}
+
+	if isPrompt {
+		// Restore trailing space for the prompt display
+		promptStr := strings.TrimRight(string(data[len(prefix):]), " ") + " "
+		// Non-blocking send — drop old prompt if channel is full
+		select {
+		case h.remotePrompt <- promptStr:
+		default:
+			// Drain old and send new
+			select {
+			case <-h.remotePrompt:
+			default:
+			}
+			h.remotePrompt <- promptStr
+		}
+		return []byte(prefix)
+	}
+
+	return data
 }
 
 // normalizeOutput aplica normalizações básicas para melhorar output de raw shells
