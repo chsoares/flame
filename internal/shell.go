@@ -120,11 +120,9 @@ func (h *Handler) Start() error {
 		// Modo PTY: raw input, relay direto
 		go h.relayLocalToRemote(errorChan)
 	} else {
-		// Modo raw stdin: remote output (including prompt) flows directly to stdout.
-		// Local input is sent as-is to the remote shell. No local prompt rendering.
-		// Envia comando vazio para forçar exibição do prompt
-		h.conn.Write([]byte("\r\n"))
-		time.Sleep(200 * time.Millisecond) // Aguarda prompt aparecer
+		// Cooked mode: remote output (including prompt) flows to stdout.
+		// bufio.Scanner reads lines with terminal echo.
+		// Cursor stays after the remote prompt.
 		go h.readlineLoop(errorChan)
 	}
 
@@ -282,14 +280,37 @@ func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 }
 
 
-// normalizeOutput normalizes line endings from Windows shells.
-// PowerShell sends \r\n which causes misaligned output in Unix terminals.
+// normalizeOutput normalizes line endings and prompt handling for remote shells.
 func (h *Handler) normalizeOutput(data []byte) []byte {
+	s := string(data)
+
 	if h.platform == "windows" {
 		// Replace \r\n with \n to prevent double-spacing and tab drift
-		return []byte(strings.ReplaceAll(string(data), "\r\n", "\n"))
+		s = strings.ReplaceAll(s, "\r\n", "\n")
 	}
-	return data
+
+	// Strip trailing newline after shell prompts so the cursor stays on the
+	// prompt line and the user types right after it.
+	// Without this, the C# reverse shell's WriteLine() pushes the cursor
+	// to the next line after every prompt.
+	if strings.HasSuffix(s, "\n") {
+		lastNL := strings.LastIndex(s[:len(s)-1], "\n")
+		var lastLine string
+		if lastNL >= 0 {
+			lastLine = s[lastNL+1 : len(s)-1]
+		} else {
+			lastLine = s[:len(s)-1]
+		}
+		trimmed := strings.TrimRight(lastLine, " ")
+		isPrompt := (strings.HasPrefix(trimmed, "PS ") && strings.HasSuffix(trimmed, ">")) ||
+			strings.HasSuffix(trimmed, "$ ") || strings.HasSuffix(trimmed, "$") ||
+			strings.HasSuffix(trimmed, "# ") || strings.HasSuffix(trimmed, "#")
+		if isPrompt {
+			s = s[:len(s)-1] // Strip the trailing \n
+		}
+	}
+
+	return []byte(s)
 }
 
 // attemptPTYUpgrade tenta fazer upgrade da shell para PTY
