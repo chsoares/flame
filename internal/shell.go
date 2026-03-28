@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bufio"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -156,67 +157,30 @@ func (h *Handler) Start() error {
 }
 
 // readlineLoop reads input line by line for non-PTY shells (e.g. Windows PowerShell).
-// Uses raw stdin reading so the remote prompt (printed by relayRemoteToLocal) serves
-// as the visible prompt — no local prompt rendering. Inspired by Penelope's approach.
+// Uses normal terminal mode (cooked) so the terminal itself handles echo and basic
+// line editing (backspace). Remote output (including prompt) flows to stdout via
+// relayRemoteToLocal. The cursor stays where the last stdout write left off,
+// so typing appears right after the remote prompt.
 func (h *Handler) readlineLoop(errorChan chan error) {
-	// Put terminal in raw mode so we get keystrokes immediately
-	// and the remote shell's output (including prompt) is the only thing displayed.
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		// Fallback: can't do raw mode, use simple line reading
-		h.readlineLoopSimple(errorChan)
-		return
-	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
+	scanner := bufio.NewScanner(os.Stdin)
 
-	buf := make([]byte, 4096)
 	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			errorChan <- fmt.Errorf("stdin read error: %w", err)
-			return
-		}
-
-		data := buf[:n]
-
-		// Ctrl-D (0x04) — exit shell, return to menu
-		for _, b := range data {
-			if b == 0x04 {
-				term.Restore(int(os.Stdin.Fd()), oldState)
-				fmt.Print("\r\n" + ui.ReturningToMenu())
-				errorChan <- io.EOF
-				return
-			}
-		}
-
-		// Send everything to the remote shell as-is
-		_, writeErr := h.conn.Write(data)
-		if writeErr != nil {
-			errorChan <- fmt.Errorf("write to remote error: %w", writeErr)
-			return
-		}
-	}
-}
-
-// readlineLoopSimple is a fallback for when raw mode is unavailable.
-func (h *Handler) readlineLoopSimple(errorChan chan error) {
-	scanner := strings.NewReader("")
-	_ = scanner
-	buf := make([]byte, 4096)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			if err == io.EOF {
+		if !scanner.Scan() {
+			// EOF (Ctrl-D) or error
+			if err := scanner.Err(); err != nil {
+				errorChan <- fmt.Errorf("stdin error: %w", err)
+			} else {
+				// Clean EOF = Ctrl-D
 				fmt.Print(ui.ReturningToMenu())
 				errorChan <- io.EOF
-				return
 			}
-			errorChan <- fmt.Errorf("stdin error: %w", err)
 			return
 		}
-		_, writeErr := h.conn.Write(buf[:n])
+
+		line := scanner.Text()
+		_, writeErr := h.conn.Write([]byte(line + "\n"))
 		if writeErr != nil {
-			errorChan <- fmt.Errorf("write error: %w", writeErr)
+			errorChan <- fmt.Errorf("write to remote error: %w", writeErr)
 			return
 		}
 	}
@@ -318,17 +282,13 @@ func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 }
 
 
-// normalizeOutput aplica normalizações básicas para melhorar output de raw shells
+// normalizeOutput normalizes line endings from Windows shells.
+// PowerShell sends \r\n which causes misaligned output in Unix terminals.
 func (h *Handler) normalizeOutput(data []byte) []byte {
-	// Para raw shells básicas, não fazemos muita normalização
-	// porque pode quebrar aplicações que dependem de sequências específicas
-
-	// Por enquanto, retorna dados como estão
-	// Em futuras versões, podemos adicionar:
-	// - Conversão \r\n para \n em algumas situações
-	// - Limpeza de sequências de controle malformadas
-	// - Etc.
-
+	if h.platform == "windows" {
+		// Replace \r\n with \n to prevent double-spacing and tab drift
+		return []byte(strings.ReplaceAll(string(data), "\r\n", "\n"))
+	}
 	return data
 }
 
