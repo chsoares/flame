@@ -284,6 +284,9 @@ func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 		}
 
 		output := h.normalizeOutput(buffer[:n])
+		if len(output) == 0 {
+			continue
+		}
 
 		// Tee to log file if configured
 		if h.logWriter != nil {
@@ -328,6 +331,10 @@ func (h *Handler) normalizeOutput(data []byte) []byte {
 				filtered = append(filtered, line)
 			}
 			s = strings.Join(filtered, "\n")
+			// Clean up double newlines left by echo removal
+			for strings.Contains(s, "\n\n") {
+				s = strings.ReplaceAll(s, "\n\n", "\n")
+			}
 		default:
 			// No command to suppress
 		}
@@ -350,6 +357,11 @@ func (h *Handler) normalizeOutput(data []byte) []byte {
 		if isPrompt {
 			s = s[:len(s)-1] // Strip the trailing \n
 		}
+	}
+
+	// Don't output empty strings or bare newlines (artifacts from echo suppression)
+	if s == "" || s == "\n" {
+		return nil
 	}
 
 	return []byte(s)
