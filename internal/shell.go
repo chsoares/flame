@@ -27,6 +27,7 @@ type Handler struct {
 	ptyUpgrader  *PTYUpgrader  // PTY upgrader (for resize handler cleanup)
 	logWriter    *os.File      // Optional log file for session I/O
 	relayDone    chan struct{} // Signal to stop relayRemoteToLocal when exiting shell
+	lastCmd      chan string   // Last command sent, so relay can suppress PS echo
 }
 
 // NewHandler cria um novo handler para reverse shell
@@ -123,6 +124,9 @@ func (h *Handler) Start() error {
 		// Cooked mode: remote output (including prompt) flows to stdout.
 		// bufio.Scanner reads lines with terminal echo.
 		// Cursor stays after the remote prompt.
+		h.lastCmd = make(chan string, 1)
+		// Send initial newline to trigger the first prompt from the remote shell
+		h.conn.Write([]byte("\n"))
 		go h.readlineLoop(errorChan)
 	}
 
@@ -176,6 +180,21 @@ func (h *Handler) readlineLoop(errorChan chan error) {
 		}
 
 		line := scanner.Text()
+
+		// Tell the relay to suppress the echo of this command
+		if h.lastCmd != nil && line != "" {
+			select {
+			case h.lastCmd <- line:
+			default:
+				// Drain old and send new
+				select {
+				case <-h.lastCmd:
+				default:
+				}
+				h.lastCmd <- line
+			}
+		}
+
 		_, writeErr := h.conn.Write([]byte(line + "\n"))
 		if writeErr != nil {
 			errorChan <- fmt.Errorf("write to remote error: %w", writeErr)
@@ -280,7 +299,7 @@ func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 }
 
 
-// normalizeOutput normalizes line endings and prompt handling for remote shells.
+// normalizeOutput normalizes line endings and prompt/echo handling for remote shells.
 func (h *Handler) normalizeOutput(data []byte) []byte {
 	s := string(data)
 
@@ -289,10 +308,33 @@ func (h *Handler) normalizeOutput(data []byte) []byte {
 		s = strings.ReplaceAll(s, "\r\n", "\n")
 	}
 
+	// Suppress command echo: when the user sends "whoami", PowerShell echoes
+	// "PS C:\> whoami" back. Since the terminal already echoed the input locally,
+	// this line is redundant. Check if we have a pending command to suppress.
+	if h.lastCmd != nil {
+		select {
+		case cmd := <-h.lastCmd:
+			// Remove lines that look like a prompt + the echoed command
+			lines := strings.Split(s, "\n")
+			filtered := make([]string, 0, len(lines))
+			suppressed := false
+			for _, line := range lines {
+				trimmed := strings.TrimRight(line, " \r")
+				if !suppressed && strings.HasSuffix(trimmed, cmd) &&
+					(strings.HasPrefix(trimmed, "PS ") || strings.Contains(trimmed, "> "+cmd)) {
+					suppressed = true
+					continue // Skip this echo line
+				}
+				filtered = append(filtered, line)
+			}
+			s = strings.Join(filtered, "\n")
+		default:
+			// No command to suppress
+		}
+	}
+
 	// Strip trailing newline after shell prompts so the cursor stays on the
 	// prompt line and the user types right after it.
-	// Without this, the C# reverse shell's WriteLine() pushes the cursor
-	// to the next line after every prompt.
 	if strings.HasSuffix(s, "\n") {
 		lastNL := strings.LastIndex(s[:len(s)-1], "\n")
 		var lastLine string
