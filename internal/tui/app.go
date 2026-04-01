@@ -16,6 +16,7 @@ import (
 const (
 	selectionClearDelay = 3 * time.Second // Clear highlight after copy
 	statusClearDelay    = 2 * time.Second // Clear status bar message
+	scrollbarHideDelay  = 1 * time.Second // Hide scrollbar after scroll stops
 )
 
 // CommandExecutor is the interface the Manager must satisfy for the TUI.
@@ -46,6 +47,10 @@ type App struct {
 	splash  bool // Show splash screen before first input
 	focus   FocusMode
 	context ContextMode
+
+	// Scrollbar
+	scrollbarVisible bool
+	scrollbarID      int // Incremented on each scroll to invalidate stale hide timers
 
 	// Backend
 	executor CommandExecutor
@@ -142,6 +147,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case clearStatusMsg:
 		a.statusBar.StatusMsg = ""
 		return a, nil
+
+	case hideScrollbarMsg:
+		if msg.id == a.scrollbarID {
+			a.scrollbarVisible = false
+		}
+		return a, nil
 	}
 
 	return a, nil
@@ -163,7 +174,8 @@ func (a App) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// Scroll: always forward to viewport (even if mouse is slightly outside)
 		var cmd tea.Cmd
 		a.output, cmd = a.output.Update(msg)
-		return a, cmd
+		hideCmd := a.showScrollbar()
+		return a, tea.Batch(cmd, hideCmd)
 
 	case msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress:
 		if !inOutput {
@@ -271,7 +283,8 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgup", "pgdown", "home", "end":
 		var cmd tea.Cmd
 		a.output, cmd = a.output.Update(msg)
-		return a, cmd
+		hideCmd := a.showScrollbar()
+		return a, tea.Batch(cmd, hideCmd)
 	}
 
 	// Forward to textinput for normal typing
@@ -331,6 +344,33 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// truncateLine truncates a line (which may contain ANSI codes) to maxWidth display columns.
+func truncateLine(line string, maxWidth int) string {
+	if lipgloss.Width(line) <= maxWidth {
+		return line
+	}
+	// Walk rune by rune, tracking display width
+	currentWidth := 0
+	for i, r := range line {
+		rw := lipgloss.Width(string(r))
+		if currentWidth+rw > maxWidth {
+			return line[:i]
+		}
+		currentWidth += rw
+	}
+	return line
+}
+
+// showScrollbar makes the scrollbar visible and returns a cmd to hide it after delay.
+func (a *App) showScrollbar() tea.Cmd {
+	a.scrollbarVisible = true
+	a.scrollbarID++
+	id := a.scrollbarID
+	return tea.Tick(scrollbarHideDelay, func(time.Time) tea.Msg {
+		return hideScrollbarMsg{id: id}
+	})
+}
+
 func (a *App) syncSessionInfo() {
 	if a.executor == nil {
 		return
@@ -365,7 +405,27 @@ func (a App) View() string {
 	inputLines := strings.Split(inputView, "\n")
 	inputView = inputLines[0]
 
+	// Scrollbar thumb (shared by compact and wide)
+	thumbStart, thumbEnd := -1, -1
+	if a.scrollbarVisible {
+		thumbStart, thumbEnd = a.output.ScrollbarThumb()
+	}
+	scrollThumb := lipgloss.NewStyle().Foreground(colorDim).Render("█")
+
 	if a.layout.IsCompact() {
+		// In compact mode, overlay scrollbar on last column of output lines
+		if thumbStart >= 0 {
+			for i := thumbStart; i < thumbEnd && i < len(outputLines); i++ {
+				// Truncate line to width-1 then append thumb
+				outputLines[i] = truncateLine(outputLines[i], a.layout.Output.W-1)
+				lineW := lipgloss.Width(outputLines[i])
+				if lineW < a.layout.Output.W-1 {
+					outputLines[i] += strings.Repeat(" ", a.layout.Output.W-1-lineW)
+				}
+				outputLines[i] += scrollThumb
+			}
+		}
+
 		headerView := a.header.View()
 		return lipgloss.JoinVertical(lipgloss.Left,
 			headerView,
@@ -400,12 +460,11 @@ func (a App) View() string {
 	// Build left column: output + blank + input + blank
 	leftLines := append(outputLines, "", inputView, "")
 
-	// Gap between main and sidebar (spaces instead of │)
+	// Gap between main and sidebar
 	gap := a.layout.Sidebar.X - a.layout.Output.W
 	if gap < 1 {
 		gap = 1
 	}
-	gapStr := strings.Repeat(" ", gap)
 
 	// Merge columns line by line
 	totalH := len(leftLines)
@@ -422,6 +481,16 @@ func (a App) View() string {
 		if i < len(sidebarLines) {
 			right = sidebarLines[i]
 		}
+
+		// Build gap: scrollbar in the middle of the gap for output lines
+		var gapStr string
+		if i < len(outputLines) && thumbStart >= 0 && i >= thumbStart && i < thumbEnd {
+			// Place scrollbar: 1 space + thumb + remaining spaces
+			gapStr = " " + scrollThumb + strings.Repeat(" ", gap-2)
+		} else {
+			gapStr = strings.Repeat(" ", gap)
+		}
+
 		merged = append(merged, padLine(left, a.layout.Output.W)+gapStr+padLine(right, a.layout.Sidebar.W))
 	}
 

@@ -119,3 +119,8 @@ type clearSelectionMsg struct{}
 
 // clearStatusMsg signals to clear the status bar message after a delay.
 type clearStatusMsg struct{}
+
+// hideScrollbarMsg signals to hide the scrollbar after inactivity.
+type hideScrollbarMsg struct {
+	id int // Only hide if this matches current scrollbar ID (prevents stale timers)
+}

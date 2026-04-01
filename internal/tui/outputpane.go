@@ -240,18 +240,18 @@ func (o *OutputPane) Update(msg tea.Msg) (*OutputPane, tea.Cmd) {
 	return o, cmd
 }
 
-// View renders the viewport, applying selection highlights if active.
+// View renders the viewport, applying selection highlights.
 func (o *OutputPane) View() string {
 	if !o.HasSelection() {
 		return o.viewport.View()
 	}
 
-	// Render with highlights
-	startLine, startCol, endLine, endCol := o.selection.Normalized()
 	yOffset := o.viewport.YOffset
 	height := o.viewport.Height
 
 	viewLines := strings.Split(o.viewport.View(), "\n")
+
+	startLine, startCol, endLine, endCol := o.selection.Normalized()
 
 	for i := 0; i < len(viewLines) && i < height; i++ {
 		contentIdx := i + yOffset
@@ -260,7 +260,6 @@ func (o *OutputPane) View() string {
 			continue
 		}
 
-		// Calculate which columns to highlight on this line
 		lineColStart := 0
 		lineColEnd := o.width
 		if contentIdx >= 0 && contentIdx < len(o.wrappedLines) {
@@ -280,6 +279,40 @@ func (o *OutputPane) View() string {
 	}
 
 	return strings.Join(viewLines, "\n")
+}
+
+// ScrollbarThumb returns the start and end view-line indices for the scrollbar thumb.
+// Returns (-1, -1) if no scrollbar is needed (content fits in viewport).
+func (o *OutputPane) ScrollbarThumb() (int, int) {
+	totalLines := len(o.wrappedLines)
+	height := o.viewport.Height
+
+	if totalLines <= height || height <= 0 {
+		return -1, -1
+	}
+
+	// Thumb size: proportional to visible fraction, minimum 1 line
+	thumbSize := height * height / totalLines
+	if thumbSize < 1 {
+		thumbSize = 1
+	}
+
+	// Thumb position: proportional to scroll offset
+	maxOffset := totalLines - height
+	if maxOffset < 1 {
+		maxOffset = 1
+	}
+	thumbStart := o.viewport.YOffset * (height - thumbSize) / maxOffset
+
+	// Clamp
+	if thumbStart < 0 {
+		thumbStart = 0
+	}
+	if thumbStart+thumbSize > height {
+		thumbStart = height - thumbSize
+	}
+
+	return thumbStart, thumbStart + thumbSize
 }
 
 // wrapContent wraps long lines to fit the viewport width.
