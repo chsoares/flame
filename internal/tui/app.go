@@ -72,6 +72,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.output.SetSize(a.layout.Output.W, a.layout.Output.H)
 		a.input.SetWidth(a.layout.Input.W)
 		a.statusBar.Width = msg.Width
+		a.syncSessionInfo()
 		return a, nil
 
 	case tea.KeyMsg:
@@ -84,6 +85,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case CommandOutputMsg:
 		a.output.Append(msg.Output)
+		a.syncSessionInfo() // Update sidebar/header after background events
+		return a, nil
 
 	case tea.MouseMsg:
 		// Forward mouse events to viewport for scroll wheel support
@@ -210,8 +213,6 @@ func (a App) View() string {
 	if a.width == 0 || a.height == 0 {
 		return "Initializing..."
 	}
-
-	a.syncSessionInfo()
 
 	headerView := a.header.View()
 	outputView := a.output.View()

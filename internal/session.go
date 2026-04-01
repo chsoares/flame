@@ -1015,9 +1015,6 @@ func (m *Manager) SetListenerPort(port int) {
 
 // AddSession adiciona uma nova sessão ao gerenciador
 func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	handler := NewHandler(conn, id)
 
 	// Configure callback para quando conexão fechar
@@ -1025,6 +1022,8 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 		m.RemoveSession(sessionID)
 	})
 
+	// Lock only for map mutation
+	m.mu.Lock()
 	session := &SessionInfo{
 		ID:        id,
 		NumID:     m.nextID,
@@ -1036,20 +1035,20 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 		Active:    false,
 		CreatedAt: time.Now(),
 	}
-
 	m.sessions[id] = session
 	m.nextID++
+	m.mu.Unlock()
 
-	// Notify about new connection
+	// Notify about new connection (lock-free — notify uses p.Send which is async)
 	m.notify(ui.SessionOpened(session.NumID, remoteIP))
 
-	// Detecta whoami e platform SINCRONAMENTE antes de iniciar handler
+	// Detect whoami and platform (blocks ~5-10s, must NOT hold the lock)
 	m.detectSessionInfo(session)
 
-	// Configura platform no handler ANTES de qualquer uso
+	// Set platform on handler
 	handler.SetPlatform(session.Platform)
 
-	// Inicia monitoramento da sessão
+	// Start session health monitoring
 	go m.monitorSession(session)
 
 	// Notify detection results
