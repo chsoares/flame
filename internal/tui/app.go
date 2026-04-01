@@ -23,10 +23,10 @@ type App struct {
 	width  int
 	height int
 
-	// Components
+	// Components (pointers — strings.Builder and viewport can't be copied by value)
 	header    Header
-	output    OutputPane
-	input     Input
+	output    *OutputPane
+	input     *Input
 	statusBar StatusBar
 
 	// State
@@ -42,10 +42,12 @@ type App struct {
 
 // New creates a new App model.
 func New(executor CommandExecutor, listenerAddr string) App {
+	output := NewOutputPane(80, 20)
+	input := NewInput()
 	return App{
 		header:       NewHeader(listenerAddr),
-		output:       NewOutputPane(80, 20),
-		input:        NewInput(),
+		output:       &output,
+		input:        &input,
 		statusBar:    NewStatusBar(80),
 		focus:        FocusInput,
 		context:      ContextMenu,
@@ -129,8 +131,7 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Forward to textinput for normal typing
 	var cmd tea.Cmd
-	inputPtr, cmd := a.input.Update(msg)
-	a.input = *inputPtr
+	a.input, cmd = a.input.Update(msg)
 	return a, cmd
 }
 
