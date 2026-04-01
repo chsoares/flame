@@ -25,9 +25,17 @@ type OutputPane struct {
 
 	// Mouse throttling
 	lastMotion time.Time
+
+	// Inline spinner (temporary last line, not part of permanent content)
+	spinnerActive bool
+	spinnerID     int
+	spinnerText   string
+	spinnerFrame  int
 }
 
 const mouseThrottle = 15 * time.Millisecond
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 func NewOutputPane(width, height int) OutputPane {
 	vp := viewport.New(width, height)
@@ -224,6 +232,51 @@ func (o *OutputPane) selectLine(contentLine int) {
 		StartCol:  0,
 		EndLine:   contentLine,
 		EndCol:    lineWidth,
+	}
+}
+
+// StartSpinner begins an inline spinner at the bottom of the viewport.
+func (o *OutputPane) StartSpinner(id int, text string) {
+	o.spinnerActive = true
+	o.spinnerID = id
+	o.spinnerText = text
+	o.spinnerFrame = 0
+	o.refreshSpinnerContent()
+}
+
+// StopSpinner removes the spinner if the ID matches.
+func (o *OutputPane) StopSpinner(id int) {
+	if o.spinnerID == id {
+		o.spinnerActive = false
+		// Re-set content without spinner line
+		wrapped := o.wrapContent(o.content.String())
+		o.wrappedLines = strings.Split(wrapped, "\n")
+		o.viewport.SetContent(wrapped)
+		if o.follow {
+			o.viewport.GotoBottom()
+		}
+	}
+}
+
+// TickSpinner advances the spinner animation frame.
+func (o *OutputPane) TickSpinner(id int) {
+	if o.spinnerActive && o.spinnerID == id {
+		o.spinnerFrame = (o.spinnerFrame + 1) % len(spinnerFrames)
+		o.refreshSpinnerContent()
+	}
+}
+
+// refreshSpinnerContent re-renders the viewport content with the spinner as the last line.
+func (o *OutputPane) refreshSpinnerContent() {
+	wrapped := o.wrapContent(o.content.String())
+	// Strip trailing empty lines so spinner sits right below content
+	wrapped = strings.TrimRight(wrapped, "\n")
+	spinnerLine := styleMagenta.Render(spinnerFrames[o.spinnerFrame]) + " " + styleMuted.Render(o.spinnerText)
+	withSpinner := wrapped + "\n" + spinnerLine
+	o.wrappedLines = strings.Split(withSpinner, "\n")
+	o.viewport.SetContent(withSpinner)
+	if o.follow {
+		o.viewport.GotoBottom()
 	}
 }
 

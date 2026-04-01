@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	selectionClearDelay = 3 * time.Second // Clear highlight after copy
-	statusClearDelay    = 2 * time.Second // Clear status bar message
-	scrollbarHideDelay  = 1 * time.Second // Hide scrollbar after scroll stops
+	selectionClearDelay = 3 * time.Second  // Clear highlight after copy
+	notifyDuration      = 2 * time.Second  // Notification overlay duration (important)
+	notifyDurationLong  = 4 * time.Second  // Longer duration (info, error)
+	scrollbarHideDelay  = 1 * time.Second  // Hide scrollbar after scroll stops
 )
 
 // CommandExecutor is the interface the Manager must satisfy for the TUI.
@@ -28,6 +29,8 @@ type CommandExecutor interface {
 	GetActiveSessionDisplay() (ip, whoami, platform string, ok bool)
 	SetSilent(silent bool)
 	SetNotifyFunc(fn func(string))
+	SetNotifyBarFunc(fn func(string, int))       // message, level (0=info, 1=important, 2=error)
+	SetSpinnerFunc(start func(int, string), stop func(int)) // start(id, text), stop(id)
 }
 
 // App is the root Bubble Tea model for the Gummy TUI.
@@ -47,6 +50,9 @@ type App struct {
 	splash  bool // Show splash screen before first input
 	focus   FocusMode
 	context ContextMode
+
+	// Notifications
+	notifyID int // Incremented on each notification to invalidate stale clear timers
 
 	// Scrollbar
 	scrollbarVisible bool
@@ -134,24 +140,51 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		return a.handleMouse(msg)
 
-	case clipboardCopiedMsg:
-		a.statusBar.StatusMsg = "Copied to clipboard"
-		return a, tea.Tick(statusClearDelay, func(time.Time) tea.Msg {
-			return clearStatusMsg{}
+	case showNotifyMsg:
+		a.notifyID++
+		id := a.notifyID
+		a.statusBar.Notify = &Notification{Message: msg.Message, Level: msg.Level}
+		duration := notifyDuration
+		if msg.Level == NotifyImportant || msg.Level == NotifyError {
+			duration = notifyDurationLong
+		}
+		return a, tea.Tick(duration, func(time.Time) tea.Msg {
+			return clearNotifyMsg{id: id}
 		})
+
+	case clearNotifyMsg:
+		if msg.id == a.notifyID {
+			a.statusBar.Notify = nil
+		}
+		return a, nil
 
 	case clearSelectionMsg:
 		a.output.ClearSelection()
-		return a, nil
-
-	case clearStatusMsg:
-		a.statusBar.StatusMsg = ""
 		return a, nil
 
 	case hideScrollbarMsg:
 		if msg.id == a.scrollbarID {
 			a.scrollbarVisible = false
 		}
+		return a, nil
+
+	case spinnerStartMsg:
+		a.output.StartSpinner(msg.ID, msg.Text)
+		return a, tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
+			return spinnerTickMsg{ID: msg.ID}
+		})
+
+	case spinnerTickMsg:
+		if !a.output.spinnerActive || a.output.spinnerID != msg.ID {
+			return a, nil
+		}
+		a.output.TickSpinner(msg.ID)
+		return a, tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
+			return spinnerTickMsg{ID: msg.ID}
+		})
+
+	case spinnerStopMsg:
+		a.output.StopSpinner(msg.ID)
 		return a, nil
 	}
 
@@ -225,7 +258,9 @@ func (a App) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				text := a.output.CopySelection()
 				if text != "" {
 					return a, tea.Batch(
-						func() tea.Msg { return clipboardCopiedMsg{Text: text} },
+						func() tea.Msg {
+							return showNotifyMsg{Message: "Selected text copied to clipboard", Level: NotifyInfo}
+						},
 						tea.Tick(selectionClearDelay, func(time.Time) tea.Msg {
 							return clearSelectionMsg{}
 						}),
@@ -332,6 +367,23 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 			}
 			a.output.Append("\n")
 			a.syncSessionInfo()
+
+			// Fire notification for kill commands (can't p.Send from inside ExecuteCommand)
+			if strings.HasPrefix(cmd, "kill ") && output != "" && !strings.Contains(output, "not found") && !strings.Contains(output, "Error") {
+				// Strip ANSI + leading icon from the cli output to get clean text
+				notifyMsg := stripANSI(strings.TrimSpace(output))
+				// Remove leading nerd font icon (multi-byte char + space)
+				if idx := strings.Index(notifyMsg, " "); idx >= 0 && idx <= 4 {
+					notifyMsg = strings.TrimSpace(notifyMsg[idx:])
+				}
+				return a, func() tea.Msg {
+					return showNotifyMsg{
+						Message: notifyMsg,
+						Level:   NotifyError,
+					}
+				}
+			}
+
 			return a, nil
 		}
 
@@ -342,6 +394,26 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 	}
 
 	return a, nil
+}
+
+// stripANSI removes ANSI escape codes from a string.
+func stripANSI(s string) string {
+	var result []byte
+	i := 0
+	for i < len(s) {
+		if s[i] == '\033' && i+1 < len(s) && s[i+1] == '[' {
+			// Skip until we find a letter
+			j := i + 2
+			for j < len(s) && !((s[j] >= 'A' && s[j] <= 'Z') || (s[j] >= 'a' && s[j] <= 'z')) {
+				j++
+			}
+			i = j + 1
+		} else {
+			result = append(result, s[i])
+			i++
+		}
+	}
+	return string(result)
 }
 
 // truncateLine truncates a line (which may contain ANSI codes) to maxWidth display columns.
@@ -669,10 +741,19 @@ func Run(executor CommandExecutor, listenerAddr string) error {
 	executor.SetNotifyFunc(func(msg string) {
 		p.Send(CommandOutputMsg{Output: msg + "\n"})
 	})
+	executor.SetNotifyBarFunc(func(msg string, level int) {
+		p.Send(showNotifyMsg{Message: msg, Level: NotifyLevel(level)})
+	})
+	executor.SetSpinnerFunc(
+		func(id int, text string) { p.Send(spinnerStartMsg{ID: id, Text: text}) },
+		func(id int) { p.Send(spinnerStopMsg{ID: id}) },
+	)
 
 	_, err := p.Run()
 
 	executor.SetSilent(false)
 	executor.SetNotifyFunc(nil)
+	executor.SetNotifyBarFunc(nil)
+	executor.SetSpinnerFunc(nil, nil)
 	return err
 }

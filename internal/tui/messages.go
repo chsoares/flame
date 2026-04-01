@@ -109,18 +109,37 @@ type CommandOutputMsg struct {
 	Output string
 }
 
-// clipboardCopiedMsg signals that text was copied to clipboard.
-type clipboardCopiedMsg struct {
-	Text string
-}
-
 // clearSelectionMsg signals to clear the selection highlight after a delay.
 type clearSelectionMsg struct{}
 
-// clearStatusMsg signals to clear the status bar message after a delay.
-type clearStatusMsg struct{}
+// showNotifyMsg triggers a notification overlay on the status bar.
+type showNotifyMsg struct {
+	Message string
+	Level   NotifyLevel
+}
+
+// clearNotifyMsg dismisses the notification overlay.
+type clearNotifyMsg struct {
+	id int // Only clear if this matches current notification ID
+}
 
 // hideScrollbarMsg signals to hide the scrollbar after inactivity.
 type hideScrollbarMsg struct {
 	id int // Only hide if this matches current scrollbar ID (prevents stale timers)
+}
+
+// spinnerStartMsg starts an animated spinner in the output pane.
+type spinnerStartMsg struct {
+	ID   int    // Unique spinner ID so we can stop the right one
+	Text string // e.g., "Detecting session info..."
+}
+
+// spinnerStopMsg stops and removes the spinner from the output pane.
+type spinnerStopMsg struct {
+	ID int
+}
+
+// spinnerTickMsg drives the spinner animation.
+type spinnerTickMsg struct {
+	ID int
 }

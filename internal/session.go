@@ -31,6 +31,10 @@ type Manager struct {
 	menuActive      bool                    // Se estamos no menu principal
 	silent          bool                    // Suppress console output (TUI mode)
 	notifyTUI       func(string)            // Callback to send messages to TUI output pane
+	notifyBar       func(string, int)       // Callback for notification bar overlay (msg, level)
+	spinnerStart    func(int, string)       // Start spinner in TUI (id, text)
+	spinnerStop     func(int)               // Stop spinner in TUI (id)
+	nextSpinnerID   int                     // Auto-incrementing spinner ID
 	listenerIP      string                  // IP do listener para geração de payloads
 	listenerPort    int                     // Porta do listener para geração de payloads
 }
@@ -994,12 +998,48 @@ func (m *Manager) SetNotifyFunc(fn func(string)) {
 	m.notifyTUI = fn
 }
 
+// SetNotifyBarFunc sets a callback for notification bar overlays in the TUI.
+func (m *Manager) SetNotifyBarFunc(fn func(string, int)) {
+	m.notifyBar = fn
+}
+
 // notify sends a message either to stdout (legacy) or to the TUI callback.
 func (m *Manager) notify(msg string) {
 	if m.silent && m.notifyTUI != nil {
 		m.notifyTUI(msg)
 	} else if !m.silent {
 		fmt.Println(msg)
+	}
+}
+
+// notifyOverlay sends a notification bar overlay to the TUI.
+// level: 0=info, 1=important, 2=error
+func (m *Manager) notifyOverlay(msg string, level int) {
+	if m.notifyBar != nil {
+		m.notifyBar(msg, level)
+	}
+}
+
+// SetSpinnerFunc sets callbacks for spinner start/stop in the TUI.
+func (m *Manager) SetSpinnerFunc(start func(int, string), stop func(int)) {
+	m.spinnerStart = start
+	m.spinnerStop = stop
+}
+
+// startSpinner starts a TUI spinner and returns its ID for stopping later.
+func (m *Manager) startSpinner(text string) int {
+	m.nextSpinnerID++
+	id := m.nextSpinnerID
+	if m.spinnerStart != nil {
+		m.spinnerStart(id, text)
+	}
+	return id
+}
+
+// stopSpinner stops a TUI spinner by ID.
+func (m *Manager) stopSpinner(id int) {
+	if m.spinnerStop != nil {
+		m.spinnerStop(id)
 	}
 }
 
@@ -1041,9 +1081,12 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 
 	// Notify about new connection (lock-free — notify uses p.Send which is async)
 	m.notify(ui.SessionOpened(session.NumID, remoteIP))
+	m.notifyOverlay(fmt.Sprintf("Reverse shell received on session %d (%s)", session.NumID, remoteIP), 1)
 
 	// Detect whoami and platform (blocks ~5-10s, must NOT hold the lock)
+	spinID := m.startSpinner("Detecting session info...")
 	m.detectSessionInfo(session)
+	m.stopSpinner(spinID)
 
 	// Set platform on handler
 	handler.SetPlatform(session.Platform)
@@ -1053,7 +1096,7 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 
 	// Notify detection results
 	infoMsg := fmt.Sprintf("Session %d: %s (%s)", session.NumID, session.Whoami, session.Platform)
-	m.notify(ui.Info(infoMsg))
+	m.notify(ui.Info(infoMsg) + "\n")
 }
 
 // RemoveSession remove uma sessão do gerenciador
@@ -1067,6 +1110,7 @@ func (m *Manager) RemoveSession(id string) {
 	}
 
 	m.notify(ui.SessionClosed(session.NumID, session.RemoteIP))
+	m.notifyOverlay(fmt.Sprintf("Session %d (%s) closed", session.NumID, session.RemoteIP), 2)
 
 	// Close log file if open
 	if session.LogFile != nil {
@@ -1139,7 +1183,7 @@ func (m *Manager) UseSession(numID int) error {
 	}
 
 	if targetSession == nil {
-		return fmt.Errorf("session %d not found", numID)
+		return fmt.Errorf("Session %d not found", numID)
 	}
 
 	// Testa se a sessão está viva antes de selecioná-la
@@ -1171,7 +1215,6 @@ func (m *Manager) UseSession(numID int) error {
 // KillSession mata uma sessão específica
 func (m *Manager) KillSession(numID int) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	var targetSession *SessionInfo
 	for _, session := range m.sessions {
@@ -1182,7 +1225,8 @@ func (m *Manager) KillSession(numID int) error {
 	}
 
 	if targetSession == nil {
-		return fmt.Errorf("session %d not found", numID)
+		m.mu.Unlock()
+		return fmt.Errorf("Session %d not found", numID)
 	}
 
 	// Close log file if open
@@ -1200,10 +1244,16 @@ func (m *Manager) KillSession(numID int) error {
 		m.selectedSession = nil
 	}
 
+	// Save info before unlocking
+	sessNumID := targetSession.NumID
+	sessIP := targetSession.RemoteIP
+
 	// Remove da lista
 	delete(m.sessions, targetSession.ID)
+	m.mu.Unlock()
 
-	fmt.Println(ui.SessionClosed(targetSession.NumID, targetSession.RemoteIP))
+	// Print to output (captured by captureStdout in TUI mode — no deadlock)
+	fmt.Println(ui.SessionClosed(sessNumID, sessIP))
 
 	return nil
 }
@@ -1842,7 +1892,10 @@ func (m *Manager) handleCommand(command string) {
 			fmt.Println(ui.Error(fmt.Sprintf("Invalid session ID: %s", parts[1])))
 			return
 		}
-		m.UseSession(numID)
+		err = m.UseSession(numID)
+		if err != nil {
+			fmt.Println(ui.Error(err.Error()))
+		}
 	case "shell":
 		err := m.ShellSession()
 		if err != nil && err != io.EOF {
@@ -2460,25 +2513,33 @@ func (m *Manager) GetSessionsForDisplay() string {
 		return sessions[i].NumID < sessions[j].NumID
 	})
 
+	// Colors: brackets=subtle(240), selected num=cyan, unselected num=base(253), arrow=magenta, name=base
+	dim := "\033[38;5;240m"   // subtle gray for [ ]
+	base := "\033[38;5;253m"  // bright white for name and unselected num
+	cyan := "\033[36m"        // cyan for selected num
+	magenta := "\033[35m"     // magenta for arrow
+	reset := "\033[0m"
+
 	var lines []string
 	for _, s := range sessions {
-		indicator := " "
-		if s == m.selectedSession {
-			indicator = "▶"
-		}
 		name := s.Whoami
 		if name == "" {
 			name = s.RemoteIP
 		}
-		platform := "?"
-		if s.Platform == "linux" {
-			platform = ""
-		} else if s.Platform == "windows" {
-			platform = ""
-		} else if s.Platform == "macos" {
-			platform = ""
+		if s == m.selectedSession {
+			lines = append(lines, fmt.Sprintf("%s▶%s%s[%s%s%d%s%s]%s %s%s%s",
+				magenta, reset,         // ▶
+				dim, reset,             // [
+				cyan, s.NumID, reset,   // num in cyan
+				dim, reset,             // ]
+				base, name, reset))     // name
+		} else {
+			lines = append(lines, fmt.Sprintf(" %s[%s%s%d%s%s]%s %s%s%s",
+				dim, reset,             // [
+				base, s.NumID, reset,   // num in base
+				dim, reset,             // ]
+				base, name, reset))     // name
 		}
-		lines = append(lines, fmt.Sprintf(" %s[%d] %s %s", indicator, s.NumID, platform, name))
 	}
 	return strings.Join(lines, "\n")
 }

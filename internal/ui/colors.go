@@ -57,7 +57,7 @@ func Header(text string) string {
 }
 
 func Info(text string) string {
-	return fmt.Sprintf("%s%s %s%s", ColorCyan, SymbolInfo, text, ColorReset)
+	return fmt.Sprintf("%s%s %s%s", ColorYellow, SymbolInfo, text, ColorReset)
 }
 
 func Success(text string) string {
@@ -225,7 +225,7 @@ func PTYFailed() string {
 // Session management
 func SessionOpened(id int, addr string) string {
 	return fmt.Sprintf("%s%s Reverse shell received on session %d (%s)%s",
-		ColorYellow, SymbolFire, id, addr, ColorReset)
+		ColorCyan, SymbolFire, id, addr, ColorReset)
 }
 
 func SessionClosed(id int, addr string) string {

@@ -4,15 +4,32 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/chsoares/gummy/internal/ui"
 )
 
-// StatusBar renders the bottom status line with hotkey hints and transfer progress.
+// NotifyLevel determines the notification severity and color.
+type NotifyLevel int
+
+const (
+	NotifyInfo      NotifyLevel = iota // Blue background (4) — clipboard, general info
+	NotifyImportant                    // Cyan background (6) — new session, important events
+	NotifyError                        // Magenta background (5) — session closed, errors
+)
+
+// Notification is a transient message that overlays the status bar.
+type Notification struct {
+	Message string
+	Level   NotifyLevel
+}
+
+// StatusBar renders the bottom status line with hotkey hints, or a notification overlay.
 type StatusBar struct {
 	Context     ContextMode
 	TransferPct int    // -1 = no transfer, 0-100 = progress
 	TransferMsg string // e.g., "linpeas.sh"
 	Width       int
-	StatusMsg   string // Transient message (e.g., "Copied to clipboard")
+	Notify      *Notification // Active notification (overlays entire bar)
 }
 
 func NewStatusBar(width int) StatusBar {
@@ -23,7 +40,12 @@ func NewStatusBar(width int) StatusBar {
 }
 
 func (s StatusBar) View() string {
-	// Hotkey hints: bold key + subtle desc, separated by •
+	// Notification overlay takes over the entire bar
+	if s.Notify != nil {
+		return s.renderNotification()
+	}
+
+	// Normal mode: hotkey hints
 	dot := styleSubtle.Render(" • ")
 	hint := func(key, desc string) string {
 		return styleMuted.Bold(true).Render(key) + " " + styleSubtle.Render(desc)
@@ -42,11 +64,9 @@ func (s StatusBar) View() string {
 			hint("Ctrl+D", "quit")
 	}
 
-	// Transfer progress or status message on the right
+	// Transfer progress on the right
 	var right string
-	if s.StatusMsg != "" {
-		right = styleCyan.Render(s.StatusMsg)
-	} else if s.TransferPct >= 0 {
+	if s.TransferPct >= 0 {
 		right = styleMagenta.Render(fmt.Sprintf("⬆ %d%% %s", s.TransferPct, s.TransferMsg))
 	}
 
@@ -56,4 +76,43 @@ func (s StatusBar) View() string {
 	}
 
 	return left + fmt.Sprintf("%*s", gap, "") + right
+}
+
+func (s StatusBar) renderNotification() string {
+	var bg lipgloss.Color
+	var icon, prefix string
+
+	switch s.Notify.Level {
+	case NotifyInfo:
+		bg = lipgloss.Color("4")  // Blue
+		icon = ui.SymbolInfo
+		prefix = "Done!"
+	case NotifyImportant:
+		bg = lipgloss.Color("6")  // Cyan
+		icon = ui.SymbolFire
+		prefix = "Yay!"
+	case NotifyError:
+		bg = lipgloss.Color("1")  // Red
+		icon = ui.SymbolSkull
+		prefix = "Oops!"
+	}
+
+	style := lipgloss.NewStyle().
+		Background(bg).
+		Foreground(lipgloss.Color("0")). // Black text
+		Bold(true)
+
+	msg := " " + icon + " " + prefix + " " + s.Notify.Message + " "
+	rendered := style.Render(msg)
+
+	// Fill remaining width with the same background
+	contentW := lipgloss.Width(rendered)
+	if contentW < s.Width {
+		fill := lipgloss.NewStyle().Background(bg).Render(
+			fmt.Sprintf("%*s", s.Width-contentW, ""),
+		)
+		rendered += fill
+	}
+
+	return rendered
 }
