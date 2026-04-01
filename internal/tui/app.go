@@ -410,7 +410,8 @@ func (a App) View() string {
 	if a.scrollbarVisible {
 		thumbStart, thumbEnd = a.output.ScrollbarThumb()
 	}
-	scrollThumb := lipgloss.NewStyle().Foreground(colorDim).Render("█")
+	scrollThumb := lipgloss.NewStyle().Foreground(colorDim).Render("▐")
+	scrollChar := func(_ int) string { return scrollThumb }
 
 	if a.layout.IsCompact() {
 		// In compact mode, overlay scrollbar on last column of output lines
@@ -422,7 +423,7 @@ func (a App) View() string {
 				if lineW < a.layout.Output.W-1 {
 					outputLines[i] += strings.Repeat(" ", a.layout.Output.W-1-lineW)
 				}
-				outputLines[i] += scrollThumb
+				outputLines[i] += scrollChar(i)
 			}
 		}
 
@@ -486,7 +487,7 @@ func (a App) View() string {
 		var gapStr string
 		if i < len(outputLines) && thumbStart >= 0 && i >= thumbStart && i < thumbEnd {
 			// Place scrollbar: 1 space + thumb + remaining spaces
-			gapStr = " " + scrollThumb + strings.Repeat(" ", gap-2)
+			gapStr = " " + scrollChar(i) + strings.Repeat(" ", gap-2)
 		} else {
 			gapStr = strings.Repeat(" ", gap)
 		}
