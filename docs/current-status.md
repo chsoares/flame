@@ -47,13 +47,15 @@
 
 **URGENT.** Currently Ctrl+D / `quit` / `q` exits immediately even with active sessions. The gummy CLI had a confirmation prompt for this. Need to implement in TUI.
 
-Two approaches to test:
+Three approaches to test:
 
 1. **Double-press:** First Ctrl+D shows warning in notification bar ("Active sessions! Press Ctrl+D again to quit"), second Ctrl+D actually quits. Resets after ~3s timeout.
 
-2. **Inline confirmation:** Bubble Tea style Y/n prompt replaces the input bar temporarily. "Active sessions will be lost. Quit? (y/N)"
+2. **Inline confirmation:** Y/n prompt replaces the input bar temporarily. "Active sessions will be lost. Quit? (y/N)"
 
-Implement both, test, pick the better one.
+3. **Modal overlay:** Centered dialog box floating over the viewport (like Crush does — see screenshot). Rounded border, "Are you sure?" message, Yep/Nope buttons navigable with Tab/Enter/Esc. This is the most polished option and could be reused for other confirmations (kill session, etc.).
+
+Implement at least options 1 and 3, test, pick the better one.
 
 ### Priority 1: Per-Session Buffers + History (Architectural)
 
