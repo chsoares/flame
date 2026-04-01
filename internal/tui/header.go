@@ -30,7 +30,8 @@ func (h Header) View() string {
 	sessions := styleMuted.Render(fmt.Sprintf("%d sessions", h.SessionCount))
 
 	// logo + hatching + addr + sessions
-	right := addr + styleMuted.Render(" ") + sessions
+	miniHatch := hatching(2)
+	right := addr + " " + miniHatch + " " + sessions
 	rightW := lipgloss.Width(right)
 	logoW := lipgloss.Width(logo)
 

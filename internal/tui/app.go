@@ -38,6 +38,7 @@ type App struct {
 	statusBar StatusBar
 
 	// State
+	splash  bool // Show splash screen before first input
 	focus   FocusMode
 	context ContextMode
 
@@ -63,6 +64,7 @@ func New(executor CommandExecutor, listenerAddr string) App {
 		output:       &output,
 		input:        &input,
 		statusBar:    NewStatusBar(80),
+		splash:       true,
 		focus:        FocusInput,
 		context:      ContextMenu,
 		executor:     executor,
@@ -90,6 +92,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
+		if a.splash {
+			if msg.String() == "enter" {
+				cmd := a.input.Submit()
+				a.splash = false
+				if cmd != "" {
+					return a.executeInput(cmd)
+				}
+				return a, nil
+			}
+			// Forward other keys to input (typing works during splash)
+			if msg.String() == "ctrl+d" {
+				return a, tea.Quit
+			}
+			var cmd tea.Cmd
+			a.input, cmd = a.input.Update(msg)
+			return a, cmd
+		}
 		switch a.focus {
 		case FocusInput:
 			return a.updateInputMode(msg)
@@ -228,6 +247,10 @@ func (a App) View() string {
 		return "Initializing..."
 	}
 
+	if a.splash {
+		return a.viewSplash()
+	}
+
 	outputView := a.output.View()
 	inputView := a.input.View()
 	statusView := a.statusBar.View()
@@ -309,6 +332,39 @@ func (a App) View() string {
 		strings.Join(merged, "\n"),
 		statusView,
 	)
+}
+
+// viewSplash renders the splash/landing screen shown before first Enter.
+// Input bar is active and functional. Banner has hatching only on the sides.
+func (a App) viewSplash() string {
+	banner := renderBannerSplash(a.width)
+	inputView := strings.Split(a.input.View(), "\n")[0]
+	statusView := a.statusBar.View()
+
+	// Info lines below the banner
+	info := []string{
+		"",
+		"  " + styleMuted.Render("Listening for connections on ") + styleCyan.Render(a.listenerAddr),
+		"",
+		"  " + styleSubtle.Render("Type 'help' for available commands"),
+	}
+
+	// Build content area: banner + info
+	bannerLines := strings.Split(banner, "\n")
+	var content []string
+	content = append(content, bannerLines...)
+	content = append(content, info...)
+
+	// Fill remaining space (height - blank - input - blank - status)
+	contentH := a.height - 1 - 1 - 1 - 1 // blank + input + blank + status
+	for len(content) < contentH {
+		content = append(content, "")
+	}
+	if len(content) > contentH {
+		content = content[:contentH]
+	}
+
+	return strings.Join(content, "\n") + "\n\n" + inputView + "\n\n" + statusView
 }
 
 // renderSidebar builds the sidebar content with adaptive branding.

@@ -109,3 +109,57 @@ func renderBannerCompact(width int) string {
 func bannerFullHeight() int {
 	return 7 // 2 top hatch + 1 text + 3 logo + 1 bottom hatch
 }
+
+// renderBannerSplash renders the splash screen banner — hatching only on the sides of the logo.
+// Like Crush's landing: logo left, hatching extends right. No top/bottom hatch rows.
+//
+//	 shell handler
+//	 ▄▀▀▀ █     █ █▄ ▄█ █▄ ▄█ █   █ ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+//	 █ ▀█ █ ▀ ▀ █ █ ▀ █ █ ▀ █  ▀█▀  ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+//	  ▀▀▀  ▀▀▀▀▀  ▀   ▀ ▀   ▀   ▀   ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+func renderBannerSplash(width int) string {
+	logo := renderLogo()
+
+	leftHatch := 3
+	var lines []string
+
+	// Text line: left hatching + label + space pad to align with logo end + right hatching
+	logoWidth := 0
+	for _, line := range logo {
+		if w := lipgloss.Width(line); w > logoWidth {
+			logoWidth = w
+		}
+	}
+	label := hatching(leftHatch) + styleMuted.Render(" shell handler")
+	labelW := lipgloss.Width(label)
+	// Pad so right hatching starts at same position as logo lines
+	logoEnd := leftHatch + logoWidth + 1 // +1 for space before hatching
+	padW := logoEnd - labelW
+	if padW < 1 {
+		padW = 1
+	}
+	rightFill := width - logoEnd
+	if rightFill < 0 {
+		rightFill = 0
+	}
+	lines = append(lines, label+strings.Repeat(" ", padW)+hatching(rightFill))
+
+	// Logo lines with hatching on both sides
+	for i, logoLine := range logo {
+		var rendered string
+		if i == 1 {
+			rendered = renderLogoLine2()
+		} else {
+			rendered = styleMagentaBold.Render(logoLine)
+		}
+		left := hatching(leftHatch)
+		renderedW := lipgloss.Width(rendered)
+		fillW := width - leftHatch - renderedW - 1
+		if fillW < 0 {
+			fillW = 0
+		}
+		lines = append(lines, left+rendered+" "+hatching(fillW))
+	}
+
+	return strings.Join(lines, "\n")
+}

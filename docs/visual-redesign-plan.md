@@ -185,5 +185,5 @@ All items implemented:
 8. Spacing around input line
 
 ## Next Steps
-- Splash screen (like Crush's onboarding screen)
-- Mouse text selection + scroll in viewport
+- ~~Splash screen (like Crush's onboarding screen)~~ DONE
+- Mouse text selection + scroll in viewport (see mouse-selection-plan.md)
