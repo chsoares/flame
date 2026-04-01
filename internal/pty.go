@@ -13,9 +13,11 @@ import (
 
 // PTYUpgrader gerencia upgrade de shells raw para PTY
 type PTYUpgrader struct {
-	conn       net.Conn
-	sessionID  string
-	stopResize chan struct{} // Signal to stop resize handler goroutine
+	conn          net.Conn
+	sessionID     string
+	stopResize    chan struct{} // Signal to stop resize handler goroutine
+	overrideCols  int          // If > 0, use this width instead of auto-detecting
+	overrideRows  int          // If > 0, use this height instead of auto-detecting
 }
 
 // NewPTYUpgrader cria um novo upgrader de PTY
@@ -208,8 +210,19 @@ func (p *PTYUpgrader) completePTYSetup() error {
 	return nil
 }
 
+// SetSize overrides the terminal size used for PTY setup (for TUI mode).
+func (p *PTYUpgrader) SetSize(cols, rows int) {
+	p.overrideCols = cols
+	p.overrideRows = rows
+}
+
 // getTerminalSize obtém dimensões do terminal local
 func (p *PTYUpgrader) getTerminalSize() (int, int) {
+	// Use override if set (TUI mode)
+	if p.overrideCols > 0 && p.overrideRows > 0 {
+		return p.overrideCols, p.overrideRows
+	}
+
 	// Usa stty para obter dimensões do terminal local
 	cmd := exec.Command("stty", "size")
 	cmd.Stdin = os.Stdin

@@ -19,13 +19,15 @@ import (
 // Handler gerencia uma sessão de reverse shell
 // A vítima já enviou uma shell conectada, nós fazemos relay do I/O
 type Handler struct {
-	conn         net.Conn      // Conexão com a vítima (que já tem shell rodando)
-	sessionID    string        // ID da sessão para logs
-	originalTerm *term.State   // Estado original do terminal para restaurar
-	onClose      func(string)  // Callback quando conexão fechar
-	platform     string        // Platform detected ("windows", "linux", "unknown")
-	ptyUpgrader  *PTYUpgrader  // PTY upgrader (for resize handler cleanup)
-	logWriter    *os.File      // Optional log file for session I/O
+	conn           net.Conn      // Conexão com a vítima (que já tem shell rodando)
+	sessionID      string        // ID da sessão para logs
+	originalTerm   *term.State   // Estado original do terminal para restaurar
+	onClose        func(string)  // Callback quando conexão fechar
+	platform       string        // Platform detected ("windows", "linux", "unknown")
+	ptyUpgrader    *PTYUpgrader  // PTY upgrader (for resize handler cleanup)
+	logWriter      *os.File      // Optional log file for session I/O
+	viewportCols   int           // Override PTY cols for TUI mode (0 = auto)
+	viewportRows   int           // Override PTY rows for TUI mode (0 = auto)
 }
 
 // NewHandler cria um novo handler para reverse shell
@@ -43,6 +45,12 @@ func NewHandler(conn net.Conn, sessionID string) *Handler {
 // SetCloseCallback define callback para quando conexão fechar
 func (h *Handler) SetCloseCallback(callback func(string)) {
 	h.onClose = callback
+}
+
+// SetViewportSize sets PTY dimensions for TUI mode (viewport instead of full terminal).
+func (h *Handler) SetViewportSize(cols, rows int) {
+	h.viewportCols = cols
+	h.viewportRows = rows
 }
 
 // SetPlatform define a plataforma detectada (chamado antes de Start())
@@ -94,7 +102,7 @@ func (h *Handler) Start() error {
 	// Se bem-sucedido, ativa raw mode (como o Penelope faz)
 	ptySuccess := false
 	if h.platform != "windows" {
-		ptySuccess = h.attemptPTYUpgrade()
+		ptySuccess = h.AttemptPTYUpgrade()
 	}
 
 	// Se PTY upgrade funcionou, ativa raw mode
@@ -327,17 +335,26 @@ func (h *Handler) normalizeOutput(data []byte) []byte {
 	return data
 }
 
-// attemptPTYUpgrade tenta fazer upgrade da shell para PTY
+// attemptPTYUpgrade is the internal name kept for the comment
 // Retorna true se bem-sucedido
-func (h *Handler) attemptPTYUpgrade() bool {
+// AttemptPTYUpgrade tries to upgrade the remote shell to a proper PTY.
+func (h *Handler) AttemptPTYUpgrade() bool {
 	upgrader := NewPTYUpgrader(h.conn, h.sessionID)
+
+	// Use viewport dimensions if set (TUI mode)
+	if h.viewportCols > 0 && h.viewportRows > 0 {
+		upgrader.SetSize(h.viewportCols, h.viewportRows)
+	}
 
 	err := upgrader.TryUpgrade()
 	if err == nil {
-		// PTY upgrade succeeded - drain setup output and start resize handler
+		// PTY upgrade succeeded - drain setup output
 		h.drainSetupOutput()
 		h.ptyUpgrader = upgrader
-		upgrader.SetupResizeHandler()
+		// Only start resize handler in non-TUI mode (TUI manages its own layout)
+		if h.viewportCols == 0 {
+			upgrader.SetupResizeHandler()
+		}
 		return true
 	}
 	// Falhou ou não foi possível fazer upgrade

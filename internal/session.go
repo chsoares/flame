@@ -32,9 +32,11 @@ type Manager struct {
 	silent          bool                    // Suppress console output (TUI mode)
 	notifyTUI       func(string)            // Callback to send messages to TUI output pane
 	notifyBar       func(string, int)       // Callback for notification bar overlay (msg, level)
-	spinnerStart    func(int, string)       // Start spinner in TUI (id, text)
-	spinnerStop     func(int)               // Stop spinner in TUI (id)
-	nextSpinnerID   int                     // Auto-incrementing spinner ID
+	spinnerStart       func(int, string)       // Start spinner in TUI (id, text)
+	spinnerStop        func(int)               // Stop spinner in TUI (id)
+	nextSpinnerID      int                     // Auto-incrementing spinner ID
+	shellOutputFunc    func(string, []byte)    // Callback for shell relay output (sessionID, data)
+	sessionDisconnFunc func(int, string)       // Callback for session disconnect (numID, remoteIP)
 	listenerIP      string                  // IP do listener para geração de payloads
 	listenerPort    int                     // Porta do listener para geração de payloads
 }
@@ -48,9 +50,11 @@ type SessionInfo struct {
 	Whoami    string    // user@host da vítima
 	Platform  string    // Plataforma (linux/windows/unknown)
 	Handler   *Handler  // Shell handler
-	Active    bool      // Se está sendo usada atualmente
-	CreatedAt time.Time // Timestamp de criação
-	LogFile   *os.File  // Session I/O log file (lazy init)
+	Active      bool               // Se está sendo usada atualmente
+	CreatedAt   time.Time          // Timestamp de criação
+	LogFile     *os.File           // Session I/O log file (lazy init)
+	relayCancel context.CancelFunc // Cancel function for TUI relay goroutine
+	relayActive bool               // Whether relay goroutine is running
 }
 
 // Directory retorna o diretório base da sessão
@@ -1026,6 +1030,141 @@ func (m *Manager) SetSpinnerFunc(start func(int, string), stop func(int)) {
 	m.spinnerStop = stop
 }
 
+// SetShellOutputFunc sets the callback for shell relay output to the TUI.
+func (m *Manager) SetShellOutputFunc(fn func(string, []byte)) {
+	m.shellOutputFunc = fn
+}
+
+// SetSessionDisconnectFunc sets the callback for session disconnect events.
+func (m *Manager) SetSessionDisconnectFunc(fn func(int, string)) {
+	m.sessionDisconnFunc = fn
+}
+
+// StartShellRelay starts a background goroutine that reads from the selected
+// session's net.Conn and sends output to the TUI via shellOutputFunc.
+func (m *Manager) StartShellRelay(cols, rows int) error {
+	m.mu.Lock()
+	if m.selectedSession == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("No session selected")
+	}
+	session := m.selectedSession
+
+	// If relay already running for this session, just return
+	if session.relayActive {
+		m.mu.Unlock()
+		return nil
+	}
+
+	handler := session.Handler
+	platform := session.Platform
+	m.mu.Unlock()
+
+	// PTY upgrade (must happen before relay starts, needs to read/write conn)
+	if platform != "windows" && handler != nil {
+		if cols > 0 && rows > 0 {
+			handler.SetViewportSize(cols, rows)
+		}
+		spinID := m.startSpinner("Upgrading to PTY...")
+		handler.AttemptPTYUpgrade()
+		m.stopSpinner(spinID)
+
+		// Drain any leftover output from PTY setup before relay starts
+		time.Sleep(100 * time.Millisecond)
+		drainBuf := make([]byte, 4096)
+		session.Conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		for {
+			_, err := session.Conn.Read(drainBuf)
+			if err != nil {
+				break
+			}
+		}
+		session.Conn.SetReadDeadline(time.Time{})
+	}
+
+	m.mu.Lock()
+	// Init logging
+	if err := session.InitLogFile(); err == nil && session.LogFile != nil {
+		handler.SetLogWriter(session.LogFile)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	session.relayCancel = cancel
+	session.relayActive = true
+	conn := session.Conn
+	sessionID := session.ID
+	logWriter := session.LogFile
+	m.mu.Unlock()
+
+	go func() {
+		defer func() {
+			m.mu.Lock()
+			if s, ok := m.sessions[sessionID]; ok {
+				s.relayActive = false
+				s.relayCancel = nil
+			}
+			m.mu.Unlock()
+		}()
+
+		buf := make([]byte, 4096)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, err := conn.Read(buf)
+			if n > 0 {
+				data := make([]byte, n)
+				copy(data, buf[:n])
+
+				if logWriter != nil {
+					logWriter.Write(data)
+				}
+
+				if m.shellOutputFunc != nil {
+					m.shellOutputFunc(sessionID, data)
+				}
+			}
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					continue
+				}
+				return
+			}
+		}
+	}()
+
+	return nil
+}
+
+// StopShellRelay stops the relay goroutine for the selected session.
+func (m *Manager) StopShellRelay() {
+	m.mu.RLock()
+	session := m.selectedSession
+	m.mu.RUnlock()
+
+	if session != nil && session.relayCancel != nil {
+		session.relayCancel()
+	}
+}
+
+// WriteToShell writes data to the selected session's connection.
+func (m *Manager) WriteToShell(data string) error {
+	m.mu.RLock()
+	session := m.selectedSession
+	m.mu.RUnlock()
+
+	if session == nil {
+		return fmt.Errorf("No session selected")
+	}
+
+	_, err := session.Conn.Write([]byte(data))
+	return err
+}
+
 // startSpinner starts a TUI spinner and returns its ID for stopping later.
 func (m *Manager) startSpinner(text string) int {
 	m.nextSpinnerID++
@@ -1111,6 +1250,16 @@ func (m *Manager) RemoveSession(id string) {
 
 	m.notify(ui.SessionClosed(session.NumID, session.RemoteIP))
 	m.notifyOverlay(fmt.Sprintf("Session %d (%s) closed", session.NumID, session.RemoteIP), 2)
+
+	// Cancel relay goroutine if running
+	if session.relayCancel != nil {
+		session.relayCancel()
+	}
+
+	// Notify TUI about disconnect (for auto-return from shell mode)
+	if m.sessionDisconnFunc != nil {
+		m.sessionDisconnFunc(session.NumID, session.RemoteIP)
+	}
 
 	// Close log file if open
 	if session.LogFile != nil {

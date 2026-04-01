@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	internal "github.com/chsoares/gummy/internal"
+	"github.com/chsoares/gummy/internal/ui"
 )
 
 const (
@@ -29,8 +30,13 @@ type CommandExecutor interface {
 	GetActiveSessionDisplay() (ip, whoami, platform string, ok bool)
 	SetSilent(silent bool)
 	SetNotifyFunc(fn func(string))
-	SetNotifyBarFunc(fn func(string, int))       // message, level (0=info, 1=important, 2=error)
-	SetSpinnerFunc(start func(int, string), stop func(int)) // start(id, text), stop(id)
+	SetNotifyBarFunc(fn func(string, int))                      // message, level (0=info, 1=important, 2=error)
+	SetSpinnerFunc(start func(int, string), stop func(int))    // start(id, text), stop(id)
+	SetShellOutputFunc(fn func(string, []byte))                // shell relay output (sessionID, data)
+	SetSessionDisconnectFunc(fn func(int, string))             // session disconnect (numID, remoteIP)
+	StartShellRelay(cols, rows int) error                       // start reading from selected session's conn
+	StopShellRelay()                                           // stop relay goroutine
+	WriteToShell(data string) error                            // write to selected session's conn
 }
 
 // App is the root Bubble Tea model for the Gummy TUI.
@@ -186,6 +192,40 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinnerStopMsg:
 		a.output.StopSpinner(msg.ID)
 		return a, nil
+
+	case shellReadyMsg:
+		if msg.err != nil {
+			a.output.Append(styleRed.Render("  "+msg.err.Error()) + "\n\n")
+			return a, nil
+		}
+		a.context = ContextShell
+		a.header.Context = ContextShell
+		a.statusBar.Context = ContextShell
+		a.input.SetContext(ContextShell)
+		a.output.Append(ui.Info("Entering interactive shell") + "\n")
+		a.output.Append(ui.CommandHelp("Press F12 to detach") + "\n")
+		// Trigger first prompt display
+		a.executor.WriteToShell("\n")
+		return a, nil
+
+	case ShellOutputMsg:
+		text := sanitizeShellOutput(string(msg.Data))
+		a.output.Append(text)
+		return a, nil
+
+	case SessionDisconnectedMsg:
+		if a.context == ContextShell {
+			selectedID := a.executor.GetSelectedSessionID()
+			if selectedID == 0 || selectedID == msg.NumID {
+				a.context = ContextMenu
+				a.header.Context = ContextMenu
+				a.statusBar.Context = ContextMenu
+				a.input.SetContext(ContextMenu)
+				a.output.Append("\n" + styleRed.Render("--- Session disconnected ---") + "\n\n")
+			}
+		}
+		a.syncSessionInfo()
+		return a, nil
 	}
 
 	return a, nil
@@ -278,7 +318,7 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		if a.context == ContextShell {
-			// Phase 3: send interrupt to remote
+			a.executor.WriteToShell("\x03")
 			return a, nil
 		}
 		return a, nil
@@ -311,7 +351,7 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.header.Context = ContextMenu
 			a.statusBar.Context = ContextMenu
 			a.input.SetContext(ContextMenu)
-			a.output.Append("\n" + styleMuted.Render("--- Detached from shell ---") + "\n\n")
+			a.output.Append("\n\n" + ui.Info("Exiting interactive shell") + "\n\n")
 			return a, nil
 		}
 
@@ -347,8 +387,16 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 
 		switch {
 		case cmd == "shell":
-			a.output.Append(styleMuted.Render("Shell mode not yet implemented (Phase 3)") + "\n\n")
-			return a, nil
+			if a.executor.GetSelectedSessionID() == 0 {
+				a.output.Append(styleMuted.Render("  No session selected. Use 'use <id>' first") + "\n\n")
+				return a, nil
+			}
+			// Start relay async (PTY upgrade blocks ~1s)
+			cols, rows := a.layout.Output.W, a.layout.Output.H
+			return a, func() tea.Msg {
+				err := a.executor.StartShellRelay(cols, rows)
+				return shellReadyMsg{err: err}
+			}
 
 		case cmd == "exit" || cmd == "quit" || cmd == "q":
 			return a, tea.Quit
@@ -388,12 +436,73 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 		}
 
 	case ContextShell:
-		a.output.Append(styleCyan.Render("$") + " " + cmd + "\n")
-		a.output.Append(styleMuted.Render("Shell relay not yet implemented (Phase 3)") + "\n\n")
+		if err := a.executor.WriteToShell(cmd + "\n"); err != nil {
+			a.output.Append(styleRed.Render("  Write error: "+err.Error()) + "\n\n")
+			a.context = ContextMenu
+			a.header.Context = ContextMenu
+			a.statusBar.Context = ContextMenu
+			a.input.SetContext(ContextMenu)
+		}
 		return a, nil
 	}
 
 	return a, nil
+}
+
+// sanitizeShellOutput normalizes line endings and strips dangerous terminal
+// control sequences from remote shell output. Keeps colors/styles but removes
+// cursor movement, screen clear, alt screen, etc. that would corrupt the TUI.
+func sanitizeShellOutput(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "")
+
+	// Strip dangerous CSI sequences (cursor movement, screen clear, scroll regions)
+	// Keep color/style sequences (SGR: ends with 'm')
+	var result []byte
+	i := 0
+	for i < len(s) {
+		if s[i] == '\033' && i+1 < len(s) {
+			if s[i+1] == '[' {
+				// CSI sequence: \033[ ... <final byte>
+				j := i + 2
+				for j < len(s) && s[j] >= 0x20 && s[j] <= 0x3F {
+					j++ // skip parameter bytes (0-9, ;, etc.)
+				}
+				if j < len(s) {
+					finalByte := s[j]
+					if finalByte == 'm' {
+						// SGR (color/style) — keep it
+						result = append(result, s[i:j+1]...)
+					}
+					// All other CSI sequences (A,B,C,D,H,J,K,L,M,S,T, etc.) — drop
+					i = j + 1
+					continue
+				}
+			} else if s[i+1] == ']' {
+				// OSC sequence: \033] ... ST — drop entirely (title changes etc.)
+				j := i + 2
+				for j < len(s) {
+					if s[j] == '\033' && j+1 < len(s) && s[j+1] == '\\' {
+						j += 2
+						break
+					}
+					if s[j] == '\007' { // BEL also terminates OSC
+						j++
+						break
+					}
+					j++
+				}
+				i = j
+				continue
+			}
+			// Other escape sequences — drop the \033 and next byte
+			i += 2
+			continue
+		}
+		result = append(result, s[i])
+		i++
+	}
+	return string(result)
 }
 
 // stripANSI removes ANSI escape codes from a string.
@@ -748,12 +857,21 @@ func Run(executor CommandExecutor, listenerAddr string) error {
 		func(id int, text string) { p.Send(spinnerStartMsg{ID: id, Text: text}) },
 		func(id int) { p.Send(spinnerStopMsg{ID: id}) },
 	)
+	executor.SetShellOutputFunc(func(sessionID string, data []byte) {
+		p.Send(ShellOutputMsg{SessionID: sessionID, Data: data})
+	})
+	executor.SetSessionDisconnectFunc(func(numID int, remoteIP string) {
+		p.Send(SessionDisconnectedMsg{NumID: numID, RemoteIP: remoteIP})
+	})
 
 	_, err := p.Run()
 
+	executor.StopShellRelay()
 	executor.SetSilent(false)
 	executor.SetNotifyFunc(nil)
 	executor.SetNotifyBarFunc(nil)
 	executor.SetSpinnerFunc(nil, nil)
+	executor.SetShellOutputFunc(nil)
+	executor.SetSessionDisconnectFunc(nil)
 	return err
 }

@@ -128,6 +128,11 @@ type hideScrollbarMsg struct {
 	id int // Only hide if this matches current scrollbar ID (prevents stale timers)
 }
 
+// shellReadyMsg signals that the shell relay is ready (or failed).
+type shellReadyMsg struct {
+	err error
+}
+
 // spinnerStartMsg starts an animated spinner in the output pane.
 type spinnerStartMsg struct {
 	ID   int    // Unique spinner ID so we can stop the right one

@@ -53,7 +53,7 @@ func (s StatusBar) View() string {
 
 	var left string
 	if s.Context == ContextShell {
-		left = hint("F12", "menu") + dot +
+		left = hint("F12", "detach") + dot +
 			hint("Tab", "sidebar") + dot +
 			hint("Ctrl+C", "interrupt") + dot +
 			hint("PgUp/PgDn", "scroll") + dot +
