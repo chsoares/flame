@@ -2493,6 +2493,17 @@ func (m *Manager) GetSelectedSessionID() int {
 	return 0
 }
 
+// GetActiveSessionDisplay returns display info for the selected session.
+func (m *Manager) GetActiveSessionDisplay() (ip, whoami, platform string, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.selectedSession == nil {
+		return "", "", "", false
+	}
+	s := m.selectedSession
+	return s.RemoteIP, s.Whoami, s.Platform, true
+}
+
 // captureStdout redirects os.Stdout to capture output from legacy fmt.Println calls.
 func captureStdout(fn func()) string {
 	old := os.Stdout

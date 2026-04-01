@@ -2,10 +2,15 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	internal "github.com/chsoares/gummy/internal"
 )
 
 // CommandExecutor is the interface the Manager must satisfy for the TUI.
@@ -14,6 +19,7 @@ type CommandExecutor interface {
 	GetSelectedSessionID() int
 	SessionCount() int
 	GetSessionsForDisplay() string
+	GetActiveSessionDisplay() (ip, whoami, platform string, ok bool)
 	SetSilent(silent bool)
 	SetNotifyFunc(fn func(string))
 }
@@ -40,12 +46,18 @@ type App struct {
 
 	// Config
 	listenerAddr string
+	cwd          string
+	sessionName  string // date-based session identifier
 }
 
 // New creates a new App model.
 func New(executor CommandExecutor, listenerAddr string) App {
 	output := NewOutputPane(80, 20)
 	input := NewInput()
+
+	cwd, _ := os.Getwd()
+	sessionName := time.Now().Format("2006_01_02")
+
 	return App{
 		header:       NewHeader(listenerAddr),
 		output:       &output,
@@ -55,6 +67,8 @@ func New(executor CommandExecutor, listenerAddr string) App {
 		context:      ContextMenu,
 		executor:     executor,
 		listenerAddr: listenerAddr,
+		cwd:          cwd,
+		sessionName:  sessionName,
 	}
 }
 
@@ -85,11 +99,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case CommandOutputMsg:
 		a.output.Append(msg.Output)
-		a.syncSessionInfo() // Update sidebar/header after background events
+		a.syncSessionInfo()
 		return a, nil
 
 	case tea.MouseMsg:
-		// Forward mouse events to viewport for scroll wheel support
 		var cmd tea.Cmd
 		a.output, cmd = a.output.Update(msg)
 		return a, cmd
@@ -135,12 +148,11 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.header.Context = ContextMenu
 			a.statusBar.Context = ContextMenu
 			a.input.SetContext(ContextMenu)
-			a.output.Append("\n--- Detached from shell ---\n\n")
+			a.output.Append("\n" + styleMuted.Render("--- Detached from shell ---") + "\n\n")
 			return a, nil
 		}
 
 	case "pgup", "pgdown", "home", "end":
-		// Forward scroll keys to output viewport
 		var cmd tea.Cmd
 		a.output, cmd = a.output.Update(msg)
 		return a, cmd
@@ -165,11 +177,13 @@ func (a App) updateSidebarMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 	switch a.context {
 	case ContextMenu:
-		a.output.Append(fmt.Sprintf("gummy ❯ %s\n", cmd))
+		// Echo command with styled prompt
+		prompt := styleMagentaBold.Render("❯") + " "
+		a.output.Append(prompt + styleBase.Render(cmd) + "\n")
 
 		switch {
 		case cmd == "shell":
-			a.output.Append("Shell mode not yet implemented (Phase 3)\n\n")
+			a.output.Append(styleMuted.Render("Shell mode not yet implemented (Phase 3)") + "\n\n")
 			return a, nil
 
 		case cmd == "exit" || cmd == "quit" || cmd == "q":
@@ -193,8 +207,8 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 		}
 
 	case ContextShell:
-		a.output.Append(fmt.Sprintf("$ %s\n", cmd))
-		a.output.Append("Shell relay not yet implemented (Phase 3)\n\n")
+		a.output.Append(styleCyan.Render("$") + " " + cmd + "\n")
+		a.output.Append(styleMuted.Render("Shell relay not yet implemented (Phase 3)") + "\n\n")
 		return a, nil
 	}
 
@@ -214,12 +228,11 @@ func (a App) View() string {
 		return "Initializing..."
 	}
 
-	headerView := a.header.View()
 	outputView := a.output.View()
 	inputView := a.input.View()
 	statusView := a.statusBar.View()
 
-	// Truncate output to exact height (viewport handles width, but we enforce height)
+	// Truncate output to exact height
 	outputLines := strings.Split(outputView, "\n")
 	if len(outputLines) > a.layout.Output.H {
 		outputLines = outputLines[len(outputLines)-a.layout.Output.H:]
@@ -227,25 +240,27 @@ func (a App) View() string {
 	for len(outputLines) < a.layout.Output.H {
 		outputLines = append(outputLines, "")
 	}
-	outputView = strings.Join(outputLines, "\n")
 
 	// Truncate input to 1 line
 	inputLines := strings.Split(inputView, "\n")
 	inputView = inputLines[0]
 
 	if a.layout.IsCompact() {
+		headerView := a.header.View()
 		return lipgloss.JoinVertical(lipgloss.Left,
 			headerView,
-			outputView,
+			strings.Join(outputLines, "\n"),
+			"",
 			inputView,
+			"",
 			statusView,
 		)
 	}
 
-	// Build sidebar with exact height
+	// Wide mode: sidebar with branding (no header bar)
 	sidebarContent := a.renderSidebar()
 	sidebarLines := strings.Split(sidebarContent, "\n")
-	sidebarH := a.layout.Output.H + a.layout.Input.H
+	sidebarH := a.layout.Sidebar.H
 	for len(sidebarLines) < sidebarH {
 		sidebarLines = append(sidebarLines, "")
 	}
@@ -253,7 +268,7 @@ func (a App) View() string {
 		sidebarLines = sidebarLines[:sidebarH]
 	}
 
-	// Pad each line to exact width
+	// Pad line to exact width
 	padLine := func(line string, width int) string {
 		w := lipgloss.Width(line)
 		if w >= width {
@@ -262,14 +277,23 @@ func (a App) View() string {
 		return line + strings.Repeat(" ", width-w)
 	}
 
-	// Build left column (output + input)
-	leftLines := append(outputLines, inputView)
-	// Build separator
-	sepChar := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("│")
+	// Build left column: output + blank + input + blank
+	leftLines := append(outputLines, "", inputView, "")
+
+	// Gap between main and sidebar (spaces instead of │)
+	gap := a.layout.Sidebar.X - a.layout.Output.W
+	if gap < 1 {
+		gap = 1
+	}
+	gapStr := strings.Repeat(" ", gap)
 
 	// Merge columns line by line
+	totalH := len(leftLines)
+	if sidebarH > totalH {
+		totalH = sidebarH
+	}
 	var merged []string
-	for i := 0; i < sidebarH; i++ {
+	for i := 0; i < totalH; i++ {
 		left := ""
 		if i < len(leftLines) {
 			left = leftLines[i]
@@ -278,31 +302,127 @@ func (a App) View() string {
 		if i < len(sidebarLines) {
 			right = sidebarLines[i]
 		}
-		merged = append(merged, padLine(left, a.layout.Output.W)+sepChar+padLine(right, a.layout.Sidebar.W))
+		merged = append(merged, padLine(left, a.layout.Output.W)+gapStr+padLine(right, a.layout.Sidebar.W))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left,
-		headerView,
 		strings.Join(merged, "\n"),
 		statusView,
 	)
 }
 
+// renderSidebar builds the sidebar content with adaptive branding.
 func (a App) renderSidebar() string {
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("6")).
-		Bold(true)
-
-	lines := []string{
-		titleStyle.Render(" Sessions"),
-		"",
+	w := a.layout.Sidebar.W
+	if w <= 0 {
+		return ""
 	}
 
-	if a.executor != nil {
-		sessionsDisplay := a.executor.GetSessionsForDisplay()
-		if sessionsDisplay != "" {
-			lines = append(lines, sessionsDisplay)
+	var lines []string
+
+	// --- Banner (adaptive based on layout mode) ---
+	if a.layout.Mode == LayoutFull {
+		banner := renderBannerFull(w)
+		lines = append(lines, strings.Split(banner, "\n")...)
+	} else {
+		lines = append(lines, renderBannerCompact(w))
+	}
+
+	lines = append(lines, "")
+
+	// --- Info: session name, cwd, listener ---
+	lines = append(lines, styleMuted.Render(" "+a.sessionName))
+
+	// Pretty CWD: replace home dir with ~
+	prettyPath := a.cwd
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, a.cwd); err == nil && !strings.HasPrefix(rel, "..") {
+			prettyPath = "~/" + rel
 		}
+	}
+	lines = append(lines, styleMuted.Render(" "+prettyPath))
+
+	lines = append(lines, "")
+
+	// Listener
+	lines = append(lines, " "+styleBase.Render("\uf095")+" "+styleMuted.Render(a.listenerAddr))
+
+	lines = append(lines, "")
+
+	// Binbag status
+	binbagIcon := "\U000f059f" // nf-md-web 󰖟
+	if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.BinbagEnabled {
+		prettyBinbag := internal.GlobalRuntimeConfig.BinbagPath
+		if home, err := os.UserHomeDir(); err == nil {
+			if rel, err := filepath.Rel(home, prettyBinbag); err == nil && !strings.HasPrefix(rel, "..") {
+				prettyBinbag = "~/" + rel
+			}
+		}
+		lines = append(lines, " "+styleBase.Render(binbagIcon)+" "+styleMuted.Render("binbag online"))
+		lines = append(lines, "   "+styleSubtle.Render(prettyBinbag))
+		lines = append(lines, "   "+styleSubtle.Render(fmt.Sprintf(":%d", internal.GlobalRuntimeConfig.HTTPPort)))
+	} else {
+		lines = append(lines, " "+styleSubtle.Render(binbagIcon)+" "+styleMuted.Render("binbag offline"))
+	}
+
+	lines = append(lines, "")
+
+	// Session count
+	sessionCount := 0
+	if a.executor != nil {
+		sessionCount = a.executor.SessionCount()
+	}
+	sessWord := "sessions"
+	if sessionCount == 1 {
+		sessWord = "session"
+	}
+	countStyle := styleBase
+	if sessionCount == 0 {
+		countStyle = styleSubtle
+	}
+	lines = append(lines, " "+countStyle.Render(fmt.Sprintf("%d", sessionCount))+" "+styleMuted.Render(sessWord))
+
+	lines = append(lines, "")
+
+	// --- Active session section ---
+	lines = append(lines, sectionHeader("Active", w))
+
+	if ip, whoami, platform, ok := a.executor.GetActiveSessionDisplay(); ok {
+		// Platform icon
+		platIcon := ""
+		switch platform {
+		case "linux":
+			platIcon = " "
+		case "windows":
+			platIcon = " "
+		default:
+			platIcon = " "
+		}
+
+		// Name: whoami as fallback (future: user-set description)
+		name := whoami
+		if name == "" {
+			name = ip
+		}
+		lines = append(lines, " "+styleCyan.Render(platIcon)+styleBase.Render(name))
+		lines = append(lines, "  "+styleMuted.Render(ip))
+		lines = append(lines, "  "+styleMuted.Render(platform))
+	} else {
+		lines = append(lines, styleSubtle.Render("  None"))
+	}
+
+	lines = append(lines, "")
+
+	// --- Sessions section ---
+	lines = append(lines, sectionHeader("Sessions", w))
+
+	if a.executor != nil && sessionCount > 0 {
+		sessionsDisplay := a.executor.GetSessionsForDisplay()
+		for _, sl := range strings.Split(sessionsDisplay, "\n") {
+			lines = append(lines, " "+sl)
+		}
+	} else {
+		lines = append(lines, styleSubtle.Render("  None"))
 	}
 
 	return strings.Join(lines, "\n")

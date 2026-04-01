@@ -4,7 +4,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
 )
 
 // Input is the bottom input bar with dynamic prompt and command history.
@@ -22,9 +21,11 @@ func NewInput() Input {
 	ti := textinput.New()
 	ti.Focus()
 	ti.CharLimit = 4096
-	ti.Prompt = ""                                             // We render prompt ourselves
-	ti.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-	ti.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	ti.Prompt = "" // We render prompt ourselves
+	ti.TextStyle = lipgloss.NewStyle().Foreground(colorBase)
+	ti.Cursor.Style = lipgloss.NewStyle().Foreground(colorMagenta)
+	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(colorSubtle)
+	ti.Placeholder = "Type a command..."
 
 	return Input{
 		textinput: ti,
@@ -99,7 +100,6 @@ func (i *Input) HistoryUp() {
 		i.histIdx--
 	}
 	i.textinput.SetValue(i.history[i.histIdx])
-	// Move cursor to end
 	i.textinput.CursorEnd()
 }
 
@@ -121,10 +121,8 @@ func (i *Input) HistoryDown() {
 func (i *Input) updatePrompt() {
 	switch i.context {
 	case ContextShell:
-		// Shell prompt will be set externally via SetShellPrompt
-		// Default fallback
 		if i.prompt == "" || i.prompt == menuPrompt(i.sessionID) {
-			i.prompt = "$ "
+			i.prompt = styleCyan.Render("$") + " "
 		}
 	case ContextMenu:
 		i.prompt = menuPrompt(i.sessionID)
@@ -133,22 +131,17 @@ func (i *Input) updatePrompt() {
 }
 
 func menuPrompt(sessionID int) string {
-	promptStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("5")).
-		Bold(true)
-
-	arrowStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("5"))
-
 	droplet := "󰗣"
+	arrow := styleMagenta.Render("❯")
+
 	if sessionID > 0 {
-		return promptStyle.Render(droplet+" gummy") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("[") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Render(string(rune('0'+sessionID))) +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("]") +
-			arrowStyle.Render(" ❯") + " "
+		return styleMagentaBold.Render(droplet+" gummy") +
+			styleSubtle.Render("[") +
+			styleCyan.Render(string(rune('0'+sessionID))) +
+			styleSubtle.Render("]") +
+			" " + arrow + " "
 	}
-	return promptStyle.Render(droplet+" gummy") + arrowStyle.Render(" ❯") + " "
+	return styleMagentaBold.Render(droplet+" gummy") + " " + arrow + " "
 }
 
 func (i *Input) Update(msg tea.Msg) (*Input, tea.Cmd) {
