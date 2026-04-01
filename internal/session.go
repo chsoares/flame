@@ -1025,7 +1025,7 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.sessions[id] = session
 	m.nextID++
 
-	// Mostra mensagem IMEDIATAMENTE quando conexão é recebida
+	// Show notification (skipped in TUI mode — silent flag)
 	if !m.silent {
 		if m.menuActive {
 			fmt.Printf("\r%s\n", ui.SessionOpened(session.NumID, remoteIP))
@@ -1065,7 +1065,9 @@ func (m *Manager) RemoveSession(id string) {
 		return
 	}
 
-	fmt.Println(ui.SessionClosed(session.NumID, session.RemoteIP))
+	if !m.silent {
+		fmt.Println(ui.SessionClosed(session.NumID, session.RemoteIP))
+	}
 
 	// Close log file if open
 	if session.LogFile != nil {
@@ -1643,10 +1645,10 @@ func (m *Manager) monitorSession(session *SessionInfo) {
 		session.Conn.SetWriteDeadline(time.Time{})
 
 		if err != nil {
-			// Conexão morta, remove a sessão
-			// Nota: readline está bloqueado esperando input, então o prompt só
-			// vai aparecer quando o usuário pressionar Enter (comportamento esperado)
-			fmt.Print("\r\n") // Quebra linha antes da mensagem de "Session closed"
+			// Dead connection — remove session
+			if !m.silent {
+				fmt.Print("\r\n")
+			}
 			m.RemoveSession(session.ID)
 			return
 		}

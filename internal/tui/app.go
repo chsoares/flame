@@ -14,6 +14,7 @@ type CommandExecutor interface {
 	GetSelectedSessionID() int
 	SessionCount() int
 	GetSessionsForDisplay() string
+	SetSilent(silent bool)
 }
 
 // App is the root Bubble Tea model for the Gummy TUI.
@@ -204,52 +205,73 @@ func (a App) View() string {
 	inputView := a.input.View()
 	statusView := a.statusBar.View()
 
-	outputStyle := lipgloss.NewStyle().
-		Width(a.layout.Output.W).
-		Height(a.layout.Output.H)
+	// Truncate output to exact height (viewport handles width, but we enforce height)
+	outputLines := strings.Split(outputView, "\n")
+	if len(outputLines) > a.layout.Output.H {
+		outputLines = outputLines[len(outputLines)-a.layout.Output.H:]
+	}
+	for len(outputLines) < a.layout.Output.H {
+		outputLines = append(outputLines, "")
+	}
+	outputView = strings.Join(outputLines, "\n")
 
-	inputStyle := lipgloss.NewStyle().
-		Width(a.layout.Input.W).
-		Height(a.layout.Input.H)
-
-	var contentRows []string
+	// Truncate input to 1 line
+	inputLines := strings.Split(inputView, "\n")
+	inputView = inputLines[0]
 
 	if a.layout.IsCompact() {
-		contentRows = []string{
-			outputStyle.Render(outputView),
-			inputStyle.Render(inputView),
-		}
-	} else {
-		sidebarContent := a.renderSidebar()
-		sidebarStyle := lipgloss.NewStyle().
-			Width(a.layout.Sidebar.W).
-			Height(a.layout.Sidebar.H)
-
-		sep := strings.Repeat(
-			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("│")+"\n",
-			a.layout.Sidebar.H,
+		return lipgloss.JoinVertical(lipgloss.Left,
+			headerView,
+			outputView,
+			inputView,
+			statusView,
 		)
-		sep = strings.TrimRight(sep, "\n")
-
-		outputBlock := lipgloss.JoinVertical(lipgloss.Left,
-			outputStyle.Render(outputView),
-			inputStyle.Render(inputView),
-		)
-		sidebarBlock := sidebarStyle.Render(sidebarContent)
-
-		contentRow := lipgloss.JoinHorizontal(lipgloss.Top,
-			outputBlock,
-			sep,
-			sidebarBlock,
-		)
-		contentRows = []string{contentRow}
 	}
 
-	parts := []string{headerView}
-	parts = append(parts, contentRows...)
-	parts = append(parts, statusView)
+	// Build sidebar with exact height
+	sidebarContent := a.renderSidebar()
+	sidebarLines := strings.Split(sidebarContent, "\n")
+	sidebarH := a.layout.Output.H + a.layout.Input.H
+	for len(sidebarLines) < sidebarH {
+		sidebarLines = append(sidebarLines, "")
+	}
+	if len(sidebarLines) > sidebarH {
+		sidebarLines = sidebarLines[:sidebarH]
+	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	// Pad each line to exact width
+	padLine := func(line string, width int) string {
+		w := lipgloss.Width(line)
+		if w >= width {
+			return line
+		}
+		return line + strings.Repeat(" ", width-w)
+	}
+
+	// Build left column (output + input)
+	leftLines := append(outputLines, inputView)
+	// Build separator
+	sepChar := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("│")
+
+	// Merge columns line by line
+	var merged []string
+	for i := 0; i < sidebarH; i++ {
+		left := ""
+		if i < len(leftLines) {
+			left = leftLines[i]
+		}
+		right := ""
+		if i < len(sidebarLines) {
+			right = sidebarLines[i]
+		}
+		merged = append(merged, padLine(left, a.layout.Output.W)+sepChar+padLine(right, a.layout.Sidebar.W))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		headerView,
+		strings.Join(merged, "\n"),
+		statusView,
+	)
 }
 
 func (a App) renderSidebar() string {
@@ -274,8 +296,14 @@ func (a App) renderSidebar() string {
 
 // Run starts the Bubble Tea TUI program.
 func Run(executor CommandExecutor, listenerAddr string) error {
+	// Silence direct stdout prints from Manager goroutines (AddSession, monitorSession, etc.)
+	// These would corrupt the alt-screen TUI layout.
+	executor.SetSilent(true)
+
 	app := New(executor, listenerAddr)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	_, err := p.Run()
+
+	executor.SetSilent(false)
 	return err
 }
