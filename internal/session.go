@@ -29,7 +29,8 @@ type Manager struct {
 	activeConn      net.Conn                // Conexão atualmente ativa (se houver)
 	selectedSession *SessionInfo            // Sessão selecionada (mas não necessariamente ativa)
 	menuActive      bool                    // Se estamos no menu principal
-	silent          bool                    // Suppress console output (reserved for future use)
+	silent          bool                    // Suppress console output (TUI mode)
+	notifyTUI       func(string)            // Callback to send messages to TUI output pane
 	listenerIP      string                  // IP do listener para geração de payloads
 	listenerPort    int                     // Porta do listener para geração de payloads
 }
@@ -988,6 +989,20 @@ func (m *Manager) SetSilent(silent bool) {
 	m.silent = silent
 }
 
+// SetNotifyFunc sets a callback for background goroutines to send messages to the TUI.
+func (m *Manager) SetNotifyFunc(fn func(string)) {
+	m.notifyTUI = fn
+}
+
+// notify sends a message either to stdout (legacy) or to the TUI callback.
+func (m *Manager) notify(msg string) {
+	if m.silent && m.notifyTUI != nil {
+		m.notifyTUI(msg)
+	} else if !m.silent {
+		fmt.Println(msg)
+	}
+}
+
 // SetListenerIP sets the listener IP and port for payload generation
 func (m *Manager) SetListenerIP(ip string) {
 	m.listenerIP = ip
@@ -1025,17 +1040,10 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.sessions[id] = session
 	m.nextID++
 
-	// Show notification (skipped in TUI mode — silent flag)
-	if !m.silent {
-		if m.menuActive {
-			fmt.Printf("\r%s\n", ui.SessionOpened(session.NumID, remoteIP))
-		} else {
-			fmt.Printf("\r\n%s\n", ui.SessionOpened(session.NumID, remoteIP))
-		}
-	}
+	// Notify about new connection
+	m.notify(ui.SessionOpened(session.NumID, remoteIP))
 
 	// Detecta whoami e platform SINCRONAMENTE antes de iniciar handler
-	// Isso garante que Platform está definido antes de Start() decidir sobre raw mode
 	m.detectSessionInfo(session)
 
 	// Configura platform no handler ANTES de qualquer uso
@@ -1044,15 +1052,9 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	// Inicia monitoramento da sessão
 	go m.monitorSession(session)
 
-	// Mostra info de detecção ao finalizar
-	if !m.silent {
-		infoMsg := fmt.Sprintf("Session %d: %s (%s)", session.NumID, session.Whoami, session.Platform)
-		if m.menuActive {
-			fmt.Printf("%s\n%s", ui.Info(infoMsg), ui.Prompt())
-		} else {
-			fmt.Printf("%s\n", ui.Info(infoMsg))
-		}
-	}
+	// Notify detection results
+	infoMsg := fmt.Sprintf("Session %d: %s (%s)", session.NumID, session.Whoami, session.Platform)
+	m.notify(ui.Info(infoMsg))
 }
 
 // RemoveSession remove uma sessão do gerenciador
@@ -1065,9 +1067,7 @@ func (m *Manager) RemoveSession(id string) {
 		return
 	}
 
-	if !m.silent {
-		fmt.Println(ui.SessionClosed(session.NumID, session.RemoteIP))
-	}
+	m.notify(ui.SessionClosed(session.NumID, session.RemoteIP))
 
 	// Close log file if open
 	if session.LogFile != nil {
@@ -1291,10 +1291,13 @@ func (m *Manager) handleRunModule(moduleName string, args []string) {
 
 // detectSessionInfo detecta user@host e plataforma da sessão
 func (m *Manager) detectSessionInfo(session *SessionInfo) {
-	// Inicia spinner em cyan (info)
-	spinner := ui.NewSpinnerWithColor(ui.ColorCyan)
-	spinner.Start("Detecting shell info...")
-	defer spinner.Stop()
+	// Spinner only in non-TUI mode (raw stdout)
+	var spinner *ui.Spinner
+	if !m.silent {
+		spinner = ui.NewSpinnerWithColor(ui.ColorCyan)
+		spinner.Start("Detecting shell info...")
+		defer spinner.Stop()
+	}
 
 	// Aguarda shell enviar algo
 	time.Sleep(500 * time.Millisecond)
@@ -1646,9 +1649,6 @@ func (m *Manager) monitorSession(session *SessionInfo) {
 
 		if err != nil {
 			// Dead connection — remove session
-			if !m.silent {
-				fmt.Print("\r\n")
-			}
 			m.RemoveSession(session.ID)
 			return
 		}

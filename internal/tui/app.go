@@ -15,6 +15,7 @@ type CommandExecutor interface {
 	SessionCount() int
 	GetSessionsForDisplay() string
 	SetSilent(silent bool)
+	SetNotifyFunc(fn func(string))
 }
 
 // App is the root Bubble Tea model for the Gummy TUI.
@@ -83,6 +84,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case CommandOutputMsg:
 		a.output.Append(msg.Output)
+
+	case tea.MouseMsg:
+		// Forward mouse events to viewport for scroll wheel support
+		var cmd tea.Cmd
+		a.output, cmd = a.output.Update(msg)
+		return a, cmd
 	}
 
 	return a, nil
@@ -128,6 +135,12 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.output.Append("\n--- Detached from shell ---\n\n")
 			return a, nil
 		}
+
+	case "pgup", "pgdown", "home", "end":
+		// Forward scroll keys to output viewport
+		var cmd tea.Cmd
+		a.output, cmd = a.output.Update(msg)
+		return a, cmd
 	}
 
 	// Forward to textinput for normal typing
@@ -296,14 +309,19 @@ func (a App) renderSidebar() string {
 
 // Run starts the Bubble Tea TUI program.
 func Run(executor CommandExecutor, listenerAddr string) error {
-	// Silence direct stdout prints from Manager goroutines (AddSession, monitorSession, etc.)
-	// These would corrupt the alt-screen TUI layout.
 	executor.SetSilent(true)
 
 	app := New(executor, listenerAddr)
-	p := tea.NewProgram(app, tea.WithAltScreen())
+	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
+
+	// Wire up background notifications → TUI via program.Send()
+	executor.SetNotifyFunc(func(msg string) {
+		p.Send(CommandOutputMsg{Output: msg + "\n"})
+	})
+
 	_, err := p.Run()
 
 	executor.SetSilent(false)
+	executor.SetNotifyFunc(nil)
 	return err
 }
