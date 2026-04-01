@@ -13,6 +13,11 @@ import (
 	internal "github.com/chsoares/gummy/internal"
 )
 
+const (
+	selectionClearDelay = 3 * time.Second // Clear highlight after copy
+	statusClearDelay    = 2 * time.Second // Clear status bar message
+)
+
 // CommandExecutor is the interface the Manager must satisfy for the TUI.
 type CommandExecutor interface {
 	ExecuteCommand(cmd string) string
@@ -122,9 +127,101 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.MouseMsg:
+		return a.handleMouse(msg)
+
+	case clipboardCopiedMsg:
+		a.statusBar.StatusMsg = "Copied to clipboard"
+		return a, tea.Tick(statusClearDelay, func(time.Time) tea.Msg {
+			return clearStatusMsg{}
+		})
+
+	case clearSelectionMsg:
+		a.output.ClearSelection()
+		return a, nil
+
+	case clearStatusMsg:
+		a.statusBar.StatusMsg = ""
+		return a, nil
+	}
+
+	return a, nil
+}
+
+// handleMouse routes mouse events to the appropriate component.
+func (a App) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	ox, oy := a.layout.Output.X, a.layout.Output.Y
+	ow, oh := a.layout.Output.W, a.layout.Output.H
+
+	// Translate to output-pane-relative coordinates
+	viewX := msg.X - ox
+	viewY := msg.Y - oy
+
+	inOutput := viewX >= 0 && viewX < ow && viewY >= 0 && viewY < oh
+
+	switch {
+	case msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown:
+		// Scroll: always forward to viewport (even if mouse is slightly outside)
 		var cmd tea.Cmd
 		a.output, cmd = a.output.Update(msg)
 		return a, cmd
+
+	case msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress:
+		if !inOutput {
+			// Click outside output pane clears selection
+			a.output.ClearSelection()
+			return a, nil
+		}
+		a.output.HandleMouseDown(viewX, viewY)
+		return a, nil
+
+	case msg.Action == tea.MouseActionMotion:
+		if a.output.selection.Active {
+			// Clamp to output pane bounds
+			if viewX < 0 {
+				viewX = 0
+			}
+			if viewX >= ow {
+				viewX = ow - 1
+			}
+			if viewY < 0 {
+				viewY = 0
+			}
+			if viewY >= oh {
+				viewY = oh - 1
+			}
+			a.output.HandleMouseMotion(viewX, viewY)
+		}
+		return a, nil
+
+	case msg.Action == tea.MouseActionRelease:
+		if a.output.selection.Active {
+			// Clamp to output pane bounds
+			if viewX < 0 {
+				viewX = 0
+			}
+			if viewX >= ow {
+				viewX = ow - 1
+			}
+			if viewY < 0 {
+				viewY = 0
+			}
+			if viewY >= oh {
+				viewY = oh - 1
+			}
+			if a.output.HandleMouseUp(viewX, viewY) {
+				// Selection made — copy and schedule cleanup
+				text := a.output.CopySelection()
+				if text != "" {
+					return a, tea.Batch(
+						func() tea.Msg { return clipboardCopiedMsg{Text: text} },
+						tea.Tick(selectionClearDelay, func(time.Time) tea.Msg {
+							return clearSelectionMsg{}
+						}),
+					)
+				}
+			}
+		}
+		return a, nil
 	}
 
 	return a, nil
@@ -349,9 +446,16 @@ func (a App) viewSplash() string {
 		"  " + styleSubtle.Render("Type 'help' for available commands"),
 	}
 
-	// Build content area: banner + info
+	// Build content area: top padding + banner + info
 	bannerLines := strings.Split(banner, "\n")
 	var content []string
+
+	// Push banner down ~1/3 of the screen
+	topPad := 4
+	for i := 0; i < topPad; i++ {
+		content = append(content, "")
+	}
+
 	content = append(content, bannerLines...)
 	content = append(content, info...)
 

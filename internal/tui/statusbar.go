@@ -12,6 +12,7 @@ type StatusBar struct {
 	TransferPct int    // -1 = no transfer, 0-100 = progress
 	TransferMsg string // e.g., "linpeas.sh"
 	Width       int
+	StatusMsg   string // Transient message (e.g., "Copied to clipboard")
 }
 
 func NewStatusBar(width int) StatusBar {
@@ -41,9 +42,11 @@ func (s StatusBar) View() string {
 			hint("Ctrl+D", "quit")
 	}
 
-	// Transfer progress on the right
+	// Transfer progress or status message on the right
 	var right string
-	if s.TransferPct >= 0 {
+	if s.StatusMsg != "" {
+		right = styleCyan.Render(s.StatusMsg)
+	} else if s.TransferPct >= 0 {
 		right = styleMagenta.Render(fmt.Sprintf("⬆ %d%% %s", s.TransferPct, s.TransferMsg))
 	}
 

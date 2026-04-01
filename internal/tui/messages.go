@@ -108,3 +108,14 @@ type PromptDetectedMsg struct {
 type CommandOutputMsg struct {
 	Output string
 }
+
+// clipboardCopiedMsg signals that text was copied to clipboard.
+type clipboardCopiedMsg struct {
+	Text string
+}
+
+// clearSelectionMsg signals to clear the selection highlight after a delay.
+type clearSelectionMsg struct{}
+
+// clearStatusMsg signals to clear the status bar message after a delay.
+type clearStatusMsg struct{}

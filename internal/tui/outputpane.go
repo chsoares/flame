@@ -2,10 +2,12 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // OutputPane is a scrollable viewport that displays shell output or menu output.
@@ -14,7 +16,18 @@ type OutputPane struct {
 	content  strings.Builder
 	width    int
 	follow   bool // Auto-scroll to bottom
+
+	// Mouse selection
+	selection    Selection
+	clicks       ClickTracker
+	wrappedLines []string // Cache of wrapped lines for selection
+	wrapContin   []bool   // true if wrappedLines[i] is a continuation (not a real newline)
+
+	// Mouse throttling
+	lastMotion time.Time
 }
+
+const mouseThrottle = 15 * time.Millisecond
 
 func NewOutputPane(width, height int) OutputPane {
 	vp := viewport.New(width, height)
@@ -30,7 +43,9 @@ func (o *OutputPane) SetSize(width, height int) {
 	o.viewport.Width = width
 	o.viewport.Height = height
 	// Re-wrap existing content
-	o.viewport.SetContent(o.wrapContent(o.content.String()))
+	wrapped := o.wrapContent(o.content.String())
+	o.wrappedLines = strings.Split(wrapped, "\n")
+	o.viewport.SetContent(wrapped)
 	if o.follow {
 		o.viewport.GotoBottom()
 	}
@@ -39,7 +54,9 @@ func (o *OutputPane) SetSize(width, height int) {
 // Append adds text to the output and optionally auto-scrolls.
 func (o *OutputPane) Append(text string) {
 	o.content.WriteString(text)
-	o.viewport.SetContent(o.wrapContent(o.content.String()))
+	wrapped := o.wrapContent(o.content.String())
+	o.wrappedLines = strings.Split(wrapped, "\n")
+	o.viewport.SetContent(wrapped)
 	if o.follow {
 		o.viewport.GotoBottom()
 	}
@@ -49,7 +66,9 @@ func (o *OutputPane) Append(text string) {
 func (o *OutputPane) SetContent(text string) {
 	o.content.Reset()
 	o.content.WriteString(text)
-	o.viewport.SetContent(o.wrapContent(text))
+	wrapped := o.wrapContent(text)
+	o.wrappedLines = strings.Split(wrapped, "\n")
+	o.viewport.SetContent(wrapped)
 	o.viewport.GotoBottom()
 	o.follow = true
 }
@@ -57,7 +76,155 @@ func (o *OutputPane) SetContent(text string) {
 // Clear removes all content.
 func (o *OutputPane) Clear() {
 	o.content.Reset()
+	o.wrappedLines = nil
 	o.viewport.SetContent("")
+}
+
+// HandleMouseDown starts a selection or updates click count for multi-click.
+func (o *OutputPane) HandleMouseDown(viewX, viewY int) {
+	contentLine := viewY + o.viewport.YOffset
+	contentCol := viewX
+
+	clickCount := o.clicks.RegisterClick(viewX, viewY)
+
+	switch clickCount {
+	case 1:
+		// Start drag selection
+		o.selection = Selection{
+			Active:    true,
+			HasRange:  false,
+			StartLine: contentLine,
+			StartCol:  contentCol,
+			EndLine:   contentLine,
+			EndCol:    contentCol,
+		}
+
+	case 2:
+		// Word selection
+		o.selectWord(contentLine, contentCol)
+
+	case 3:
+		// Line selection
+		o.selectLine(contentLine)
+		o.clicks.clickCount = 0 // Reset after triple
+	}
+}
+
+// HandleMouseMotion updates the drag endpoint.
+func (o *OutputPane) HandleMouseMotion(viewX, viewY int) {
+	if !o.selection.Active || o.selection.Locked {
+		return
+	}
+
+	// Throttle motion events
+	now := time.Now()
+	if now.Sub(o.lastMotion) < mouseThrottle {
+		return
+	}
+	o.lastMotion = now
+
+	contentLine := viewY + o.viewport.YOffset
+	contentCol := viewX
+
+	o.selection.EndLine = contentLine
+	o.selection.EndCol = contentCol
+	o.selection.HasRange = true
+}
+
+// HandleMouseUp finalizes the selection and copies to clipboard.
+// Returns true if a selection was made.
+func (o *OutputPane) HandleMouseUp(viewX, viewY int) bool {
+	if !o.selection.Active {
+		return false
+	}
+
+	o.selection.Active = false
+
+	// Multi-click selections (word/line) are already finalized — don't overwrite
+	if !o.selection.Locked {
+		contentLine := viewY + o.viewport.YOffset
+		contentCol := viewX
+		o.selection.EndLine = contentLine
+		o.selection.EndCol = contentCol
+		o.selection.HasRange = true
+	}
+
+	o.selection.Locked = false
+
+	if o.selection.IsEmpty() {
+		o.selection.Clear()
+		return false
+	}
+
+	return true
+}
+
+// CopySelection extracts selected text and copies to clipboard.
+func (o *OutputPane) CopySelection() string {
+	if !o.selection.HasRange || o.selection.IsEmpty() {
+		return ""
+	}
+
+	startLine, startCol, endLine, endCol := o.selection.Normalized()
+	text := extractSelectedText(o.wrappedLines, o.wrapContin, startLine, startCol, endLine, endCol)
+
+	if text != "" {
+		copyToClipboard(text)
+	}
+
+	return text
+}
+
+// ClearSelection removes any active selection.
+func (o *OutputPane) ClearSelection() {
+	o.selection.Clear()
+}
+
+// HasSelection returns true if there's an active selection to render.
+func (o *OutputPane) HasSelection() bool {
+	return o.selection.HasRange && !o.selection.IsEmpty()
+}
+
+func (o *OutputPane) selectWord(contentLine, contentCol int) {
+	if contentLine < 0 || contentLine >= len(o.wrappedLines) {
+		return
+	}
+
+	plain := ansi.Strip(o.wrappedLines[contentLine])
+	startCol, endCol := findWordBoundaries(plain, contentCol)
+
+	if startCol == endCol {
+		return
+	}
+
+	o.selection = Selection{
+		Active:    true,
+		HasRange:  true,
+		Locked:    true,
+		StartLine: contentLine,
+		StartCol:  startCol,
+		EndLine:   contentLine,
+		EndCol:    endCol,
+	}
+}
+
+func (o *OutputPane) selectLine(contentLine int) {
+	if contentLine < 0 || contentLine >= len(o.wrappedLines) {
+		return
+	}
+
+	plain := ansi.Strip(o.wrappedLines[contentLine])
+	lineWidth := ansi.StringWidth(plain)
+
+	o.selection = Selection{
+		Active:    true,
+		HasRange:  true,
+		Locked:    true,
+		StartLine: contentLine,
+		StartCol:  0,
+		EndLine:   contentLine,
+		EndCol:    lineWidth,
+	}
 }
 
 func (o *OutputPane) Update(msg tea.Msg) (*OutputPane, tea.Cmd) {
@@ -73,29 +240,74 @@ func (o *OutputPane) Update(msg tea.Msg) (*OutputPane, tea.Cmd) {
 	return o, cmd
 }
 
+// View renders the viewport, applying selection highlights if active.
 func (o *OutputPane) View() string {
-	return o.viewport.View()
+	if !o.HasSelection() {
+		return o.viewport.View()
+	}
+
+	// Render with highlights
+	startLine, startCol, endLine, endCol := o.selection.Normalized()
+	yOffset := o.viewport.YOffset
+	height := o.viewport.Height
+
+	viewLines := strings.Split(o.viewport.View(), "\n")
+
+	for i := 0; i < len(viewLines) && i < height; i++ {
+		contentIdx := i + yOffset
+
+		if contentIdx < startLine || contentIdx > endLine {
+			continue
+		}
+
+		// Calculate which columns to highlight on this line
+		lineColStart := 0
+		lineColEnd := o.width
+		if contentIdx >= 0 && contentIdx < len(o.wrappedLines) {
+			lineColEnd = ansi.StringWidth(ansi.Strip(o.wrappedLines[contentIdx]))
+		}
+
+		if contentIdx == startLine {
+			lineColStart = startCol
+		}
+		if contentIdx == endLine {
+			lineColEnd = endCol
+		}
+
+		if lineColStart < lineColEnd {
+			viewLines[i] = highlightLine(viewLines[i], lineColStart, lineColEnd)
+		}
+	}
+
+	return strings.Join(viewLines, "\n")
 }
 
 // wrapContent wraps long lines to fit the viewport width.
+// Also builds o.wrapContin: contin[i] = true means wrappedLines[i] is a
+// continuation of the previous original line (word-wrap break, not a real \n).
 func (o *OutputPane) wrapContent(text string) string {
 	if o.width <= 0 {
+		o.wrapContin = nil
 		return text
 	}
 
 	lines := strings.Split(text, "\n")
 	var wrapped []string
+	var contin []bool
 	for _, line := range lines {
 		w := lipgloss.Width(line)
 		if w <= o.width {
 			wrapped = append(wrapped, line)
+			contin = append(contin, false)
 			continue
 		}
 		// Hard wrap: split at viewport width boundary
+		first := true
 		for len(line) > 0 {
 			// Use lipgloss.Width for ANSI-aware width
 			if lipgloss.Width(line) <= o.width {
 				wrapped = append(wrapped, line)
+				contin = append(contin, !first)
 				break
 			}
 			// Find split point: walk rune by rune
@@ -114,8 +326,11 @@ func (o *OutputPane) wrapContent(text string) string {
 				cut = 1 // Prevent infinite loop
 			}
 			wrapped = append(wrapped, line[:cut])
+			contin = append(contin, !first)
 			line = line[cut:]
+			first = false
 		}
 	}
+	o.wrapContin = contin
 	return strings.Join(wrapped, "\n")
 }
