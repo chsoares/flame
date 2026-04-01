@@ -43,6 +43,18 @@
 
 ## What's Next
 
+### Priority 0: Quit Confirmation with Active Sessions
+
+**URGENT.** Currently Ctrl+D / `quit` / `q` exits immediately even with active sessions. The gummy CLI had a confirmation prompt for this. Need to implement in TUI.
+
+Two approaches to test:
+
+1. **Double-press:** First Ctrl+D shows warning in notification bar ("Active sessions! Press Ctrl+D again to quit"), second Ctrl+D actually quits. Resets after ~3s timeout.
+
+2. **Inline confirmation:** Bubble Tea style Y/n prompt replaces the input bar temporarily. "Active sessions will be lost. Quit? (y/N)"
+
+Implement both, test, pick the better one.
+
 ### Priority 1: Per-Session Buffers + History (Architectural)
 
 **This is the most important next step.** Currently there's a single `OutputPane` with one `strings.Builder`. All output (menu commands, shell I/O, notifications) goes into the same buffer. Switching sessions or re-attaching loses context.
