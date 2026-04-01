@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/chsoares/gummy/internal"
+	"github.com/chsoares/gummy/internal/tui"
 	"github.com/chsoares/gummy/internal/ui"
 )
 
@@ -75,7 +76,12 @@ func main() {
 		os.Exit(0)
 	}()
 
-	l.GetSessionManager().StartMenu()
+	// Launch TUI
+	listenerAddr := fmt.Sprintf("%s:%d", config.IP, config.Port)
+	if err := tui.Run(l.GetSessionManager(), listenerAddr); err != nil {
+		fmt.Println(ui.Error(fmt.Sprintf("TUI error: %v", err)))
+		os.Exit(1)
+	}
 }
 
 // parseFlags parses command-line arguments

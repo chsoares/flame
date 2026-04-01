@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -2420,4 +2421,95 @@ func (m *Manager) handleSet(args []string) {
 		fmt.Println(ui.Error(fmt.Sprintf("Unknown option: %s", option)))
 		fmt.Println(ui.CommandHelp("Available options: mode, binbag, pivot"))
 	}
+}
+
+// --- TUI adapter methods ---
+
+// ExecuteCommand runs a gummy command and returns its text output.
+// This captures stdout from the existing handleCommand methods as a Phase 1
+// workaround until all output is refactored to return strings.
+func (m *Manager) ExecuteCommand(cmd string) string {
+	output := captureStdout(func() {
+		m.handleCommand(cmd)
+	})
+	return output
+}
+
+// SessionCount returns the number of active sessions.
+func (m *Manager) SessionCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.sessions)
+}
+
+// GetSessionsForDisplay returns a formatted string of sessions for the TUI sidebar.
+func (m *Manager) GetSessionsForDisplay() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.sessions) == 0 {
+		return "  No sessions"
+	}
+
+	var sessions []*SessionInfo
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].NumID < sessions[j].NumID
+	})
+
+	var lines []string
+	for _, s := range sessions {
+		indicator := " "
+		if s == m.selectedSession {
+			indicator = "▶"
+		}
+		name := s.Whoami
+		if name == "" {
+			name = s.RemoteIP
+		}
+		platform := "?"
+		if s.Platform == "linux" {
+			platform = ""
+		} else if s.Platform == "windows" {
+			platform = ""
+		} else if s.Platform == "macos" {
+			platform = ""
+		}
+		lines = append(lines, fmt.Sprintf(" %s[%d] %s %s", indicator, s.NumID, platform, name))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// GetSelectedSessionID returns the NumID of the currently selected session.
+func (m *Manager) GetSelectedSessionID() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.selectedSession != nil {
+		return m.selectedSession.NumID
+	}
+	return 0
+}
+
+// captureStdout redirects os.Stdout to capture output from legacy fmt.Println calls.
+func captureStdout(fn func()) string {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		fn()
+		return ""
+	}
+	os.Stdout = w
+
+	fn()
+
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	r.Close()
+
+	return buf.String()
 }
