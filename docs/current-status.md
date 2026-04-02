@@ -161,6 +161,31 @@ Same pattern as uploads — `run peas`, `run lse`, etc. need:
 - If in shell mode: detach → use N → attach (seamless)
 - If in menu mode: just `use N`
 
+### Priority 7: Remote Tab Completion (p0wny-shell style)
+
+Tab completion without raw relay — send completion queries to the remote shell and display results in the TUI.
+
+**Approach:**
+1. User types partial path/command and presses Tab
+2. Gummy sends a delimited completion query to the remote:
+   - Linux/bash: `echo "GUMMY_COMP_START"; compgen -f -- "partial" 2>/dev/null; echo "GUMMY_COMP_END"`
+   - PowerShell: `echo "GUMMY_COMP_START"; Get-ChildItem "partial*" | Select -ExpandProperty Name; echo "GUMMY_COMP_END"`
+3. Output between delimiters is captured and parsed (one match per line)
+4. Results displayed inline or as popup menu below input bar
+5. Single match → autocomplete. Multiple → show list for selection.
+
+**Challenges:**
+- Delimiter detection in the stream (shell output is async, need to buffer between markers)
+- Platform-specific completion commands (bash compgen vs PowerShell Get-ChildItem vs cmd dir)
+- Command completion vs file completion (compgen -c for commands, compgen -f for files)
+- Latency (network round-trip for each Tab press)
+
+**Why this works better than raw relay:**
+- Keeps all TUI keybindings (F12, mouse selection, sidebar)
+- Works identically on Linux, Windows, macOS targets
+- No echo/encoding issues
+- Completion UI can be styled (popup menu with highlight)
+
 ## Logging Architecture — Analysis & Proposals
 
 ### Current Structure
