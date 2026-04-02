@@ -97,36 +97,61 @@ Dynamic terminal resize propagated to remote PTY.
 
 ## What's Next
 
-### Priority 1: Upload/Download via TUI
+### Priority 1: Transfers via TUI (includes review of transfer system)
 
-File transfers currently use `captureStdout` which captures the spinner/progress output as text. In TUI mode, we need:
+**REVIEW FIRST:** The CLI transfer system (binbag, b64 chunking, HTTP file server) hasn't been touched in months. Before TUI integration, the next agent must:
 
-- Progress shown in the notification bar (or inline spinner)
-- Transfer runs async (doesn't freeze TUI)
-- Success/failure shown via notification overlay
-- The existing transfer code (`internal/transfer.go`) writes to stdout — need to redirect or use callbacks
+1. Read `transfer.go`, `config.go`, `runtime_config.go`, `fileserver.go`
+2. Explain to the user how binbag works (HTTP server for fast uploads vs b64 fallback)
+3. Discuss simplifications:
+   - HTTP server port should be configurable in config (currently may be auto)
+   - Review `set`/`config` menu commands — are they all still needed?
+4. Test: upload/download with binbag ON, with binbag OFF, on Linux
+5. Then implement TUI integration:
+   - Progress shown in notification bar (or inline spinner)
+   - Transfer runs async (doesn't freeze TUI)
+   - Success/failure via notification overlay
+   - Redirect transfer output from stdout to callbacks
 
-### Priority 2: Modules via TUI
+### Priority 2: Modules via TUI (includes review of module system)
 
-Same pattern as uploads — `run peas`, `run lse`, etc. need:
+**REVIEW FIRST:** Same as transfers — modules haven't been revisited in a long time. Before TUI integration:
 
-- Spinner while downloading/executing
-- Output streaming to viewport (for modules that stream output)
-- Completion notification
+1. Read `modules.go`, list every module, explain what each does
+2. Discuss with user: keep/remove/modify each module
+3. **Execution mode cleanup:**
+   - Current modes: "stealth" (in-memory) and "speed" (disk) — names are bad
+   - Proposal: rename to "memory" and "disk" (objective names)
+   - Better proposal: **eliminate the toggle entirely** — just use in-memory when possible, disk when necessary. No user choice needed unless there's a real edge case.
+   - Question to resolve: is there ever a reason a user would PREFER disk over memory? If not, drop the toggle.
+4. Implement TUI integration:
+   - Spinner while downloading/executing
+   - Output streaming to viewport
+   - Completion notification
 
-### Priority 3: Tab Toggle Sidebar
+### Priority 3: Windows Testing
+
+Shell relay, transfers, and modules all need testing on Windows (cmd + PowerShell):
+
+- **Shell relay**: TUI input/output in readline mode (no PTY)
+- **SIGWINCH**: should NOT fire stty on Windows sessions — verify guard works
+- **`isSttyEcho`**: could false-positive on cmd prompts ending in `>` — verify
+- **Transfers**: upload/download with/without binbag on Windows targets
+- **Modules**: Windows modules (WinPEAS, PowerUp, etc.)
+
+### Priority 4: Tab Toggle Sidebar
 
 - Tab collapses sidebar (switches to LayoutCompact even on wide terminal)
 - Tab again restores sidebar
 - Simple boolean flag `sidebarCollapsed` in App
 
-### Priority 4: Session Switching Shortcut
+### Priority 5: Session Switching Shortcut
 
 - `Ctrl+1`, `Ctrl+2`, etc. to switch sessions quickly
 - If in shell mode: detach → use N → attach (seamless)
 - If in menu mode: just `use N`
 
-### Priority 5: Remote Tab Completion (p0wny-shell style)
+### Priority 6: Remote Tab Completion (p0wny-shell style)
 
 Tab completion without raw relay — send completion queries to the remote shell and display results in the TUI.
 
@@ -138,6 +163,13 @@ Tab completion without raw relay — send completion queries to the remote shell
 3. Output between delimiters is captured and parsed (one match per line)
 4. Results displayed inline or as popup menu below input bar
 5. Single match → autocomplete. Multiple → show list for selection.
+
+## Important Notes for Handoff
+
+- **Two-computer workflow**: work happens on two machines via git. Handoff context must be in docs/ (not .claude/ memory).
+- **User hasn't touched CLI internals in months**: transfers, modules, configs need re-explanation before modifying. Don't assume familiarity — walk through the code with the user.
+- **Build the binary**: always `go build -o gummy .` before asking the user to test. Previous session lost time debugging because the binary wasn't rebuilt.
+- **Naming**: user prefers objective/descriptive names. "stealth/speed" → "memory/disk" or just automatic.
 
 ## Logging Architecture — Analysis & Proposals
 
