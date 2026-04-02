@@ -37,7 +37,7 @@ const (
 	ColorBrightWhite   = "\033[97m"
 
 	// Symbols (nerdfont only) - simplified set
-	SymbolDroplet  = "󰗣" // Main gummy theme
+	SymbolDroplet  = "\U000F18FB" // nf-md-teddy_bear — Main gummy theme
 	SymbolTarget   = "󰓾" // Target/session
 	SymbolFire     = "" // Received shell
 	SymbolGem      = "" // Active sessions header

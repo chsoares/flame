@@ -95,7 +95,7 @@ func renderBannerFull(width int) string {
 // renderBannerCompact renders the compact 1-line banner for smaller sidebar.
 // Format: gummy 󰗣 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
 func renderBannerCompact(width int) string {
-	droplet := "󰗣"
+	droplet := "\U000F18FB"
 	logo := styleMagentaBold.Render("gummy " + droplet)
 	logoW := lipgloss.Width(logo)
 	hatchW := width - logoW - 1

@@ -23,7 +23,7 @@ func NewHeader(addr string) Header {
 
 // View renders the compact header: logo + hatching + info
 func (h Header) View() string {
-	droplet := "󰗣"
+	droplet := "\U000F18FB"
 
 	logo := styleMagentaBold.Render("gummy " + droplet)
 	addr := styleMuted.Render(h.ListenerAddr)

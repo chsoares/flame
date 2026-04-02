@@ -131,7 +131,7 @@ func (i *Input) updatePrompt() {
 }
 
 func menuPrompt(sessionID int) string {
-	droplet := "󰗣"
+	droplet := "\U000F18FB"
 	arrow := styleMagenta.Render("❯")
 
 	if sessionID > 0 {
