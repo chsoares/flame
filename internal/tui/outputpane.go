@@ -6,7 +6,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -368,7 +367,8 @@ func (o *OutputPane) ScrollbarThumb() (int, int) {
 	return thumbStart, thumbStart + thumbSize
 }
 
-// wrapContent wraps long lines to fit the viewport width.
+// wrapContent wraps long lines to fit the viewport width using ANSI-aware
+// hard wrapping. Preserves escape sequences across line breaks.
 // Also builds o.wrapContin: contin[i] = true means wrappedLines[i] is a
 // continuation of the previous original line (word-wrap break, not a real \n).
 func (o *OutputPane) wrapContent(text string) string {
@@ -377,44 +377,16 @@ func (o *OutputPane) wrapContent(text string) string {
 		return text
 	}
 
-	lines := strings.Split(text, "\n")
+	origLines := strings.Split(text, "\n")
 	var wrapped []string
 	var contin []bool
-	for _, line := range lines {
-		w := lipgloss.Width(line)
-		if w <= o.width {
-			wrapped = append(wrapped, line)
-			contin = append(contin, false)
-			continue
-		}
-		// Hard wrap: split at viewport width boundary
-		first := true
-		for len(line) > 0 {
-			// Use lipgloss.Width for ANSI-aware width
-			if lipgloss.Width(line) <= o.width {
-				wrapped = append(wrapped, line)
-				contin = append(contin, !first)
-				break
-			}
-			// Find split point: walk rune by rune
-			cut := 0
-			currentWidth := 0
-			for i, r := range line {
-				rw := lipgloss.Width(string(r))
-				if currentWidth+rw > o.width {
-					cut = i
-					break
-				}
-				currentWidth += rw
-				cut = i + len(string(r))
-			}
-			if cut == 0 {
-				cut = 1 // Prevent infinite loop
-			}
-			wrapped = append(wrapped, line[:cut])
-			contin = append(contin, !first)
-			line = line[cut:]
-			first = false
+	for _, line := range origLines {
+		// ansi.Hardwrap handles ANSI escape sequences correctly
+		hw := ansi.Hardwrap(line, o.width, false)
+		parts := strings.Split(hw, "\n")
+		for i, part := range parts {
+			wrapped = append(wrapped, part)
+			contin = append(contin, i > 0) // First part is original, rest are continuations
 		}
 	}
 	o.wrapContin = contin

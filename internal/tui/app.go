@@ -10,16 +10,18 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/charmbracelet/x/ansi"
+
 	internal "github.com/chsoares/gummy/internal"
 	"github.com/chsoares/gummy/internal/ui"
 )
 
 const (
-	selectionClearDelay = 3 * time.Second  // Clear highlight after copy
-	notifyDuration      = 2 * time.Second  // Notification overlay duration (important)
-	notifyDurationLong  = 4 * time.Second  // Longer duration (info, error)
-	scrollbarHideDelay  = 1 * time.Second  // Hide scrollbar after scroll stops
-	quitPendingTimeout  = 3 * time.Second  // Double-press Ctrl+D timeout
+	selectionClearDelay = 3 * time.Second       // Clear highlight after copy
+	notifyDuration      = 2 * time.Second       // Notification overlay duration (important)
+	notifyDurationLong  = 4 * time.Second       // Longer duration (info, error)
+	scrollbarHideDelay  = 1 * time.Second       // Hide scrollbar after scroll stops
+	quitPendingTimeout  = 3 * time.Second       // Double-press Ctrl+D timeout
 )
 
 // CommandExecutor is the interface the Manager must satisfy for the TUI.
@@ -69,6 +71,9 @@ type App struct {
 	quitPending   bool
 	quitPendingID int
 	dialog        *Dialog // Modal overlay (nil = no dialog)
+
+	// PTY resize (reserved for future)
+	resizeID int
 
 	// Backend
 	executor CommandExecutor
@@ -149,6 +154,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case CommandOutputMsg:
+		if a.splash {
+			a.splash = false
+		}
+		if a.context == ContextShell {
+			// Don't pollute shell viewport with gummy notifications.
+			// Background events (new session, disconnect) show via notification bar.
+			a.syncSessionInfo()
+			return a, nil
+		}
 		a.output.Append(msg.Output)
 		a.syncSessionInfo()
 		return a, nil
@@ -187,6 +201,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case sendResizeMsg:
+		// Reserved for future PTY resize implementation
+		return a, nil
+
 	case hideScrollbarMsg:
 		if msg.id == a.scrollbarID {
 			a.scrollbarVisible = false
@@ -194,6 +212,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case spinnerStartMsg:
+		if a.context == ContextShell {
+			// Don't show viewport spinner in shell mode — use notification bar
+			return a, nil
+		}
 		a.output.StartSpinner(msg.ID, msg.Text)
 		return a, tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
 			return spinnerTickMsg{ID: msg.ID}
@@ -598,20 +620,9 @@ func stripANSI(s string) string {
 }
 
 // truncateLine truncates a line (which may contain ANSI codes) to maxWidth display columns.
+// Uses ansi.Truncate for proper handling of escape sequences.
 func truncateLine(line string, maxWidth int) string {
-	if lipgloss.Width(line) <= maxWidth {
-		return line
-	}
-	// Walk rune by rune, tracking display width
-	currentWidth := 0
-	for i, r := range line {
-		rw := lipgloss.Width(string(r))
-		if currentWidth+rw > maxWidth {
-			return line[:i]
-		}
-		currentWidth += rw
-	}
-	return line
+	return ansi.Truncate(line, maxWidth, "")
 }
 
 // showScrollbar makes the scrollbar visible and returns a cmd to hide it after delay.
@@ -645,7 +656,7 @@ func (a App) View() string {
 	inputView := a.input.View()
 	statusView := a.statusBar.View()
 
-	// Truncate output to exact height
+	// Truncate output to exact height and width
 	outputLines := strings.Split(outputView, "\n")
 	if len(outputLines) > a.layout.Output.H {
 		outputLines = outputLines[len(outputLines)-a.layout.Output.H:]
@@ -653,10 +664,19 @@ func (a App) View() string {
 	for len(outputLines) < a.layout.Output.H {
 		outputLines = append(outputLines, "")
 	}
+	// Clamp each line to output width to prevent bleeding into sidebar on resize
+	for i, line := range outputLines {
+		if lipgloss.Width(line) > a.layout.Output.W {
+			outputLines[i] = truncateLine(line, a.layout.Output.W)
+		}
+	}
 
-	// Truncate input to 1 line
+	// Truncate input to 1 line and clamp width
 	inputLines := strings.Split(inputView, "\n")
 	inputView = inputLines[0]
+	if lipgloss.Width(inputView) > a.layout.Input.W {
+		inputView = truncateLine(inputView, a.layout.Input.W)
+	}
 
 	// Scrollbar thumb (shared by compact and wide)
 	thumbStart, thumbEnd := -1, -1
@@ -689,6 +709,7 @@ func (a App) View() string {
 			"",
 			statusView,
 		)
+		result = a.padViewLines(result)
 		if a.dialog != nil {
 			return a.dialog.View(a.width, a.height, result)
 		}
@@ -756,10 +777,27 @@ func (a App) View() string {
 		strings.Join(merged, "\n"),
 		statusView,
 	)
+	result = a.padViewLines(result)
 	if a.dialog != nil {
 		return a.dialog.View(a.width, a.height, result)
 	}
 	return result
+}
+
+// padViewLines ensures every line is padded to exactly a.width display columns.
+// This prevents rendering artifacts when the terminal shrinks (old longer lines
+// would otherwise remain visible since the new shorter lines don't overwrite them).
+func (a App) padViewLines(view string) string {
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		w := lipgloss.Width(line)
+		if w < a.width {
+			lines[i] = line + strings.Repeat(" ", a.width-w)
+		} else if w > a.width {
+			lines[i] = truncateLine(line, a.width)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // viewSplash renders the splash/landing screen shown before first Enter.
@@ -799,7 +837,8 @@ func (a App) viewSplash() string {
 		content = content[:contentH]
 	}
 
-	return strings.Join(content, "\n") + "\n\n" + inputView + "\n\n" + statusView
+	result := strings.Join(content, "\n") + "\n\n" + inputView + "\n\n" + statusView
+	return a.padViewLines(result)
 }
 
 // renderSidebar builds the sidebar content with adaptive branding.

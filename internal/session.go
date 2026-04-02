@@ -1050,8 +1050,14 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 	}
 	session := m.selectedSession
 
-	// If relay already running for this session, just return
+	// If relay already running for this session, re-set PTY size and return
 	if session.relayActive {
+		if cols > 0 && rows > 0 && session.Handler != nil {
+			session.Handler.SetViewportSize(cols, rows)
+			// Send stty to update remote PTY dimensions
+			sttyCmd := fmt.Sprintf("stty rows %d cols %d\n", rows, cols)
+			session.Conn.Write([]byte(sttyCmd))
+		}
 		m.mu.Unlock()
 		return nil
 	}

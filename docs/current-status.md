@@ -50,6 +50,14 @@
 - Reusable `Dialog` component in `dialog.go` (DialogQuit/DialogKill actions)
 - Without active sessions, quit is immediate
 
+### Rendering & Shell Fixes (2026-04-02)
+- **ANSI-aware word-wrap** — `wrapContent` now uses `ansi.Hardwrap()` instead of broken rune-by-rune loop. Fixes shell color codes (`ls --color`) being split mid-escape-sequence.
+- **ANSI-aware line truncation** — `truncateLine` uses `ansi.Truncate()`. Fixes sidebar bleeding on resize with colored shell output.
+- **padViewLines** — every line in View() padded to exactly terminal width, preventing stale content on resize.
+- **Shell viewport isolation** — `CommandOutputMsg` and `spinnerStartMsg` suppressed in shell context. Background events only show via notification bar.
+- **PTY resize on re-attach** — `shell` command re-sends `stty rows H cols W` when relay is already active. User can resize terminal, F12 detach, `shell` to apply new size.
+- **Splash auto-dismiss** — splash exits on background events (e.g. reverse shell received), not just user input.
+
 ### Priority 1: Per-Session Buffers + History (Architectural)
 
 **This is the most important next step.** Currently there's a single `OutputPane` with one `strings.Builder`. All output (menu commands, shell I/O, notifications) goes into the same buffer. Switching sessions or re-attaching loses context.

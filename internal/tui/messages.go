@@ -153,3 +153,10 @@ type spinnerTickMsg struct {
 type clearQuitPendingMsg struct {
 	id int
 }
+
+// sendResizeMsg fires after debounce to send stty resize to remote PTY.
+type sendResizeMsg struct {
+	id   int
+	cols int
+	rows int
+}
