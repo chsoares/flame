@@ -69,6 +69,11 @@ func (o *OutputPane) Append(text string) {
 	}
 }
 
+// GetContent returns the raw (unwrapped) content of the pane.
+func (o *OutputPane) GetContent() string {
+	return o.content.String()
+}
+
 // SetContent replaces all content (used when switching sessions).
 func (o *OutputPane) SetContent(text string) {
 	o.content.Reset()

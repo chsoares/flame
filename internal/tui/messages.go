@@ -40,6 +40,7 @@ type SessionDisconnectedMsg struct {
 // ShellOutputMsg carries output data from a remote shell.
 type ShellOutputMsg struct {
 	SessionID string
+	NumID     int
 	Data      []byte
 }
 

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -35,8 +36,9 @@ type Manager struct {
 	spinnerStart       func(int, string)       // Start spinner in TUI (id, text)
 	spinnerStop        func(int)               // Stop spinner in TUI (id)
 	nextSpinnerID      int                     // Auto-incrementing spinner ID
-	shellOutputFunc    func(string, []byte)    // Callback for shell relay output (sessionID, data)
+	shellOutputFunc    func(string, int, []byte) // Callback for shell relay output (sessionID, numID, data)
 	sessionDisconnFunc func(int, string)       // Callback for session disconnect (numID, remoteIP)
+	sttyResizeNano     atomic.Int64            // UnixNano of last stty resize (atomic for goroutine safety)
 	listenerIP      string                  // IP do listener para geração de payloads
 	listenerPort    int                     // Porta do listener para geração de payloads
 }
@@ -58,26 +60,20 @@ type SessionInfo struct {
 }
 
 // Directory retorna o diretório base da sessão
-// Formato: ~/.gummy/YYYY_MM_DD/IP_user_hostname/
+// Formato: ~/.gummy/sessions/2026-04-01/HHMMSS_IP_user/
 func (s *SessionInfo) Directory() string {
-	date := s.CreatedAt.Format("2006_01_02")
+	date := s.CreatedAt.Format("2006-01-02")
+	timestamp := s.CreatedAt.Format("150405")
 	whoami := sanitizePath(s.Whoami)
-	dirname := fmt.Sprintf("%s_%s", s.RemoteIP, whoami)
+	dirname := fmt.Sprintf("%s_%s_%s", timestamp, s.RemoteIP, whoami)
 
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".gummy", date, dirname)
+	return filepath.Join(home, ".gummy", "sessions", date, dirname)
 }
 
 // ScriptsDir retorna o diretório de scripts e cria se não existir
 func (s *SessionInfo) ScriptsDir() string {
 	dir := filepath.Join(s.Directory(), "scripts")
-	os.MkdirAll(dir, 0755)
-	return dir
-}
-
-// LogsDir retorna o diretório de logs e cria se não existir
-func (s *SessionInfo) LogsDir() string {
-	dir := filepath.Join(s.Directory(), "logs")
 	os.MkdirAll(dir, 0755)
 	return dir
 }
@@ -88,7 +84,9 @@ func (s *SessionInfo) InitLogFile() error {
 		return nil // Already initialized
 	}
 
-	logPath := filepath.Join(s.LogsDir(), fmt.Sprintf("session_%d.log", s.NumID))
+	dir := s.Directory()
+	os.MkdirAll(dir, 0755)
+	logPath := filepath.Join(dir, "session.log")
 
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -1031,7 +1029,7 @@ func (m *Manager) SetSpinnerFunc(start func(int, string), stop func(int)) {
 }
 
 // SetShellOutputFunc sets the callback for shell relay output to the TUI.
-func (m *Manager) SetShellOutputFunc(fn func(string, []byte)) {
+func (m *Manager) SetShellOutputFunc(fn func(string, int, []byte)) {
 	m.shellOutputFunc = fn
 }
 
@@ -1050,14 +1048,8 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 	}
 	session := m.selectedSession
 
-	// If relay already running for this session, re-set PTY size and return
+	// If relay already running for this session, just return
 	if session.relayActive {
-		if cols > 0 && rows > 0 && session.Handler != nil {
-			session.Handler.SetViewportSize(cols, rows)
-			// Send stty to update remote PTY dimensions
-			sttyCmd := fmt.Sprintf("stty rows %d cols %d\n", rows, cols)
-			session.Conn.Write([]byte(sttyCmd))
-		}
 		m.mu.Unlock()
 		return nil
 	}
@@ -1099,6 +1091,7 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 	session.relayActive = true
 	conn := session.Conn
 	sessionID := session.ID
+	numID := session.NumID
 	logWriter := session.LogFile
 	m.mu.Unlock()
 
@@ -1130,8 +1123,20 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 					logWriter.Write(data)
 				}
 
+				// Suppress stty resize echoes: within 500ms of a resize,
+				// drop chunks that are just the stty command and/or a bare prompt.
+				if nanos := m.sttyResizeNano.Load(); nanos > 0 {
+					elapsed := time.Since(time.Unix(0, nanos))
+					if elapsed < 500*time.Millisecond && isSttyEcho(data) {
+						continue
+					}
+					if elapsed >= 500*time.Millisecond {
+						m.sttyResizeNano.Store(0)
+					}
+				}
+
 				if m.shellOutputFunc != nil {
-					m.shellOutputFunc(sessionID, data)
+					m.shellOutputFunc(sessionID, numID, data)
 				}
 			}
 			if err != nil {
@@ -1155,6 +1160,79 @@ func (m *Manager) StopShellRelay() {
 	if session != nil && session.relayCancel != nil {
 		session.relayCancel()
 	}
+}
+
+// ResizePTY sends stty resize to the selected session's remote PTY.
+func (m *Manager) ResizePTY(cols, rows int) {
+	m.mu.RLock()
+	session := m.selectedSession
+	m.mu.RUnlock()
+
+	if session == nil || !session.relayActive {
+		return
+	}
+
+	m.sttyResizeNano.Store(time.Now().UnixNano())
+	sttyCmd := fmt.Sprintf("stty rows %d cols %d\n", rows, cols)
+	session.Conn.Write([]byte(sttyCmd))
+}
+
+// isSttyEcho returns true if a chunk of shell output looks like stty resize
+// echo and/or a bare prompt (no real user content). Used to suppress the
+// visual noise from PTY resize commands.
+func isSttyEcho(data []byte) bool {
+	s := string(data)
+	// Normalize line endings
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "")
+
+	for _, line := range strings.Split(s, "\n") {
+		// Strip ANSI escape sequences for matching
+		clean := stripANSI(line)
+		clean = strings.TrimSpace(clean)
+		if clean == "" {
+			continue
+		}
+		// Line contains the stty command itself — definitely echo
+		if strings.Contains(clean, "stty rows ") || strings.Contains(clean, "stty cols ") {
+			continue
+		}
+		// Bare prompt: ends with $, #, >, or % (common shell prompts)
+		if len(clean) > 0 {
+			last := clean[len(clean)-1]
+			if last == '$' || last == '#' || last == '>' || last == '%' {
+				continue
+			}
+		}
+		// Something else — this is real content
+		return false
+	}
+	return true
+}
+
+// stripANSI removes ANSI escape sequences from a string (simple version for matching).
+func stripANSI(s string) string {
+	var result []byte
+	i := 0
+	for i < len(s) {
+		if s[i] == '\033' {
+			// Skip ESC sequences
+			i++
+			if i < len(s) && s[i] == '[' {
+				i++
+				for i < len(s) && s[i] >= 0x20 && s[i] <= 0x3F {
+					i++
+				}
+				if i < len(s) {
+					i++ // skip final byte
+				}
+			}
+			continue
+		}
+		result = append(result, s[i])
+		i++
+	}
+	return string(result)
 }
 
 // WriteToShell writes data to the selected session's connection.

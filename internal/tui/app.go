@@ -35,11 +35,12 @@ type CommandExecutor interface {
 	SetNotifyFunc(fn func(string))
 	SetNotifyBarFunc(fn func(string, int))                      // message, level (0=info, 1=important, 2=error)
 	SetSpinnerFunc(start func(int, string), stop func(int))    // start(id, text), stop(id)
-	SetShellOutputFunc(fn func(string, []byte))                // shell relay output (sessionID, data)
+	SetShellOutputFunc(fn func(string, int, []byte))            // shell relay output (sessionID, numID, data)
 	SetSessionDisconnectFunc(fn func(int, string))             // session disconnect (numID, remoteIP)
 	StartShellRelay(cols, rows int) error                       // start reading from selected session's conn
 	StopShellRelay()                                           // stop relay goroutine
 	WriteToShell(data string) error                            // write to selected session's conn
+	ResizePTY(cols, rows int)                                  // send stty resize to remote PTY
 }
 
 // App is the root Bubble Tea model for the Gummy TUI.
@@ -60,6 +61,11 @@ type App struct {
 	focus   FocusMode
 	context ContextMode
 
+	// Per-session buffers
+	menuBuffer     *strings.Builder          // Menu output buffer
+	sessionBuffers map[int]*strings.Builder   // Per-session shell output buffers
+	activeSession  int                        // NumID of the session currently shown in viewport (0 = menu)
+
 	// Notifications
 	notifyID int // Incremented on each notification to invalidate stale clear timers
 
@@ -72,8 +78,8 @@ type App struct {
 	quitPendingID int
 	dialog        *Dialog // Modal overlay (nil = no dialog)
 
-	// PTY resize (reserved for future)
-	resizeID int
+	// PTY resize debounce
+	resizeID int // Incremented on each resize to invalidate stale debounce timers
 
 	// Backend
 	executor CommandExecutor
@@ -93,17 +99,19 @@ func New(executor CommandExecutor, listenerAddr string) App {
 	sessionName := time.Now().Format("2006_01_02")
 
 	return App{
-		header:       NewHeader(listenerAddr),
-		output:       &output,
-		input:        &input,
-		statusBar:    NewStatusBar(80),
-		splash:       true,
-		focus:        FocusInput,
-		context:      ContextMenu,
-		executor:     executor,
-		listenerAddr: listenerAddr,
-		cwd:          cwd,
-		sessionName:  sessionName,
+		header:         NewHeader(listenerAddr),
+		output:         &output,
+		input:          &input,
+		statusBar:      NewStatusBar(80),
+		splash:         true,
+		focus:          FocusInput,
+		context:        ContextMenu,
+		menuBuffer:     &strings.Builder{},
+		sessionBuffers: make(map[int]*strings.Builder),
+		executor:       executor,
+		listenerAddr:   listenerAddr,
+		cwd:            cwd,
+		sessionName:    sessionName,
 	}
 }
 
@@ -122,6 +130,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.input.SetWidth(a.layout.Input.W)
 		a.statusBar.Width = msg.Width
 		a.syncSessionInfo()
+		// Debounce remote PTY resize — only send stty after 150ms of no resizes
+		if a.context == ContextShell && a.activeSession > 0 {
+			a.resizeID++
+			id := a.resizeID
+			cols, rows := a.layout.Output.W, a.layout.Output.H
+			return a, tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
+				return sendResizeMsg{id: id, cols: cols, rows: rows}
+			})
+		}
 		return a, nil
 
 	case tea.KeyMsg:
@@ -157,13 +174,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.splash {
 			a.splash = false
 		}
-		if a.context == ContextShell {
-			// Don't pollute shell viewport with gummy notifications.
-			// Background events (new session, disconnect) show via notification bar.
-			a.syncSessionInfo()
-			return a, nil
+		// Always accumulate in menu buffer
+		a.menuBuffer.WriteString(msg.Output)
+		if a.activeSession == 0 {
+			// Currently viewing menu — update viewport
+			a.output.Append(msg.Output)
 		}
-		a.output.Append(msg.Output)
+		// If viewing a session, menu buffer accumulates silently.
+		// Notification bar handles important events.
 		a.syncSessionInfo()
 		return a, nil
 
@@ -202,7 +220,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case sendResizeMsg:
-		// Reserved for future PTY resize implementation
+		if msg.id != a.resizeID {
+			return a, nil // Stale — a newer resize superseded this one
+		}
+		a.executor.ResizePTY(msg.cols, msg.rows)
 		return a, nil
 
 	case hideScrollbarMsg:
@@ -236,34 +257,48 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case shellReadyMsg:
 		if msg.err != nil {
-			a.output.Append(styleRed.Render("  "+msg.err.Error()) + "\n\n")
+			a.menuAppend(styleRed.Render("  "+msg.err.Error()) + "\n\n")
 			return a, nil
 		}
+		// Switch context and viewport to session buffer
+		selectedID := a.executor.GetSelectedSessionID()
+
+		// Append entering message with session number to menu buffer
+		a.menuAppend(ui.Info(fmt.Sprintf("Entering interactive shell #%d", selectedID)) + "\n")
+		a.menuAppend(ui.CommandHelp("Press F12 to detach") + "\n")
 		a.context = ContextShell
 		a.header.Context = ContextShell
 		a.statusBar.Context = ContextShell
 		a.input.SetContext(ContextShell)
-		a.output.Append(ui.Info("Entering interactive shell") + "\n")
-		a.output.Append(ui.CommandHelp("Press F12 to detach") + "\n")
+		a.switchToSession(selectedID)
+
 		// Trigger first prompt display
 		a.executor.WriteToShell("\n")
-		return a, nil
+		return a, func() tea.Msg {
+			return showNotifyMsg{
+				Message: fmt.Sprintf("Attached to shell #%d — Press F12 to detach", selectedID),
+				Level:   NotifyInfo,
+			}
+		}
 
 	case ShellOutputMsg:
 		text := sanitizeShellOutput(string(msg.Data))
-		a.output.Append(text)
+		// Always accumulate in session buffer
+		a.appendToSessionBuffer(msg.NumID, text)
+		// Only update viewport if this session is active
+		if a.activeSession == msg.NumID {
+			a.output.Append(text)
+		}
 		return a, nil
 
 	case SessionDisconnectedMsg:
-		if a.context == ContextShell {
-			selectedID := a.executor.GetSelectedSessionID()
-			if selectedID == 0 || selectedID == msg.NumID {
-				a.context = ContextMenu
-				a.header.Context = ContextMenu
-				a.statusBar.Context = ContextMenu
-				a.input.SetContext(ContextMenu)
-				a.output.Append("\n" + styleRed.Render("--- Session disconnected ---") + "\n\n")
-			}
+		if a.context == ContextShell && a.activeSession == msg.NumID {
+			a.context = ContextMenu
+			a.header.Context = ContextMenu
+			a.statusBar.Context = ContextMenu
+			a.input.SetContext(ContextMenu)
+			a.switchToMenu()
+			a.menuAppend("\n" + styleRed.Render("--- Session disconnected ---") + "\n\n")
 		}
 		a.syncSessionInfo()
 		return a, nil
@@ -441,7 +476,9 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.header.Context = ContextMenu
 			a.statusBar.Context = ContextMenu
 			a.input.SetContext(ContextMenu)
-			a.output.Append("\n\n" + ui.Info("Exiting interactive shell") + "\n\n")
+			// Switch viewport back to menu buffer
+			a.switchToMenu()
+			a.menuAppend("\n" + ui.Info("Exiting interactive shell") + "\n\n")
 			return a, nil
 		}
 
@@ -473,12 +510,12 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 	case ContextMenu:
 		// Echo command with styled prompt
 		prompt := styleMagentaBold.Render("❯") + " "
-		a.output.Append(prompt + styleBase.Render(cmd) + "\n")
+		a.menuAppend(prompt + styleBase.Render(cmd) + "\n")
 
 		switch {
 		case cmd == "shell":
 			if a.executor.GetSelectedSessionID() == 0 {
-				a.output.Append(styleMuted.Render("  No session selected. Use 'use <id>' first") + "\n\n")
+				a.menuAppend(styleMuted.Render("  No session selected. Use 'use <id>' first") + "\n\n")
 				return a, nil
 			}
 			// Start relay async (PTY upgrade blocks ~1s)
@@ -496,18 +533,19 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case cmd == "clear" || cmd == "cls":
+			a.menuBuffer.Reset()
 			a.output.Clear()
 			return a, nil
 
 		default:
 			output := a.executor.ExecuteCommand(cmd)
 			if output != "" {
-				a.output.Append(output)
+				a.menuAppend(output)
 				if !strings.HasSuffix(output, "\n") {
-					a.output.Append("\n")
+					a.menuAppend("\n")
 				}
 			}
-			a.output.Append("\n")
+			a.menuAppend("\n")
 			a.syncSessionInfo()
 
 			// Fire notification for kill commands (can't p.Send from inside ExecuteCommand)
@@ -546,6 +584,7 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 // sanitizeShellOutput normalizes line endings and strips dangerous terminal
 // control sequences from remote shell output. Keeps colors/styles but removes
 // cursor movement, screen clear, alt screen, etc. that would corrupt the TUI.
+// Also filters out stty resize commands that leak from PTY resize operations.
 func sanitizeShellOutput(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "")
@@ -633,6 +672,58 @@ func (a *App) showScrollbar() tea.Cmd {
 	return tea.Tick(scrollbarHideDelay, func(time.Time) tea.Msg {
 		return hideScrollbarMsg{id: id}
 	})
+}
+
+// menuAppend appends text to the menu buffer and, if menu is active, also to the viewport.
+func (a *App) menuAppend(text string) {
+	a.menuBuffer.WriteString(text)
+	if a.activeSession == 0 {
+		a.output.Append(text)
+	}
+}
+
+// saveViewportToBuffer saves the current viewport content to the active buffer.
+func (a *App) saveViewportToBuffer() {
+	content := a.output.GetContent()
+	if a.activeSession == 0 {
+		a.menuBuffer.Reset()
+		a.menuBuffer.WriteString(content)
+	} else {
+		buf := a.getSessionBuffer(a.activeSession)
+		buf.Reset()
+		buf.WriteString(content)
+	}
+}
+
+// switchToMenu saves the current buffer and loads the menu buffer into viewport.
+func (a *App) switchToMenu() {
+	a.saveViewportToBuffer()
+	a.activeSession = 0
+	a.output.SetContent(a.menuBuffer.String())
+}
+
+// switchToSession saves the current buffer and loads a session buffer into viewport.
+func (a *App) switchToSession(numID int) {
+	a.saveViewportToBuffer()
+	a.activeSession = numID
+	buf := a.getSessionBuffer(numID)
+	a.output.SetContent(buf.String())
+}
+
+// getSessionBuffer returns the buffer for a session, creating it if needed.
+func (a *App) getSessionBuffer(numID int) *strings.Builder {
+	if buf, ok := a.sessionBuffers[numID]; ok {
+		return buf
+	}
+	buf := &strings.Builder{}
+	a.sessionBuffers[numID] = buf
+	return buf
+}
+
+// appendToSessionBuffer appends text to a session's buffer without affecting the viewport.
+func (a *App) appendToSessionBuffer(numID int, text string) {
+	buf := a.getSessionBuffer(numID)
+	buf.WriteString(text)
 }
 
 func (a *App) syncSessionInfo() {
@@ -976,8 +1067,8 @@ func Run(executor CommandExecutor, listenerAddr string) error {
 		func(id int, text string) { p.Send(spinnerStartMsg{ID: id, Text: text}) },
 		func(id int) { p.Send(spinnerStopMsg{ID: id}) },
 	)
-	executor.SetShellOutputFunc(func(sessionID string, data []byte) {
-		p.Send(ShellOutputMsg{SessionID: sessionID, Data: data})
+	executor.SetShellOutputFunc(func(sessionID string, numID int, data []byte) {
+		p.Send(ShellOutputMsg{SessionID: sessionID, NumID: numID, Data: data})
 	})
 	executor.SetSessionDisconnectFunc(func(numID int, remoteIP string) {
 		p.Send(SessionDisconnectedMsg{NumID: numID, RemoteIP: remoteIP})

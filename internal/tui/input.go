@@ -11,10 +11,13 @@ type Input struct {
 	textinput textinput.Model
 	prompt    string
 	context   ContextMode
-	history   []string
-	histIdx   int
 	width     int
 	sessionID int // Selected session NumID (0 = none)
+
+	// Per-context history
+	menuHistory    []string         // Menu command history
+	sessionHistory map[int][]string // Per-session shell command history
+	histIdx        int
 }
 
 func NewInput() Input {
@@ -28,10 +31,11 @@ func NewInput() Input {
 	ti.Placeholder = "Type a command..."
 
 	return Input{
-		textinput: ti,
-		prompt:    menuPrompt(0),
-		context:   ContextMenu,
-		histIdx:   -1,
+		textinput:      ti,
+		prompt:         menuPrompt(0),
+		context:        ContextMenu,
+		histIdx:        -1,
+		sessionHistory: make(map[int][]string),
 	}
 }
 
@@ -47,6 +51,7 @@ func (i *Input) SetWidth(w int) {
 
 func (i *Input) SetContext(ctx ContextMode) {
 	i.context = ctx
+	i.histIdx = -1 // Reset history navigation on context switch
 	i.updatePrompt()
 }
 
@@ -79,11 +84,28 @@ func (i *Input) Clear() {
 	i.histIdx = -1
 }
 
+// history returns the active history slice for the current context.
+func (i *Input) history() []string {
+	if i.context == ContextShell && i.sessionID > 0 {
+		return i.sessionHistory[i.sessionID]
+	}
+	return i.menuHistory
+}
+
+// appendHistory adds a command to the active history.
+func (i *Input) appendHistory(val string) {
+	if i.context == ContextShell && i.sessionID > 0 {
+		i.sessionHistory[i.sessionID] = append(i.sessionHistory[i.sessionID], val)
+	} else {
+		i.menuHistory = append(i.menuHistory, val)
+	}
+}
+
 // Submit returns the current value and adds it to history.
 func (i *Input) Submit() string {
 	val := i.textinput.Value()
 	if val != "" {
-		i.history = append(i.history, val)
+		i.appendHistory(val)
 	}
 	i.Clear()
 	return val
@@ -91,26 +113,28 @@ func (i *Input) Submit() string {
 
 // HistoryUp navigates to the previous command in history.
 func (i *Input) HistoryUp() {
-	if len(i.history) == 0 {
+	hist := i.history()
+	if len(hist) == 0 {
 		return
 	}
 	if i.histIdx == -1 {
-		i.histIdx = len(i.history) - 1
+		i.histIdx = len(hist) - 1
 	} else if i.histIdx > 0 {
 		i.histIdx--
 	}
-	i.textinput.SetValue(i.history[i.histIdx])
+	i.textinput.SetValue(hist[i.histIdx])
 	i.textinput.CursorEnd()
 }
 
 // HistoryDown navigates to the next command in history.
 func (i *Input) HistoryDown() {
+	hist := i.history()
 	if i.histIdx == -1 {
 		return
 	}
-	if i.histIdx < len(i.history)-1 {
+	if i.histIdx < len(hist)-1 {
 		i.histIdx++
-		i.textinput.SetValue(i.history[i.histIdx])
+		i.textinput.SetValue(hist[i.histIdx])
 		i.textinput.CursorEnd()
 	} else {
 		i.histIdx = -1
