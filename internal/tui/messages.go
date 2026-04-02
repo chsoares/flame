@@ -148,3 +148,8 @@ type spinnerStopMsg struct {
 type spinnerTickMsg struct {
 	ID int
 }
+
+// clearQuitPendingMsg resets the double-press quit state after timeout.
+type clearQuitPendingMsg struct {
+	id int
+}

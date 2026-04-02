@@ -19,6 +19,7 @@ const (
 	notifyDuration      = 2 * time.Second  // Notification overlay duration (important)
 	notifyDurationLong  = 4 * time.Second  // Longer duration (info, error)
 	scrollbarHideDelay  = 1 * time.Second  // Hide scrollbar after scroll stops
+	quitPendingTimeout  = 3 * time.Second  // Double-press Ctrl+D timeout
 )
 
 // CommandExecutor is the interface the Manager must satisfy for the TUI.
@@ -63,6 +64,11 @@ type App struct {
 	// Scrollbar
 	scrollbarVisible bool
 	scrollbarID      int // Incremented on each scroll to invalidate stale hide timers
+
+	// Quit confirmation
+	quitPending   bool
+	quitPendingID int
+	dialog        *Dialog // Modal overlay (nil = no dialog)
 
 	// Backend
 	executor CommandExecutor
@@ -114,6 +120,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
+		// Modal dialog intercepts all keys
+		if a.dialog != nil {
+			return a.updateDialog(msg)
+		}
 		if a.splash {
 			if msg.String() == "enter" {
 				cmd := a.input.Submit()
@@ -125,7 +135,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Forward other keys to input (typing works during splash)
 			if msg.String() == "ctrl+d" {
-				return a, tea.Quit
+				return a.tryQuitCtrlD()
 			}
 			var cmd tea.Cmd
 			a.input, cmd = a.input.Update(msg)
@@ -144,6 +154,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.MouseMsg:
+		if a.dialog != nil {
+			return a, nil // Block mouse when dialog is open
+		}
 		return a.handleMouse(msg)
 
 	case showNotifyMsg:
@@ -166,6 +179,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clearSelectionMsg:
 		a.output.ClearSelection()
+		return a, nil
+
+	case clearQuitPendingMsg:
+		if msg.id == a.quitPendingID {
+			a.quitPending = false
+		}
 		return a, nil
 
 	case hideScrollbarMsg:
@@ -314,6 +333,55 @@ func (a App) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// tryQuitCtrlD implements double-press Ctrl+D with warning notification.
+func (a App) tryQuitCtrlD() (tea.Model, tea.Cmd) {
+	if a.executor.SessionCount() == 0 {
+		return a, tea.Quit
+	}
+	if a.quitPending {
+		return a, tea.Quit
+	}
+	a.quitPending = true
+	a.quitPendingID++
+	id := a.quitPendingID
+	return a, tea.Batch(
+		func() tea.Msg {
+			return showNotifyMsg{
+				Message: "Active sessions! Press Ctrl+D again to quit",
+				Level:   NotifyError,
+			}
+		},
+		tea.Tick(quitPendingTimeout, func(time.Time) tea.Msg {
+			return clearQuitPendingMsg{id: id}
+		}),
+	)
+}
+
+// updateDialog handles key events when a modal dialog is active.
+func (a App) updateDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "tab", "left", "right", "h", "l":
+		a.dialog.Toggle()
+		return a, nil
+	case "enter":
+		if a.dialog.Selected == 0 {
+			// Confirmed
+			switch a.dialog.Action {
+			case DialogQuit:
+				return a, tea.Quit
+			}
+		}
+		a.dialog = nil
+		return a, nil
+	case "escape", "n":
+		a.dialog = nil
+		return a, nil
+	case "y":
+		return a, tea.Quit
+	}
+	return a, nil
+}
+
 func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
@@ -324,7 +392,7 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case "ctrl+d":
-		return a, tea.Quit
+		return a.tryQuitCtrlD()
 
 	case "enter":
 		cmd := a.input.Submit()
@@ -399,7 +467,11 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 			}
 
 		case cmd == "exit" || cmd == "quit" || cmd == "q":
-			return a, tea.Quit
+			if a.executor.SessionCount() == 0 {
+				return a, tea.Quit
+			}
+			a.dialog = confirmQuitDialog(a.executor.SessionCount())
+			return a, nil
 
 		case cmd == "clear" || cmd == "cls":
 			a.output.Clear()
@@ -609,7 +681,7 @@ func (a App) View() string {
 		}
 
 		headerView := a.header.View()
-		return lipgloss.JoinVertical(lipgloss.Left,
+		result := lipgloss.JoinVertical(lipgloss.Left,
 			headerView,
 			strings.Join(outputLines, "\n"),
 			"",
@@ -617,6 +689,10 @@ func (a App) View() string {
 			"",
 			statusView,
 		)
+		if a.dialog != nil {
+			return a.dialog.View(a.width, a.height, result)
+		}
+		return result
 	}
 
 	// Wide mode: sidebar with branding (no header bar)
@@ -676,10 +752,14 @@ func (a App) View() string {
 		merged = append(merged, padLine(left, a.layout.Output.W)+gapStr+padLine(right, a.layout.Sidebar.W))
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	result := lipgloss.JoinVertical(lipgloss.Left,
 		strings.Join(merged, "\n"),
 		statusView,
 	)
+	if a.dialog != nil {
+		return a.dialog.View(a.width, a.height, result)
+	}
+	return result
 }
 
 // viewSplash renders the splash/landing screen shown before first Enter.
