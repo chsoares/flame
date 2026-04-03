@@ -31,11 +31,6 @@ func main() {
 	// Setup logging - minimal output like Penelope
 	log.SetFlags(0)
 
-	// Print banner first
-	fmt.Println(ui.Banner())
-	fmt.Println(ui.HelpInfo("Type 'help' for available commands"))
-	fmt.Println()
-
 	// Initialize runtime configuration
 	runtimeConfig, err := internal.InitRuntimeConfig(config.IP)
 	if err != nil {
@@ -87,9 +82,8 @@ func main() {
 		width = w
 	}
 	fmt.Println(tui.RenderExitBanner(width))
-	fmt.Println()
 
-	// Show session log path if logs exist
+	// Show session log path if logs exist today
 	if logDir := manager.GetSessionLogDir(); logDir != "" {
 		// Pretty path: replace home with ~
 		if home, err := os.UserHomeDir(); err == nil {
@@ -97,9 +91,9 @@ func main() {
 				logDir = "~" + logDir[len(home):]
 			}
 		}
-		fmt.Println(ui.CommandHelp(fmt.Sprintf("Session logs saved to: %s", logDir)))
-		fmt.Println()
+		fmt.Printf("  \033[2mSession logs saved to: \033[36m%s\033[0m\n", logDir)
 	}
+	fmt.Println()
 }
 
 // parseFlags parses command-line arguments
