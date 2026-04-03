@@ -670,8 +670,21 @@ func (h *Handler) ExecuteWithStreamingCtx(ctx context.Context, cmd, localOutputP
 		if n > 0 {
 			chunk := string(buffer[:n])
 			accumulated.WriteString(chunk)
-			localFile.WriteString(chunk)
-			localFile.Sync()
+
+			// Filter out the marker and echo command from output file
+			cleanChunk := chunk
+			if strings.Contains(cleanChunk, marker) {
+				cleanChunk = strings.ReplaceAll(cleanChunk, marker, "")
+			}
+			if strings.Contains(cleanChunk, "echo '"+marker+"'") {
+				cleanChunk = strings.ReplaceAll(cleanChunk, "echo '"+marker+"'", "")
+			}
+			// Remove leftover blank lines from filtering
+			cleanChunk = strings.ReplaceAll(cleanChunk, "\n\n\n", "\n\n")
+			if cleanChunk != "" {
+				localFile.WriteString(cleanChunk)
+				localFile.Sync()
+			}
 
 			if strings.Contains(accumulated.String(), marker) {
 				h.conn.SetReadDeadline(time.Time{})
