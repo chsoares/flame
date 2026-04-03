@@ -1153,26 +1153,26 @@ func (a App) renderSidebar() string {
 
 	lines = append(lines, "")
 
-	// --- Info: session name, cwd, listener ---
-	lines = append(lines, styleMuted.Render(" "+a.sessionName))
+	// --- Listener + Pivot ---
+	lines = append(lines, " "+styleBase.Render("\uf095")+" "+styleMuted.Render(a.listenerAddr))
+	if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.PivotEnabled {
+		lines = append(lines, " "+styleMagenta.Render("\uf064")+" "+styleMuted.Render(internal.GlobalRuntimeConfig.PivotHost))
+	}
 
-	// Pretty CWD: replace home dir with ~
+	lines = append(lines, "")
+
+	// --- CWD ---
 	prettyPath := a.cwd
 	if home, err := os.UserHomeDir(); err == nil {
 		if rel, err := filepath.Rel(home, a.cwd); err == nil && !strings.HasPrefix(rel, "..") {
 			prettyPath = "~/" + rel
 		}
 	}
-	lines = append(lines, styleMuted.Render(" "+prettyPath))
+	lines = append(lines, " "+styleBase.Render("\uf07c")+" "+styleMuted.Render(prettyPath))
 
 	lines = append(lines, "")
 
-	// Listener
-	lines = append(lines, " "+styleBase.Render("\uf095")+" "+styleMuted.Render(a.listenerAddr))
-
-	lines = append(lines, "")
-
-	// Binbag status
+	// --- Binbag status ---
 	binbagIcon := "\U000f059f" // nf-md-web 󰖟
 	if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.BinbagEnabled {
 		prettyBinbag := internal.GlobalRuntimeConfig.BinbagPath
