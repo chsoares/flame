@@ -2781,16 +2781,10 @@ func (m *Manager) handleBinbag(args []string) {
 	if len(args) == 0 || args[0] == "ls" {
 		if !rc.BinbagEnabled {
 			fmt.Println(ui.Info("Binbag is disabled"))
-			fmt.Println(ui.CommandHelp("Enable with: binbag on"))
-			if rc.BinbagPath != "" {
-				fmt.Println(ui.Command(fmt.Sprintf("  path: %s", rc.BinbagPath)))
-			}
 			return
 		}
 
-		// Show status
-		fmt.Println(ui.Info(fmt.Sprintf("Binbag: %s", rc.BinbagPath)))
-		fmt.Println(ui.Command(fmt.Sprintf("  http://%s:%d/", rc.ListenerIP, rc.HTTPPort)))
+		fmt.Println(ui.Info(fmt.Sprintf("Listing binbag dir: %s", rc.BinbagPath)))
 
 		// List files
 		entries, err := os.ReadDir(rc.BinbagPath)
@@ -2799,17 +2793,39 @@ func (m *Manager) handleBinbag(args []string) {
 			return
 		}
 
-		var lines []string
+		var names []string
 		for _, entry := range entries {
 			if !entry.IsDir() && !strings.HasPrefix(entry.Name(), "tmp_") {
-				lines = append(lines, ui.Command(entry.Name()))
+				names = append(names, entry.Name())
 			}
 		}
 
-		if len(lines) == 0 {
+		if len(names) == 0 {
 			fmt.Println(ui.Warning("No files in binbag"))
 		} else {
-			fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Binbag Files (%d)", ui.SymbolGem, len(lines)), lines))
+			// Multi-column layout (like ls)
+			maxLen := 0
+			for _, name := range names {
+				if len(name) > maxLen {
+					maxLen = len(name)
+				}
+			}
+			colWidth := maxLen + 2 // padding between columns
+			termWidth := 70        // reasonable default for boxed content
+			cols := termWidth / colWidth
+			if cols < 1 {
+				cols = 1
+			}
+
+			var lines []string
+			for i := 0; i < len(names); i += cols {
+				line := ""
+				for j := 0; j < cols && i+j < len(names); j++ {
+					line += fmt.Sprintf("%-*s", colWidth, names[i+j])
+				}
+				lines = append(lines, ui.Command(strings.TrimRight(line, " ")))
+			}
+			fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Binbag (%d files)", ui.SymbolGem, len(names)), lines))
 		}
 		return
 	}
