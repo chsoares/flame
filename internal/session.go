@@ -2688,6 +2688,12 @@ func (m *Manager) StartSpawn() {
 	initialCount := m.GetSessionCount()
 
 	go func() {
+		// Suppress echo of the payload in shell viewport
+		if session.relayActive && session.Handler != nil && session.Handler.IsPTYUpgraded() {
+			session.Conn.Write([]byte("stty -echo\n"))
+			time.Sleep(100 * time.Millisecond)
+		}
+
 		// Send payload
 		_, err := session.Conn.Write([]byte(payload))
 		if err != nil {
@@ -2696,6 +2702,12 @@ func (m *Manager) StartSpawn() {
 				m.transferDoneFunc("spawn", false, fmt.Errorf("Failed to send: %v", err))
 			}
 			return
+		}
+
+		// Restore echo
+		if session.relayActive && session.Handler != nil && session.Handler.IsPTYUpgraded() {
+			time.Sleep(100 * time.Millisecond)
+			session.Conn.Write([]byte("stty echo\n"))
 		}
 
 		// Wait up to 5s for new session to arrive
