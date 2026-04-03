@@ -1104,9 +1104,12 @@ func (a App) viewSplash() string {
 	info := []string{
 		"",
 		"  " + styleMuted.Render("Listening for connections on ") + styleCyan.Render(a.listenerAddr),
-		"",
-		"  " + styleSubtle.Render("Type 'help' for available commands"),
 	}
+	if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.BinbagEnabled {
+		info = append(info, "  "+styleMuted.Render("Binbag serving on ")+styleCyan.Render(fmt.Sprintf("http://%s:%d/", internal.GlobalRuntimeConfig.ListenerIP, internal.GlobalRuntimeConfig.HTTPPort)))
+	}
+	info = append(info, "")
+	info = append(info, "  "+styleSubtle.Render("Type 'help' for available commands"))
 
 	// Build content area: top padding + banner + info
 	bannerLines := strings.Split(banner, "\n")

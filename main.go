@@ -51,11 +51,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Print binbag status if enabled (after listener starts)
-	if runtimeConfig.BinbagEnabled {
-		fmt.Println(ui.Info(fmt.Sprintf("Binbag enabled (serving %s on http://%s:%d/)", runtimeConfig.BinbagPath, runtimeConfig.ListenerIP, runtimeConfig.HTTPPort)))
-	}
-
 	// Setup signal handling - only for cleanup, not for exit
 	// Exit is only via exit/quit/q commands
 	sigChan := make(chan os.Signal, 1)
