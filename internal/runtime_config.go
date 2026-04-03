@@ -133,6 +133,29 @@ func (rc *RuntimeConfig) DisableBinbag() error {
 	return nil
 }
 
+// CleanupBinbagTmp removes any tmp_* files left in the binbag directory.
+// Called on exit to ensure no temporary files are left behind.
+func (rc *RuntimeConfig) CleanupBinbagTmp() {
+	rc.mu.RLock()
+	binbagPath := rc.BinbagPath
+	rc.mu.RUnlock()
+
+	if binbagPath == "" {
+		return
+	}
+
+	entries, err := os.ReadDir(binbagPath)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "tmp_") {
+			os.Remove(filepath.Join(binbagPath, entry.Name()))
+		}
+	}
+}
+
 // SetPivot configures pivot IP (port is preserved from original services)
 func (rc *RuntimeConfig) SetPivot(host string) error {
 	if host == "" {

@@ -745,6 +745,49 @@ func (c *GummyCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 		if argCount == 1 {
 			return c.completeFromList(currentArg, []string{"off"})
 		}
+	case "run":
+		if argCount == 1 {
+			// Complete module names
+			registry := GetModuleRegistry()
+			var names []string
+			for _, mod := range registry.List() {
+				names = append(names, mod.Name())
+			}
+			return c.completeFromList(currentArg, names)
+		} else if argCount == 2 {
+			// For custom modules (sh, bin, ps1, dotnet, py), complete local paths + binbag files
+			if len(parts) >= 2 {
+				switch parts[1] {
+				case "sh", "bin", "ps1", "dotnet", "py":
+					localMatches, localLen := c.completeLocalPath(currentArg)
+					if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled &&
+						!strings.ContainsAny(currentArg, "/\\") {
+						entries, err := os.ReadDir(GlobalRuntimeConfig.BinbagPath)
+						if err == nil {
+							seen := make(map[string]bool)
+							for _, m := range localMatches {
+								seen[string(m)] = true
+							}
+							for _, entry := range entries {
+								if entry.IsDir() || strings.HasPrefix(entry.Name(), "tmp_") {
+									continue
+								}
+								name := entry.Name()
+								if strings.HasPrefix(name, currentArg) {
+									suffix := []rune(name[len(currentArg):])
+									key := string(suffix)
+									if !seen[key] {
+										localMatches = append(localMatches, suffix)
+										seen[key] = true
+									}
+								}
+							}
+						}
+					}
+					return localMatches, localLen
+				}
+			}
+		}
 	}
 
 	return nil, 0

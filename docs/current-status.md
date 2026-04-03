@@ -68,13 +68,13 @@ The module system spawns an invisible "worker session" to execute modules. This 
 **Tested Linux modules:**
 - [x] `peas` — LinPEAS (RunScriptInMemory, HTTP binbag) ✅
 - [x] `lse` — Linux Smart Enumeration (RunScriptInMemory, args with `--`) ✅
+- [x] `loot` — ezpz post-exploitation (RunScriptInMemory) ✅
+- [x] `linexp` — Linux Exploit Suggester (RunScriptInMemory) ✅
 - [x] `pspy` — process monitor (RunBinary, disk+cleanup, 5min timeout) ✅
   - trap EXIT cleanup confirmed working
   - Worker auto-closes after timeout
 
 **Untested Linux modules:**
-- [ ] `loot` — ezpz post-exploitation (RunScriptInMemory, same pattern as peas/lse)
-- [ ] `linexp` — Linux Exploit Suggester (RunScriptInMemory, same pattern)
 - [ ] `sh <url>` — arbitrary bash script (RunScriptInMemory)
 - [ ] `bin <url|file>` — arbitrary binary (RunBinary)
 - [ ] `py <url>` — arbitrary Python script (RunPythonInMemory — needs refactoring)

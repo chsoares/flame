@@ -60,6 +60,7 @@ func main() {
 		if internal.GlobalRuntimeConfig.BinbagEnabled {
 			internal.GlobalRuntimeConfig.DisableBinbag()
 		}
+		internal.GlobalRuntimeConfig.CleanupBinbagTmp()
 		// Stop listener
 		if err := l.Stop(); err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("Error stopping listener: %v", err)))
@@ -75,6 +76,9 @@ func main() {
 		fmt.Println(ui.Error(fmt.Sprintf("TUI error: %v", err)))
 		os.Exit(1)
 	}
+
+	// Cleanup tmp_* files from binbag
+	internal.GlobalRuntimeConfig.CleanupBinbagTmp()
 
 	// Print exit banner
 	width := 80
