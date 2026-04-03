@@ -867,7 +867,7 @@ func (c *GummyCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 		}
 	case "pivot":
 		if argCount == 1 {
-			return c.completeFromList(currentArg, []string{"on", "off"})
+			return c.completeFromList(currentArg, []string{"off"})
 		}
 	}
 
@@ -2334,9 +2334,8 @@ func (m *Manager) showHelp() {
 
 	// Pivot category
 	lines = append(lines, ui.CommandHelp("pivot"))
-	lines = append(lines, ui.Command("pivot                        - Show pivot status"))
-	lines = append(lines, ui.Command("pivot on/off                 - Enable/disable pivot"))
-	lines = append(lines, ui.Command("pivot <host:port>            - Set pivot endpoint"))
+	lines = append(lines, ui.Command("pivot <host:port>            - Route HTTP URLs through pivot host"))
+	lines = append(lines, ui.Command("pivot off                    - Disable pivot"))
 	lines = append(lines, "")
 
 	// Program category
@@ -2887,78 +2886,44 @@ func (m *Manager) handleBinbag(args []string) {
 	}
 }
 
-// handlePivot handles the 'pivot' command and subcommands
+// handlePivot handles the 'pivot' command
 func (m *Manager) handlePivot(args []string) {
 	rc := GlobalRuntimeConfig
 
-	// No args: show status
 	if len(args) == 0 {
 		if rc.PivotEnabled {
-			fmt.Println(ui.Info(fmt.Sprintf("Pivot enabled: %s:%d", rc.PivotHost, rc.PivotPort)))
+			fmt.Println(ui.Info(fmt.Sprintf("Pivot: %s:%d", rc.PivotHost, rc.PivotPort)))
 		} else {
 			fmt.Println(ui.Info("Pivot is disabled"))
-			if rc.PivotHost != "" {
-				fmt.Println(ui.Command(fmt.Sprintf("  last: %s:%d", rc.PivotHost, rc.PivotPort)))
-			}
-			fmt.Println(ui.CommandHelp("Enable with: pivot on  or  pivot <host:port>"))
 		}
 		return
 	}
 
-	switch args[0] {
-	case "on":
-		if rc.PivotHost == "" {
-			fmt.Println(ui.Error("No pivot configured. Set one first: pivot <host:port>"))
-			return
-		}
-		if err := rc.SetPivot(rc.PivotHost, rc.PivotPort); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Failed to enable pivot: %v", err)))
-			return
-		}
-		fmt.Println(ui.Success(fmt.Sprintf("Pivot enabled: %s:%d", rc.PivotHost, rc.PivotPort)))
-
-	case "off":
+	if args[0] == "off" {
 		if err := rc.DisablePivot(); err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("Failed to disable pivot: %v", err)))
 			return
 		}
 		fmt.Println(ui.Success("Pivot disabled"))
-
-	default:
-		// Try to parse as host:port
-		input := strings.Join(args, " ")
-		var host string
-		var port int
-
-		// Try net.SplitHostPort first (handles host:port format)
-		if h, p, err := net.SplitHostPort(input); err == nil {
-			host = h
-			portNum, err := strconv.Atoi(p)
-			if err != nil {
-				fmt.Println(ui.Error(fmt.Sprintf("Invalid port: %s", p)))
-				return
-			}
-			port = portNum
-		} else if len(args) == 2 {
-			// Try "host port" format
-			host = args[0]
-			portNum, err := strconv.Atoi(args[1])
-			if err != nil {
-				fmt.Println(ui.Error(fmt.Sprintf("Invalid port: %s", args[1])))
-				return
-			}
-			port = portNum
-		} else {
-			fmt.Println(ui.CommandHelp("Usage: pivot [on|off|<host:port>|<host> <port>]"))
-			return
-		}
-
-		if err := rc.SetPivot(host, port); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Failed to set pivot: %v", err)))
-			return
-		}
-		fmt.Println(ui.Success(fmt.Sprintf("Pivot enabled: %s:%d", host, port)))
+		return
 	}
+
+	// Parse host:port
+	h, p, err := net.SplitHostPort(args[0])
+	if err != nil {
+		fmt.Println(ui.Error(fmt.Sprintf("Invalid format: %s (use host:port)", args[0])))
+		return
+	}
+	port, err := strconv.Atoi(p)
+	if err != nil {
+		fmt.Println(ui.Error(fmt.Sprintf("Invalid port: %s", p)))
+		return
+	}
+	if err := rc.SetPivot(h, port); err != nil {
+		fmt.Println(ui.Error(fmt.Sprintf("Failed to set pivot: %v", err)))
+		return
+	}
+	fmt.Println(ui.Success(fmt.Sprintf("Pivot: %s:%d", h, port)))
 }
 
 // --- TUI adapter methods ---

@@ -154,7 +154,7 @@ func (rc *RuntimeConfig) SetPivot(host string, port int) error {
 	rc.PivotPort = port
 	rc.mu.Unlock()
 
-	rc.autoPersist()
+	// No autoPersist — pivot is session-specific, not persisted
 	return nil
 }
 
@@ -164,7 +164,7 @@ func (rc *RuntimeConfig) DisablePivot() error {
 	rc.PivotEnabled = false
 	rc.mu.Unlock()
 
-	rc.autoPersist()
+	// No autoPersist — pivot is session-specific
 	return nil
 }
 
