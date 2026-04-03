@@ -64,9 +64,10 @@ type App struct {
 	statusBar StatusBar
 
 	// State
-	splash  bool // Show splash screen before first input
-	focus   FocusMode
-	context ContextMode
+	splash           bool // Show splash screen before first input
+	focus            FocusMode
+	context          ContextMode
+	sidebarCollapsed bool // F11 toggle — forces compact layout
 
 	// Per-session buffers
 	menuBuffer     *strings.Builder          // Menu output buffer
@@ -135,7 +136,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		a.layout = GenerateLayout(msg.Width, msg.Height)
+		a.layout = GenerateLayout(msg.Width, msg.Height, a.sidebarCollapsed)
 		a.header.Width = msg.Width
 		a.output.SetSize(a.layout.Output.W, a.layout.Output.H)
 		a.input.SetWidth(a.layout.Input.W)
@@ -563,6 +564,15 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.input.SetValue(completed)
 			}
 		}
+		return a, nil
+
+	case "f11":
+		a.sidebarCollapsed = !a.sidebarCollapsed
+		a.layout = GenerateLayout(a.width, a.height, a.sidebarCollapsed)
+		a.header.Width = a.width
+		a.output.SetSize(a.layout.Output.W, a.layout.Output.H)
+		a.input.SetWidth(a.layout.Input.W)
+		a.statusBar.Width = a.width
 		return a, nil
 
 	case "f12":

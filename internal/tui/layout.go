@@ -39,8 +39,11 @@ const (
 )
 
 // GenerateLayout calculates component positions for the given terminal size.
-func GenerateLayout(width, height int) Layout {
+func GenerateLayout(width, height int, forceCompact ...bool) Layout {
 	compact := width < (minMainWidth + sidebarWidth + 3)
+	if len(forceCompact) > 0 && forceCompact[0] {
+		compact = true
+	}
 
 	if compact {
 		// Compact: header + output + blank + input + blank + statusbar
