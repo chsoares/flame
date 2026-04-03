@@ -2324,20 +2324,24 @@ func (m *Manager) showHelp() {
 	lines = append(lines, ui.Command("run <module> [args]          - Run a module (e.g., run peas, run lse, run bin)"))
 	lines = append(lines, "")
 
-	// Config category
-	lines = append(lines, ui.CommandHelp("config"))
-	lines = append(lines, ui.Command("binbag                       - List binbag files and status"))
+	// Binbag category
+	lines = append(lines, ui.CommandHelp("binbag"))
+	lines = append(lines, ui.Command("binbag ls                    - List binbag files"))
 	lines = append(lines, ui.Command("binbag on/off                - Enable/disable binbag HTTP server"))
 	lines = append(lines, ui.Command("binbag path <dir>            - Set binbag directory"))
 	lines = append(lines, ui.Command("binbag port <N>              - Set HTTP server port"))
+	lines = append(lines, "")
+
+	// Pivot category
+	lines = append(lines, ui.CommandHelp("pivot"))
 	lines = append(lines, ui.Command("pivot                        - Show pivot status"))
 	lines = append(lines, ui.Command("pivot on/off                 - Enable/disable pivot"))
 	lines = append(lines, ui.Command("pivot <host:port>            - Set pivot endpoint"))
-	lines = append(lines, ui.Command("config                       - Show current configuration"))
 	lines = append(lines, "")
 
 	// Program category
 	lines = append(lines, ui.CommandHelp("program"))
+	lines = append(lines, ui.Command("config                       - Show current configuration"))
 	lines = append(lines, ui.Command("help                         - Show this help"))
 	lines = append(lines, ui.Command("clear                        - Clear screen"))
 	lines = append(lines, ui.Command("exit, quit                   - Exit Gummy"))
