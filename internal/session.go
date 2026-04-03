@@ -2211,12 +2211,10 @@ func (m *Manager) handleCommand(command string) {
 			fmt.Println(ui.CommandHelp("Usage: config [save]"))
 		}
 	case "set":
-		// set mode <stealth|speed>
 		// set binbag <path|disable>
 		// set pivot <host> <port> | disable
 		if len(parts) < 2 {
 			fmt.Println(ui.CommandHelp("Usage: set <option> <value>"))
-			fmt.Println(ui.Command("  set mode <stealth|speed>"))
 			fmt.Println(ui.Command("  set binbag <path|disable>"))
 			fmt.Println(ui.Command("  set pivot <host> <port> | disable"))
 			return
@@ -2268,7 +2266,6 @@ func (m *Manager) showHelp() {
 	lines = append(lines, ui.CommandHelp("config"))
 	lines = append(lines, ui.Command("config                       - Show current configuration"))
 	lines = append(lines, ui.Command("config save                  - Save configuration to file"))
-	lines = append(lines, ui.Command("set mode <stealth|speed>     - Set execution mode"))
 	lines = append(lines, ui.Command("set binbag <path|disable>    - Set binbag path or disable"))
 	lines = append(lines, ui.Command("set pivot <host> <port>      - Set pivot host:port or disable"))
 	lines = append(lines, "")
@@ -2563,15 +2560,6 @@ func (m *Manager) handleShowConfig() {
 
 	var lines []string
 
-	// Execution section
-	lines = append(lines, ui.CommandHelp("execution"))
-	modeDesc := "stealth (in-memory: curl|bash, Reflection.Load)"
-	if rc.ExecutionMode == "speed" {
-		modeDesc = "speed (disk: SmartUpload → execute → shred)"
-	}
-	lines = append(lines, ui.Command(fmt.Sprintf("mode: %s", modeDesc)))
-	lines = append(lines, "")
-
 	// Binbag section
 	lines = append(lines, ui.CommandHelp("binbag"))
 	lines = append(lines, ui.Command(fmt.Sprintf("enabled: %v", rc.BinbagEnabled)))
@@ -2616,19 +2604,6 @@ func (m *Manager) handleSet(args []string) {
 	value := args[1]
 
 	switch option {
-	case "mode":
-		if value != "stealth" && value != "speed" {
-			fmt.Println(ui.Error("Invalid mode. Use: stealth or speed"))
-			fmt.Println(ui.CommandHelp("  stealth = in-memory (curl|bash, Reflection.Load) - no disk artifacts"))
-			fmt.Println(ui.CommandHelp("  speed   = disk-based (SmartUpload → execute → shred) - for large binaries"))
-			return
-		}
-		if err := GlobalRuntimeConfig.SetExecutionMode(value); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Failed to set mode: %v", err)))
-			return
-		}
-		fmt.Println(ui.Success(fmt.Sprintf("Execution mode set to: %s", value)))
-
 	case "binbag":
 		if value == "disable" {
 			if err := GlobalRuntimeConfig.DisableBinbag(); err != nil {

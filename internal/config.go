@@ -15,10 +15,6 @@ type Config struct {
 		HTTPPort int    `toml:"http_port"`
 	} `toml:"binbag"`
 
-	Execution struct {
-		DefaultMode string `toml:"default_mode"` // "stealth" or "speed"
-	} `toml:"execution"`
-
 	Pivot struct {
 		Enabled bool   `toml:"enabled"`
 		Host    string `toml:"host"`
@@ -39,11 +35,6 @@ func DefaultConfig() *Config {
 			Enabled:  false, // Disabled by default (backward compatible)
 			Path:     filepath.Join(home, "Lab", "binbag"),
 			HTTPPort: 8080,
-		},
-		Execution: struct {
-			DefaultMode string `toml:"default_mode"`
-		}{
-			DefaultMode: "stealth", // Stealth by default
 		},
 		Pivot: struct {
 			Enabled bool   `toml:"enabled"`
@@ -111,13 +102,6 @@ enabled = false
 path = "~/Lab/binbag"
 # HTTP server port for file serving
 http_port = 8080
-
-[execution]
-# Default execution mode on startup: "stealth" or "speed"
-# - stealth: in-memory (curl|bash, Reflection.Load) - no disk artifacts
-# - speed: disk-based (SmartUpload -> execute -> shred) - for large binaries
-# Can be changed at runtime with: set mode <mode>
-default_mode = "stealth"
 
 [pivot]
 # Optional: Use pivot point for HTTP downloads in internal networks

@@ -20,7 +20,6 @@ func InitRuntimeConfig(listenerIP string) (*RuntimeConfig, error) {
 
 	// Create runtime config from loaded config
 	rc := &RuntimeConfig{
-		ExecutionMode: config.Execution.DefaultMode,
 		BinbagEnabled: config.Binbag.Enabled,
 		BinbagPath:    os.ExpandEnv(config.Binbag.Path), // Expand ~/
 		HTTPPort:      config.Binbag.HTTPPort,
@@ -47,9 +46,6 @@ func InitRuntimeConfig(listenerIP string) (*RuntimeConfig, error) {
 type RuntimeConfig struct {
 	mu sync.RWMutex
 
-	// Execution mode
-	ExecutionMode string // "stealth" or "speed"
-
 	// Binbag
 	BinbagEnabled bool
 	BinbagPath    string
@@ -71,7 +67,6 @@ var GlobalRuntimeConfig *RuntimeConfig
 // NewRuntimeConfig creates a new runtime config from loaded config
 func NewRuntimeConfig(config *Config, listenerIP string) *RuntimeConfig {
 	rc := &RuntimeConfig{
-		ExecutionMode: "stealth", // Default to stealth
 		BinbagEnabled: config.Binbag.Enabled,
 		BinbagPath:    config.Binbag.Path,
 		HTTPPort:      config.Binbag.HTTPPort,
@@ -81,32 +76,7 @@ func NewRuntimeConfig(config *Config, listenerIP string) *RuntimeConfig {
 		ListenerIP:    listenerIP,
 	}
 
-	// Set execution mode from config
-	if config.Execution.DefaultMode == "speed" {
-		rc.ExecutionMode = "speed"
-	}
-
 	return rc
-}
-
-// GetMode returns current execution mode (thread-safe)
-func (rc *RuntimeConfig) GetMode() string {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
-	return rc.ExecutionMode
-}
-
-// SetExecutionMode changes execution mode at runtime
-func (rc *RuntimeConfig) SetExecutionMode(mode string) error {
-	if mode != "stealth" && mode != "speed" {
-		return fmt.Errorf("invalid mode: %s (must be 'stealth' or 'speed')", mode)
-	}
-
-	rc.mu.Lock()
-	rc.ExecutionMode = mode
-	rc.mu.Unlock()
-
-	return nil
 }
 
 // EnableBinbag enables binbag and starts HTTP server
@@ -222,7 +192,6 @@ func (rc *RuntimeConfig) SaveToFile() error {
 	}
 
 	// Update with runtime values
-	config.Execution.DefaultMode = rc.ExecutionMode
 	config.Binbag.Enabled = rc.BinbagEnabled
 	config.Binbag.Path = rc.BinbagPath
 	config.Binbag.HTTPPort = rc.HTTPPort

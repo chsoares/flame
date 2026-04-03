@@ -268,7 +268,7 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 // varName: bash variable name to store content (e.g., "_gummy_script")
 // Returns the variable name for later use (e.g., echo "$varName" | base64 -d | bash)
 // UploadToBashVariable uploads a file to a bash variable (in-memory, no disk write on victim)
-// This is used for stealthy script execution - the variable contains base64-encoded data
+// The variable contains base64-encoded data for later execution
 func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varName string) error {
 	// Read local file
 	data, err := os.ReadFile(localPath)
@@ -353,7 +353,6 @@ func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varNam
 }
 
 // UploadToPowerShellVariable uploads a file to a PowerShell variable (in-memory, no disk write on victim)
-// This is used for stealthy script/assembly execution on Windows
 func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, varName string) error {
 	// Read local file
 	data, err := os.ReadFile(localPath)
@@ -436,7 +435,6 @@ func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, 
 }
 
 // UploadToPythonVariable uploads a file to a Python variable (in-memory, no disk write on victim)
-// This is used for stealthy script execution via Python
 func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varName string) error {
 	// Read local file
 	data, err := os.ReadFile(localPath)
