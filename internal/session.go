@@ -41,7 +41,7 @@ type Manager struct {
 	transferDoneFunc     func(string, bool, error)       // Callback for transfer completion (filename, upload, error)
 	shellOutputFunc    func(string, int, []byte) // Callback for shell relay output (sessionID, numID, data)
 	sessionDisconnFunc func(int, string)       // Callback for session disconnect (numID, remoteIP)
-	sttyResizeNano     atomic.Int64            // UnixNano of last stty resize (atomic for goroutine safety)
+	relaySuppressNano     atomic.Int64            // UnixNano of last stty resize (atomic for goroutine safety)
 	listenerIP      string                  // IP do listener para geração de payloads
 	listenerPort    int                     // Porta do listener para geração de payloads
 }
@@ -1175,15 +1175,23 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 					logWriter.Write(data)
 				}
 
-				// Suppress stty resize echoes: within 500ms of a resize,
-				// drop chunks that are just the stty command and/or a bare prompt.
-				if nanos := m.sttyResizeNano.Load(); nanos > 0 {
-					elapsed := time.Since(time.Unix(0, nanos))
+				// Suppress relay output based on relaySuppressNano:
+				// - Future timestamp (spawn): suppress ALL output until that time
+				// - Past timestamp (resize): suppress stty echo/prompts for 500ms
+				if nanos := m.relaySuppressNano.Load(); nanos > 0 {
+					suppressUntil := time.Unix(0, nanos)
+					now := time.Now()
+					if suppressUntil.After(now) {
+						// Future: suppress everything (spawn payload suppression)
+						continue
+					}
+					elapsed := now.Sub(suppressUntil)
 					if elapsed < 500*time.Millisecond && isSttyEcho(data) {
+						// Past within 500ms: suppress stty echo/prompts only
 						continue
 					}
 					if elapsed >= 500*time.Millisecond {
-						m.sttyResizeNano.Store(0)
+						m.relaySuppressNano.Store(0)
 					}
 				}
 
@@ -1224,7 +1232,7 @@ func (m *Manager) ResizePTY(cols, rows int) {
 		return
 	}
 
-	m.sttyResizeNano.Store(time.Now().UnixNano())
+	m.relaySuppressNano.Store(time.Now().UnixNano())
 	sttyCmd := fmt.Sprintf("stty rows %d cols %d\n", rows, cols)
 	session.Conn.Write([]byte(sttyCmd))
 }
@@ -1269,8 +1277,8 @@ func isSttyEcho(data []byte) bool {
 		if clean == "" {
 			continue
 		}
-		// Line contains the stty command itself — definitely echo
-		if strings.Contains(clean, "stty rows ") || strings.Contains(clean, "stty cols ") {
+		// Line contains any stty command — definitely echo
+		if strings.Contains(clean, "stty ") {
 			continue
 		}
 		// Bare prompt: ends with $, #, >, or % (common shell prompts)
@@ -2688,13 +2696,17 @@ func (m *Manager) StartSpawn() {
 	initialCount := m.GetSessionCount()
 
 	go func() {
-		// Suppress echo of the payload in shell viewport
+		// Suppress all output for the next 2s (stty + payload + stty echo + prompts)
+		if session.relayActive {
+			m.relaySuppressNano.Store(time.Now().Add(2 * time.Second).UnixNano())
+		}
+
+		// Disable echo, send payload, restore echo
 		if session.relayActive && session.Handler != nil && session.Handler.IsPTYUpgraded() {
 			session.Conn.Write([]byte("stty -echo\n"))
 			time.Sleep(100 * time.Millisecond)
 		}
 
-		// Send payload
 		_, err := session.Conn.Write([]byte(payload))
 		if err != nil {
 			m.stopSpinner(spinID)
@@ -2704,7 +2716,6 @@ func (m *Manager) StartSpawn() {
 			return
 		}
 
-		// Restore echo
 		if session.relayActive && session.Handler != nil && session.Handler.IsPTYUpgraded() {
 			time.Sleep(100 * time.Millisecond)
 			session.Conn.Write([]byte("stty echo\n"))
