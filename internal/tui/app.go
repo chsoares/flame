@@ -1164,7 +1164,7 @@ func (a App) renderSidebar() string {
 		// --- Pivot ---
 		if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.PivotEnabled {
 			lines = append(lines, "")
-			lines = append(lines, " "+styleBase.Render("\uf064")+" "+styleMuted.Render("pivoting"))
+			lines = append(lines, " "+styleBase.Render("\uf064")+" "+styleMuted.Render("pivoting enabled"))
 			lines = append(lines, "   "+styleSubtle.Render("via "+internal.GlobalRuntimeConfig.PivotHost))
 		}
 
