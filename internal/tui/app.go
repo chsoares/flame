@@ -314,7 +314,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Switch context and viewport to session buffer
 		selectedID := a.executor.GetSelectedSessionID()
 
-		a.menuAppend(ui.ShellAttach(fmt.Sprintf("Attached to interactive shell #%d", selectedID)) + "\n")
+		a.menuAppend(ui.ShellAttach(fmt.Sprintf("Attached to interactive shell #%d", selectedID)) + "\n\n")
 		a.context = ContextShell
 		a.header.Context = ContextShell
 		a.statusBar.Context = ContextShell
