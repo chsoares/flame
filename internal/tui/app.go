@@ -49,6 +49,7 @@ type CommandExecutor interface {
 	StartUpload(ctx context.Context, localPath, remotePath string) // async upload
 	StartDownload(ctx context.Context, remotePath, localPath string) // async download
 	StartSpawn()                                                     // async spawn
+	StartModule(moduleName string, args []string)                    // async module execution
 }
 
 // App is the root Bubble Tea model for the Gummy TUI.
@@ -665,8 +666,10 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 			return a.handleSpawnCmd()
 
 		case strings.HasPrefix(cmd, "kill "):
-			// If killing the active session while in shell mode, detach first
 			return a.handleKillCmd(cmd)
+
+		case strings.HasPrefix(cmd, "run "):
+			return a.handleRunCmd(cmd)
 
 		default:
 			output := a.executor.ExecuteCommand(cmd)
@@ -821,6 +824,8 @@ func (a App) executeBangCommand(cmd string) (tea.Model, tea.Cmd) {
 		return a.handleSpawnCmd()
 	case strings.HasPrefix(cmd, "kill "):
 		return a.handleKillCmd(cmd)
+	case strings.HasPrefix(cmd, "run "):
+		return a.handleRunCmd(cmd)
 	default:
 		// Sync commands — execute and buffer output
 		output := a.executor.ExecuteCommand(cmd)
@@ -864,6 +869,26 @@ func (a App) handleKillCmd(cmd string) (tea.Model, tea.Cmd) {
 	}
 	a.menuAppend("\n")
 	a.syncSessionInfo()
+	return a, nil
+}
+
+// handleRunCmd launches a module asynchronously.
+func (a App) handleRunCmd(cmd string) (tea.Model, tea.Cmd) {
+	parts := strings.Fields(cmd)
+	if len(parts) < 2 {
+		a.menuAppend(ui.CommandHelp("Usage: run <module> [args...]") + "\n")
+		a.menuAppend(ui.Info("Type 'modules' to see available modules") + "\n\n")
+		return a, nil
+	}
+
+	if a.executor.GetSelectedSessionID() == 0 {
+		a.menuAppend(ui.Error("No session selected. Use 'use <id>' first") + "\n\n")
+		return a, nil
+	}
+
+	moduleName := parts[1]
+	args := parts[2:]
+	a.executor.StartModule(moduleName, args)
 	return a, nil
 }
 

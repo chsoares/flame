@@ -1663,6 +1663,71 @@ func (m *Manager) handleRunModule(moduleName string, args []string) {
 	}
 }
 
+// StartModule runs a module asynchronously with TUI spinner.
+// Stops relay for exclusive conn access, opens terminal for output.
+func (m *Manager) StartModule(moduleName string, args []string) {
+	m.mu.RLock()
+	session := m.selectedSession
+	m.mu.RUnlock()
+
+	if session == nil {
+		if m.transferDoneFunc != nil {
+			m.transferDoneFunc(moduleName, false, fmt.Errorf("No session selected"))
+		}
+		return
+	}
+
+	registry := GetModuleRegistry()
+	module, exists := registry.Get(moduleName)
+	if !exists {
+		if m.transferDoneFunc != nil {
+			m.transferDoneFunc(moduleName, false, fmt.Errorf("Unknown module: %s", moduleName))
+		}
+		return
+	}
+
+	spinID := m.startSpinner(fmt.Sprintf("Running %s...", moduleName))
+
+	go func() {
+		// Stop relay for exclusive conn access
+		wasRelaying := session.relayActive
+		if wasRelaying {
+			m.StopShellRelay()
+			time.Sleep(600 * time.Millisecond)
+		}
+		defer func() {
+			if wasRelaying {
+				m.StartShellRelay(0, 0)
+			}
+		}()
+
+		// Disable PTY echo
+		if session.Handler != nil && session.Handler.IsPTYUpgraded() {
+			session.Conn.Write([]byte("stty -echo\n"))
+			time.Sleep(100 * time.Millisecond)
+		}
+		defer func() {
+			if session.Handler != nil && session.Handler.IsPTYUpgraded() {
+				session.Conn.Write([]byte("stty echo\n"))
+				time.Sleep(100 * time.Millisecond)
+			}
+		}()
+
+		err := module.Run(context.Background(), session, args)
+		m.stopSpinner(spinID)
+
+		if err != nil {
+			if m.transferDoneFunc != nil {
+				m.transferDoneFunc(moduleName, false, err)
+			}
+		} else {
+			if m.notifyBar != nil {
+				m.notifyBar(fmt.Sprintf("Module %s started — output in terminal window", moduleName), 0)
+			}
+		}
+	}()
+}
+
 // detectSessionInfo detecta user@host e plataforma da sessão
 func (m *Manager) detectSessionInfo(session *SessionInfo) {
 	// Spinner only in non-TUI mode (raw stdout)
