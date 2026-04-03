@@ -574,10 +574,21 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.header.Context = ContextMenu
 			a.statusBar.Context = ContextMenu
 			a.input.SetContext(ContextMenu)
-			// Switch viewport back to menu buffer
 			a.switchToMenu()
 			a.menuAppend("\n" + ui.Info("Exiting interactive shell") + "\n\n")
 			return a, nil
+		}
+		// Menu mode: F12 = attach (same as typing "shell")
+		if a.context == ContextMenu {
+			if a.executor.GetSelectedSessionID() == 0 {
+				a.menuAppend(ui.Error("No session selected. Use 'use <id>' first") + "\n\n")
+				return a, nil
+			}
+			cols, rows := a.layout.Output.W, a.layout.Output.H
+			return a, func() tea.Msg {
+				err := a.executor.StartShellRelay(cols, rows)
+				return shellReadyMsg{err: err}
+			}
 		}
 
 	case "pgup", "pgdown", "home", "end":
