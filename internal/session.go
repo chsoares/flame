@@ -277,25 +277,44 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 		// Build args
 		argsStr := ""
 		if len(args) > 0 {
-			argsStr = " -- " + strings.Join(args, " ")
+			argsStr = " " + strings.Join(args, " ")
 		}
 
-		// Open terminal for output
+		// Remote output file for background execution
+		remoteOutput := fmt.Sprintf("/tmp/gummy_%s_%d.out", filepath.Base(localPath), time.Now().Unix())
+
+		// Run in background on remote — conn stays free!
+		bgCmd := fmt.Sprintf("nohup bash -c 'curl -s \"%s\" | bash -s%s' > %s 2>&1 &\n", httpURL, argsStr, remoteOutput)
+		s.Conn.Write([]byte(bgCmd))
+		time.Sleep(500 * time.Millisecond)
+
+		// Drain the echo of the background command
+		drainBuf := make([]byte, 4096)
+		s.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		for {
+			_, err := s.Conn.Read(drainBuf)
+			if err != nil {
+				break
+			}
+		}
+		s.Conn.SetReadDeadline(time.Time{})
+
+		// Now use ExecuteWithStreaming to tail the remote output file
+		// This captures output to local file for the terminal window
+		// The tail can be interrupted (Ctrl+C / detach) without killing the module
 		tailCmd := fmt.Sprintf("tail -f %s", outputPath)
 		if err := OpenTerminal(tailCmd); err != nil {
-			// Non-fatal, continue without terminal
+			// Non-fatal
 		}
 		time.Sleep(300 * time.Millisecond)
 
 		go func() {
-			// Cleanup tmp file AFTER HTTP transfer completes
 			if cleanup != nil {
 				defer cleanup()
 			}
-			time.Sleep(200 * time.Millisecond)
-
-			cmd := fmt.Sprintf("curl -s '%s' | bash -s%s", httpURL, argsStr)
-			s.Handler.ExecuteWithStreaming(cmd, outputPath)
+			// tail -f on remote — streams to local file. Interruptible.
+			remoteTailCmd := fmt.Sprintf("tail -f %s", remoteOutput)
+			s.Handler.ExecuteWithStreaming(remoteTailCmd, outputPath)
 		}()
 
 		return nil
@@ -314,37 +333,46 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 		return fmt.Errorf("upload to memory failed: %w", err)
 	}
 
-	// Open terminal after upload completes
-	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
-
-	if err := OpenTerminal(tailCmd); err != nil {
-		fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
-	}
-
-	time.Sleep(300 * time.Millisecond)
-
 	// Build args
 	argsStr := ""
 	if len(args) > 0 {
-		argsStr = " -- " + strings.Join(args, " ")
+		argsStr = " " + strings.Join(args, " ")
 	}
 
-	// Show execution message with output path
-	fmt.Println(ui.Info(fmt.Sprintf("Executing script (in-memory) and saving output to: %s", outputPath)))
+	// Remote output file for background execution
+	remoteOutput := fmt.Sprintf("/tmp/gummy_%s_%d.out", filepath.Base(localPath), time.Now().Unix())
 
-	go func() {
-		// Small delay to ensure variable is fully loaded
-		time.Sleep(200 * time.Millisecond)
+	// Run in background on remote — conn stays free!
+	bgCmd := fmt.Sprintf("nohup bash -c 'echo \"$%s\" | base64 -d | bash -s%s' > %s 2>&1 &\n", varName, argsStr, remoteOutput)
+	s.Conn.Write([]byte(bgCmd))
+	time.Sleep(500 * time.Millisecond)
 
-		// Execute from variable: decode base64 and pipe to bash
-		cmd := fmt.Sprintf("echo \"$%s\" | base64 -d | bash -s%s", varName, argsStr)
-		if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
-			return
+	// Cleanup variable
+	s.Conn.Write([]byte(fmt.Sprintf("unset %s\n", varName)))
+	time.Sleep(100 * time.Millisecond)
+
+	// Drain echo
+	drainBuf := make([]byte, 4096)
+	s.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	for {
+		_, err := s.Conn.Read(drainBuf)
+		if err != nil {
+			break
 		}
+	}
+	s.Conn.SetReadDeadline(time.Time{})
 
-		// Cleanup variable (unset removes from memory)
-		s.Handler.SendCommand(fmt.Sprintf("unset %s\n", varName))
+	// Open terminal with tail -f of local output file
+	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
+	if err := OpenTerminal(tailCmd); err != nil {
+		// Non-fatal
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// tail -f remote output → local file (interruptible, conn stays usable after)
+	go func() {
+		remoteTailCmd := fmt.Sprintf("tail -f %s", remoteOutput)
+		s.Handler.ExecuteWithStreaming(remoteTailCmd, outputPath)
 	}()
 
 	return nil
@@ -1108,6 +1136,20 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 		m.mu.Unlock()
 		return nil
 	}
+
+	// Kill any running tail -f from module execution (prevents conn read race)
+	session.Conn.Write([]byte("\x03")) // Ctrl+C to kill remote tail
+	time.Sleep(200 * time.Millisecond)
+	// Drain any pending output
+	drainBuf := make([]byte, 4096)
+	session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	for {
+		_, err := session.Conn.Read(drainBuf)
+		if err != nil {
+			break
+		}
+	}
+	session.Conn.SetReadDeadline(time.Time{})
 
 	handler := session.Handler
 	platform := session.Platform
