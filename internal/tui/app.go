@@ -1153,10 +1153,14 @@ func (a App) renderSidebar() string {
 
 	lines = append(lines, "")
 
-	// --- Listener + Pivot ---
+	// --- Listener ---
 	lines = append(lines, " "+styleBase.Render("\uf095")+" "+styleMuted.Render(a.listenerAddr))
+
+	// --- Pivot ---
 	if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.PivotEnabled {
-		lines = append(lines, " "+styleBase.Render("\uf064")+" "+styleMuted.Render(internal.GlobalRuntimeConfig.PivotHost))
+		lines = append(lines, "")
+		lines = append(lines, " "+styleBase.Render("\uf064")+" "+styleMuted.Render("pivoting"))
+		lines = append(lines, "   "+styleSubtle.Render("via "+internal.GlobalRuntimeConfig.PivotHost))
 	}
 
 	// In Medium layout, skip CWD and binbag to save space for sessions

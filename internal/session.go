@@ -2914,7 +2914,7 @@ func (m *Manager) handlePivot(args []string) {
 		fmt.Println(ui.Error(fmt.Sprintf("Failed to set pivot: %v", err)))
 		return
 	}
-	fmt.Println(ui.Success(fmt.Sprintf("Pivot: %s (all URLs/payloads will use this IP)", ip)))
+	fmt.Println(ui.Info(fmt.Sprintf("Pivoting through %s", ip)))
 }
 
 // --- TUI adapter methods ---
