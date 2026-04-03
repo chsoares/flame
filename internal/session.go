@@ -64,15 +64,14 @@ type SessionInfo struct {
 }
 
 // Directory retorna o diretório base da sessão
-// Formato: ~/.gummy/sessions/2026-04-01/HHMMSS_IP_user/
+// Formato: ~/.gummy/sessions/20260401-150405_IP_user/
 func (s *SessionInfo) Directory() string {
-	date := s.CreatedAt.Format("2006-01-02")
-	timestamp := s.CreatedAt.Format("150405")
+	timestamp := s.CreatedAt.Format("20060102-150405")
 	whoami := sanitizePath(s.Whoami)
 	dirname := fmt.Sprintf("%s_%s_%s", timestamp, s.RemoteIP, whoami)
 
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".gummy", "sessions", date, dirname)
+	return filepath.Join(home, ".gummy", "sessions", dirname)
 }
 
 // ScriptsDir retorna o diretório de scripts e cria se não existir
@@ -2373,8 +2372,7 @@ func (m *Manager) GetSessionCount() int {
 	return len(m.sessions)
 }
 
-// GetSessionLogDir returns today's session log directory if THIS instance created logs.
-// Returns empty string if no sessions were logged in this run.
+// GetSessionLogDir returns the sessions directory if THIS instance created logs.
 func (m *Manager) GetSessionLogDir() string {
 	m.mu.RLock()
 	hasLogs := m.hasCreatedLogs
@@ -2386,7 +2384,7 @@ func (m *Manager) GetSessionLogDir() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".gummy", "sessions", time.Now().Format("2006-01-02"))
+	return filepath.Join(home, ".gummy", "sessions")
 }
 
 // HasActiveSessions returns true if there are any active sessions

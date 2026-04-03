@@ -81,6 +81,7 @@ func main() {
 	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
 		width = w
 	}
+	fmt.Println()
 	fmt.Println(tui.RenderExitBanner(width))
 
 	// Show session log path if this instance created logs
