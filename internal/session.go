@@ -204,10 +204,10 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Build the remote command
+	// Build the remote command args (use -- to separate bash opts from script args)
 	argsStr := ""
 	if len(args) > 0 {
-		argsStr = " " + strings.Join(args, " ")
+		argsStr = " -- " + strings.Join(args, " ")
 	}
 
 	var remoteCmd string
@@ -1714,18 +1714,16 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		m.spinnerUpdate(spinID, fmt.Sprintf("Running %s...", moduleName))
+		// Stop spinner — module is launching, user can continue working
+		m.stopSpinner(spinID)
 
-		// Run module on the WORKER session (main session stays free)
-		// module.Run is now BLOCKING — waits until script completes
+		// Run module on worker (blocking — runs in this goroutine)
 		old := os.Stdout
 		devnull, _ := os.Open(os.DevNull)
 		os.Stdout = devnull
 		err := module.Run(context.Background(), workerSession, args)
 		os.Stdout = old
 		devnull.Close()
-
-		m.stopSpinner(spinID)
 
 		if err != nil {
 			m.notify(ui.Error(fmt.Sprintf("Module %s failed: %v", moduleName, err)) + "\n")
@@ -1734,14 +1732,6 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 			m.notify(ui.Info(fmt.Sprintf("Module %s — output sent to new terminal window", moduleName)) + "\n")
 			m.notifyOverlay(fmt.Sprintf("Module %s started", moduleName), 0)
 		}
-
-		// module.Run is now blocking — when it returns, the script finished.
-		// The ExecuteWithStreamingCtx goroutine inside RunScriptInMemory will
-		// block until the done marker is received. After that, kill the worker.
-		// (Worker conn closes naturally when the remote shell exits, but we
-		// explicitly remove it to clean up)
-		workerSession.Conn.Close()
-		m.RemoveSession(workerSession.ID)
 	}()
 }
 
