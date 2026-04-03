@@ -584,7 +584,7 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.statusBar.Context = ContextMenu
 			a.input.SetContext(ContextMenu)
 			a.switchToMenu()
-			a.menuAppend(ui.ShellDetach("Detached from interactive shell") + "\n\n")
+			a.menuAppend(ui.ShellDetach("Detached from shell") + "\n\n")
 			return a, nil
 		}
 		// Menu mode: F12 = attach (same as typing "shell")
