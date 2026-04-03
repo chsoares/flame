@@ -47,6 +47,7 @@ type CommandExecutor interface {
 	SetTransferDoneFunc(fn func(string, bool, error))           // transfer done (filename, upload, error)
 	StartUpload(ctx context.Context, localPath, remotePath string) // async upload
 	StartDownload(ctx context.Context, remotePath, localPath string) // async download
+	StartSpawn()                                                     // async spawn
 }
 
 // App is the root Bubble Tea model for the Gummy TUI.
@@ -640,6 +641,9 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 		case strings.HasPrefix(cmd, "download "):
 			return a.handleDownloadCmd(cmd)
 
+		case cmd == "spawn":
+			return a.handleSpawnCmd()
+
 		default:
 			output := a.executor.ExecuteCommand(cmd)
 			if output != "" {
@@ -800,12 +804,14 @@ func (a App) executeBangCommand(cmd string) (tea.Model, tea.Cmd) {
 	prompt := styleMagenta.Bold(true).Render("!") + " "
 	a.menuAppend(prompt + styleBase.Render(cmd) + "\n")
 
-	// Route upload/download to async handlers
+	// Route async commands
 	switch {
 	case strings.HasPrefix(cmd, "upload "):
 		return a.handleUploadCmd(cmd)
 	case strings.HasPrefix(cmd, "download "):
 		return a.handleDownloadCmd(cmd)
+	case cmd == "spawn":
+		return a.handleSpawnCmd()
 	default:
 		// Sync commands — execute and buffer output
 		output := a.executor.ExecuteCommand(cmd)
@@ -819,6 +825,17 @@ func (a App) executeBangCommand(cmd string) (tea.Model, tea.Cmd) {
 		a.syncSessionInfo()
 		return a, nil
 	}
+}
+
+// handleSpawnCmd launches spawn asynchronously.
+func (a App) handleSpawnCmd() (tea.Model, tea.Cmd) {
+	if a.executor.GetSelectedSessionID() == 0 {
+		a.menuAppend(ui.Error("No session selected. Use 'use <id>' first") + "\n\n")
+		return a, nil
+	}
+
+	a.executor.StartSpawn()
+	return a, nil
 }
 
 // expandTilde replaces a leading ~ with the user's home directory.
