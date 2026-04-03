@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -665,6 +666,10 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 		case cmd == "spawn":
 			return a.handleSpawnCmd()
 
+		case strings.HasPrefix(cmd, "kill "):
+			// If killing the active session while in shell mode, detach first
+			return a.handleKillCmd(cmd)
+
 		default:
 			output := a.executor.ExecuteCommand(cmd)
 			if output != "" {
@@ -675,23 +680,6 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 			}
 			a.menuAppend("\n")
 			a.syncSessionInfo()
-
-			// Fire notification for kill commands (can't p.Send from inside ExecuteCommand)
-			if strings.HasPrefix(cmd, "kill ") && output != "" && !strings.Contains(output, "not found") && !strings.Contains(output, "Error") {
-				// Strip ANSI + leading icon from the cli output to get clean text
-				notifyMsg := stripANSI(strings.TrimSpace(output))
-				// Remove leading nerd font icon (multi-byte char + space)
-				if idx := strings.Index(notifyMsg, " "); idx >= 0 && idx <= 4 {
-					notifyMsg = strings.TrimSpace(notifyMsg[idx:])
-				}
-				return a, func() tea.Msg {
-					return showNotifyMsg{
-						Message: notifyMsg,
-						Level:   NotifyError,
-					}
-				}
-			}
-
 			return a, nil
 		}
 
@@ -833,6 +821,8 @@ func (a App) executeBangCommand(cmd string) (tea.Model, tea.Cmd) {
 		return a.handleDownloadCmd(cmd)
 	case cmd == "spawn":
 		return a.handleSpawnCmd()
+	case strings.HasPrefix(cmd, "kill "):
+		return a.handleKillCmd(cmd)
 	default:
 		// Sync commands — execute and buffer output
 		output := a.executor.ExecuteCommand(cmd)
@@ -846,6 +836,37 @@ func (a App) executeBangCommand(cmd string) (tea.Model, tea.Cmd) {
 		a.syncSessionInfo()
 		return a, nil
 	}
+}
+
+// handleKillCmd handles kill with proper context switching if killing active session.
+func (a App) handleKillCmd(cmd string) (tea.Model, tea.Cmd) {
+	// If we're in shell mode and killing the active session, switch to menu FIRST
+	if a.context == ContextShell {
+		// Parse session ID from command
+		parts := strings.Fields(cmd)
+		if len(parts) >= 2 {
+			if killID, err := strconv.Atoi(parts[1]); err == nil && killID == a.activeSession {
+				// Killing our own session — detach first
+				a.context = ContextMenu
+				a.header.Context = ContextMenu
+				a.statusBar.Context = ContextMenu
+				a.input.SetContext(ContextMenu)
+				a.switchToMenu()
+			}
+		}
+	}
+
+	// Execute kill
+	output := a.executor.ExecuteCommand(cmd)
+	if output != "" {
+		a.menuAppend(output)
+		if !strings.HasSuffix(output, "\n") {
+			a.menuAppend("\n")
+		}
+	}
+	a.menuAppend("\n")
+	a.syncSessionInfo()
+	return a, nil
 }
 
 // handleSpawnCmd launches spawn asynchronously.
@@ -1291,8 +1312,25 @@ func (a App) renderSidebar() string {
 
 	if a.executor != nil && sessionCount > 0 {
 		sessionsDisplay := a.executor.GetSessionsForDisplay()
-		for _, sl := range strings.Split(sessionsDisplay, "\n") {
-			lines = append(lines, " "+sl)
+		sessLines := strings.Split(sessionsDisplay, "\n")
+
+		// Calculate available space for sessions
+		maxLines := a.layout.Sidebar.H - len(lines) - 1 // -1 for safety
+		if maxLines < 2 {
+			maxLines = 2
+		}
+
+		if len(sessLines) <= maxLines {
+			for _, sl := range sessLines {
+				lines = append(lines, " "+sl)
+			}
+		} else {
+			// Show what fits + "+N more"
+			for _, sl := range sessLines[:maxLines-1] {
+				lines = append(lines, " "+sl)
+			}
+			remaining := len(sessLines) - (maxLines - 1)
+			lines = append(lines, " "+styleSubtle.Render(fmt.Sprintf("+%d more", remaining)))
 		}
 	} else {
 		lines = append(lines, styleSubtle.Render("  None"))
@@ -1306,6 +1344,7 @@ func Run(executor CommandExecutor, listenerAddr string) error {
 	executor.SetSilent(true)
 
 	app := New(executor, listenerAddr)
+	app.input.LoadHistory()
 	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	// Wire up background notifications → TUI via program.Send()
@@ -1334,6 +1373,9 @@ func Run(executor CommandExecutor, listenerAddr string) error {
 	})
 
 	_, err := p.Run()
+
+	// Save menu history on exit
+	app.input.SaveHistory()
 
 	executor.StopShellRelay()
 	executor.SetSilent(false)

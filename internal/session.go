@@ -1404,6 +1404,13 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	// Notify detection results
 	infoMsg := fmt.Sprintf("Session %d: %s (%s)", session.NumID, session.Whoami, session.Platform)
 	m.notify(ui.Info(infoMsg) + "\n")
+
+	// Auto-select first session
+	m.mu.Lock()
+	if m.selectedSession == nil {
+		m.selectedSession = session
+	}
+	m.mu.Unlock()
 }
 
 // RemoveSession remove uma sessão do gerenciador

@@ -1,6 +1,10 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -225,4 +229,34 @@ func (i *Input) Update(msg tea.Msg) (*Input, tea.Cmd) {
 
 func (i *Input) View() string {
 	return i.prompt + i.textinput.View()
+}
+
+// historyPath returns the path to the persistent menu history file.
+func historyPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".gummy", "menu_history.txt")
+}
+
+// LoadHistory loads menu history from disk.
+func (i *Input) LoadHistory() {
+	data, err := os.ReadFile(historyPath())
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line != "" {
+			i.menuHistory = append(i.menuHistory, line)
+		}
+	}
+}
+
+// SaveHistory persists menu history to disk (last 500 entries).
+func (i *Input) SaveHistory() {
+	hist := i.menuHistory
+	if len(hist) > 500 {
+		hist = hist[len(hist)-500:]
+	}
+	path := historyPath()
+	os.MkdirAll(filepath.Dir(path), 0755)
+	os.WriteFile(path, []byte(strings.Join(hist, "\n")+"\n"), 0644)
 }
