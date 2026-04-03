@@ -27,7 +27,6 @@ func InitRuntimeConfig(listenerIP string) (*RuntimeConfig, error) {
 		HTTPPort:      config.Binbag.HTTPPort,
 		PivotEnabled:  config.Pivot.Enabled,
 		PivotHost:     config.Pivot.Host,
-		PivotPort:     config.Pivot.Port,
 		ListenerIP:    listenerIP,
 	}
 
@@ -54,10 +53,9 @@ type RuntimeConfig struct {
 	HTTPPort      int
 	FileServer    *FileServer
 
-	// Pivot
+	// Pivot (IP only — ports preserved from original services)
 	PivotEnabled bool
 	PivotHost    string
-	PivotPort    int
 
 	// Listener IP (for HTTP URLs)
 	ListenerIP string
@@ -74,7 +72,6 @@ func NewRuntimeConfig(config *Config, listenerIP string) *RuntimeConfig {
 		HTTPPort:      config.Binbag.HTTPPort,
 		PivotEnabled:  config.Pivot.Enabled,
 		PivotHost:     config.Pivot.Host,
-		PivotPort:     config.Pivot.Port,
 		ListenerIP:    listenerIP,
 	}
 
@@ -136,14 +133,8 @@ func (rc *RuntimeConfig) DisableBinbag() error {
 	return nil
 }
 
-// SetPivot configures pivot point for HTTP downloads
-func (rc *RuntimeConfig) SetPivot(host string, port int) error {
-	// Validate port
-	if port <= 0 || port > 65535 {
-		return fmt.Errorf("invalid port: %d (must be 1-65535)", port)
-	}
-
-	// Validate host (basic check - not empty)
+// SetPivot configures pivot IP (port is preserved from original services)
+func (rc *RuntimeConfig) SetPivot(host string) error {
 	if host == "" {
 		return fmt.Errorf("host cannot be empty")
 	}
@@ -151,10 +142,8 @@ func (rc *RuntimeConfig) SetPivot(host string, port int) error {
 	rc.mu.Lock()
 	rc.PivotEnabled = true
 	rc.PivotHost = host
-	rc.PivotPort = port
 	rc.mu.Unlock()
 
-	// No autoPersist — pivot is session-specific, not persisted
 	return nil
 }
 
@@ -168,23 +157,29 @@ func (rc *RuntimeConfig) DisablePivot() error {
 	return nil
 }
 
-// GetHTTPURL returns HTTP URL for file, using pivot if configured
+// GetHTTPURL returns HTTP URL for file, using pivot IP if configured (port preserved)
 func (rc *RuntimeConfig) GetHTTPURL(filename string) string {
 	rc.mu.RLock()
 	defer rc.mu.RUnlock()
 
-	var host string
-	var port int
-
+	host := rc.ListenerIP
 	if rc.PivotEnabled {
 		host = rc.PivotHost
-		port = rc.PivotPort
-	} else {
-		host = rc.ListenerIP
-		port = rc.HTTPPort
 	}
 
-	return fmt.Sprintf("http://%s:%d/%s", host, port, filename)
+	return fmt.Sprintf("http://%s:%d/%s", host, rc.HTTPPort, filename)
+}
+
+// GetPivotIP returns the pivot IP if enabled, otherwise the listener IP.
+// Used by rev, spawn, ssh to generate payloads with the right IP.
+func (rc *RuntimeConfig) GetPivotIP() string {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+
+	if rc.PivotEnabled {
+		return rc.PivotHost
+	}
+	return rc.ListenerIP
 }
 
 // SetBinbagPort validates and updates the HTTP port, restarting the server if running
@@ -295,7 +290,6 @@ func (rc *RuntimeConfig) SaveToFile() error {
 	config.Binbag.HTTPPort = rc.HTTPPort
 	config.Pivot.Enabled = rc.PivotEnabled
 	config.Pivot.Host = rc.PivotHost
-	config.Pivot.Port = rc.PivotPort
 
 	// Write to file
 	file, err := os.Create(configPath)

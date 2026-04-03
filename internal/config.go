@@ -18,7 +18,6 @@ type Config struct {
 	Pivot struct {
 		Enabled bool   `toml:"enabled"`
 		Host    string `toml:"host"`
-		Port    int    `toml:"port"`
 	} `toml:"pivot"`
 }
 
@@ -39,11 +38,9 @@ func DefaultConfig() *Config {
 		Pivot: struct {
 			Enabled bool   `toml:"enabled"`
 			Host    string `toml:"host"`
-			Port    int    `toml:"port"`
 		}{
 			Enabled: false,
 			Host:    "",
-			Port:    0,
 		},
 	}
 }
@@ -104,11 +101,10 @@ path = "~/Lab/binbag"
 http_port = 8080
 
 [pivot]
-# Optional: Use pivot point for HTTP downloads in internal networks
-# When enabled, HTTP URLs use this address instead of direct connection
+# Optional: Route all URLs/payloads through a pivot IP (e.g., ligolo)
+# Only the IP is replaced — ports are preserved from original services
 enabled = false
 host = ""
-port = 0
 `
 
 	return os.WriteFile(configPath, []byte(configContent), 0644)

