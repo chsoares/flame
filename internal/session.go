@@ -43,6 +43,7 @@ type Manager struct {
 	shellOutputFunc    func(string, int, []byte) // Callback for shell relay output (sessionID, numID, data)
 	sessionDisconnFunc func(int, string)       // Callback for session disconnect (numID, remoteIP)
 	relaySuppressNano     atomic.Int64            // UnixNano of last stty resize (atomic for goroutine safety)
+	pendingWorker         atomic.Bool             // Next AddSession will be a hidden worker
 	listenerIP      string                  // IP do listener para geração de payloads
 	listenerPort    int                     // Porta do listener para geração de payloads
 }
@@ -62,6 +63,7 @@ type SessionInfo struct {
 	relayCancel  context.CancelFunc // Cancel function for TUI relay goroutine
 	moduleCancel context.CancelFunc // Cancel function for module streaming goroutine
 	relayActive bool               // Whether relay goroutine is running
+	isWorker    bool               // Hidden worker session (module execution)
 }
 
 // Directory retorna o diretório base da sessão
@@ -1308,35 +1310,51 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 		Active:    false,
 		CreatedAt: time.Now(),
 	}
+	// Check if this is a worker session (spawned for module execution)
+	if m.pendingWorker.CompareAndSwap(true, false) {
+		session.isWorker = true
+	}
 	m.sessions[id] = session
 	m.nextID++
 	m.mu.Unlock()
 
-	// Notify about new connection (lock-free — notify uses p.Send which is async)
-	m.notify(ui.SessionOpened(session.NumID, remoteIP))
-	m.notifyOverlay(fmt.Sprintf("Reverse shell received on session %d (%s)", session.NumID, remoteIP), 1)
+	if session.isWorker {
+		// Worker: silent detection, no notifications, no spinner, no stdout
+		old := os.Stdout
+		oldErr := os.Stderr
+		devnull, _ := os.Open(os.DevNull)
+		os.Stdout = devnull
+		os.Stderr = devnull
+		m.detectSessionInfo(session)
+		os.Stdout = old
+		os.Stderr = oldErr
+		devnull.Close()
+		handler.SetPlatform(session.Platform)
+	} else {
+		// Normal session: full notifications
+		m.notify(ui.SessionOpened(session.NumID, remoteIP))
+		m.notifyOverlay(fmt.Sprintf("Reverse shell received on session %d (%s)", session.NumID, remoteIP), 1)
 
-	// Detect whoami and platform (blocks ~5-10s, must NOT hold the lock)
-	spinID := m.startSpinner("Detecting session info...")
-	m.detectSessionInfo(session)
-	m.stopSpinner(spinID)
+		spinID := m.startSpinner("Detecting session info...")
+		m.detectSessionInfo(session)
+		m.stopSpinner(spinID)
 
-	// Set platform on handler
-	handler.SetPlatform(session.Platform)
+		handler.SetPlatform(session.Platform)
+
+		// Notify detection results
+		infoMsg := fmt.Sprintf("Session %d: %s (%s)", session.NumID, session.Whoami, session.Platform)
+		m.notify(ui.Info(infoMsg) + "\n")
+
+		// Auto-select first non-worker session
+		m.mu.Lock()
+		if m.selectedSession == nil {
+			m.selectedSession = session
+		}
+		m.mu.Unlock()
+	}
 
 	// Start session health monitoring
 	go m.monitorSession(session)
-
-	// Notify detection results
-	infoMsg := fmt.Sprintf("Session %d: %s (%s)", session.NumID, session.Whoami, session.Platform)
-	m.notify(ui.Info(infoMsg) + "\n")
-
-	// Auto-select first session
-	m.mu.Lock()
-	if m.selectedSession == nil {
-		m.selectedSession = session
-	}
-	m.mu.Unlock()
 }
 
 // RemoveSession remove uma sessão do gerenciador
@@ -1349,16 +1367,18 @@ func (m *Manager) RemoveSession(id string) {
 		return
 	}
 
-	m.notify(ui.SessionClosed(session.NumID, session.RemoteIP))
-	m.notifyOverlay(fmt.Sprintf("Session %d (%s) closed", session.NumID, session.RemoteIP), 2)
+	if !session.isWorker {
+		m.notify(ui.SessionClosed(session.NumID, session.RemoteIP))
+		m.notifyOverlay(fmt.Sprintf("Session %d (%s) closed", session.NumID, session.RemoteIP), 2)
+	}
 
 	// Cancel relay goroutine if running
 	if session.relayCancel != nil {
 		session.relayCancel()
 	}
 
-	// Notify TUI about disconnect (for auto-return from shell mode)
-	if m.sessionDisconnFunc != nil {
+	// Notify TUI about disconnect (for auto-return from shell mode) — skip workers
+	if m.sessionDisconnFunc != nil && !session.isWorker {
 		m.sessionDisconnFunc(session.NumID, session.RemoteIP)
 	}
 
@@ -1400,11 +1420,19 @@ func (m *Manager) ListSessions() {
 	// Ordenar por NumID para exibição consistente
 	var sessions []*SessionInfo
 	for _, session := range m.sessions {
+		if session.isWorker {
+			continue // Hide worker sessions
+		}
 		sessions = append(sessions, session)
 	}
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].NumID < sessions[j].NumID
 	})
+
+	if len(sessions) == 0 {
+		fmt.Println(ui.Info("No active sessions"))
+		return
+	}
 
 	for _, session := range sessions {
 		sessionLine := fmt.Sprintf("%-3d %-18s %-25s %s", session.NumID, session.RemoteIP, session.Whoami, session.Platform)
@@ -1650,7 +1678,8 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 			return
 		}
 
-		initialCount := m.GetSessionCount()
+		initialCount := m.getAllSessionCount()
+		m.pendingWorker.Store(true) // Next AddSession will be marked as worker
 		session.Conn.Write([]byte(payload))
 
 		if session.Handler != nil && session.Handler.IsPTYUpgraded() {
@@ -1662,7 +1691,7 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		var workerSession *SessionInfo
 		for i := 0; i < 50; i++ {
 			time.Sleep(200 * time.Millisecond)
-			if m.GetSessionCount() > initialCount {
+			if m.getAllSessionCount() > initialCount {
 				// Find the newest session
 				m.mu.RLock()
 				var newest *SessionInfo
@@ -1684,15 +1713,15 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 			return
 		}
 
-		// Wait for worker session detection to complete
-		for i := 0; i < 15; i++ {
+		// Wait for worker detection (platform needed for module execution)
+		for i := 0; i < 20; i++ {
 			if workerSession.Platform != "detecting..." {
 				break
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		m.spinnerUpdate(spinID, fmt.Sprintf("Running %s on worker session #%d...", moduleName, workerSession.NumID))
+		m.spinnerUpdate(spinID, fmt.Sprintf("Running %s...", moduleName))
 
 		// Run module on the WORKER session (main session stays free)
 		old := os.Stdout
@@ -1708,7 +1737,7 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 			m.notify(ui.Error(fmt.Sprintf("Module %s failed: %v", moduleName, err)) + "\n")
 			m.notifyOverlay(fmt.Sprintf("Module %s failed", moduleName), 2)
 		} else {
-			m.notify(ui.Info(fmt.Sprintf("Module %s — output sent to new terminal window (worker #%d)", moduleName, workerSession.NumID)) + "\n")
+			m.notify(ui.Info(fmt.Sprintf("Module %s — output sent to new terminal window", moduleName)) + "\n")
 			m.notifyOverlay(fmt.Sprintf("Module %s started", moduleName), 0)
 		}
 	}()
@@ -2416,8 +2445,21 @@ func (m *Manager) showHelp() {
 	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Available Commands", ui.SymbolGem), lines))
 }
 
-// GetSessionCount retorna o número de sessões ativas
+// GetSessionCount retorna o número de sessões ativas (exclui workers)
 func (m *Manager) GetSessionCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	count := 0
+	for _, s := range m.sessions {
+		if !s.isWorker {
+			count++
+		}
+	}
+	return count
+}
+
+// getAllSessionCount returns total sessions including workers (for spawn detection)
+func (m *Manager) getAllSessionCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.sessions)
@@ -3057,11 +3099,17 @@ func (m *Manager) ExecuteCommand(cmd string) string {
 	return output
 }
 
-// SessionCount returns the number of active sessions.
+// SessionCount returns the number of visible (non-worker) sessions.
 func (m *Manager) SessionCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return len(m.sessions)
+	count := 0
+	for _, s := range m.sessions {
+		if !s.isWorker {
+			count++
+		}
+	}
+	return count
 }
 
 // GetSessionsForDisplay returns a formatted string of sessions for the TUI sidebar.
@@ -3075,6 +3123,9 @@ func (m *Manager) GetSessionsForDisplay() string {
 
 	var sessions []*SessionInfo
 	for _, session := range m.sessions {
+		if session.isWorker {
+			continue
+		}
 		sessions = append(sessions, session)
 	}
 	sort.Slice(sessions, func(i, j int) bool {
