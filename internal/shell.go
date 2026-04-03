@@ -53,6 +53,11 @@ func (h *Handler) SetViewportSize(cols, rows int) {
 	h.viewportRows = rows
 }
 
+// IsPTYUpgraded returns true if the session has a PTY upgrade active.
+func (h *Handler) IsPTYUpgraded() bool {
+	return h.ptyUpgrader != nil
+}
+
 // SetPlatform define a plataforma detectada (chamado antes de Start())
 func (h *Handler) SetPlatform(platform string) {
 	h.platform = platform

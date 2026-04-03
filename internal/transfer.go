@@ -18,10 +18,11 @@ import (
 
 // Transferer handles file upload/download operations
 type Transferer struct {
-	conn       net.Conn
-	sessionID  string
-	platform   string       // "windows", "linux", or "unknown"
-	progressFn func(string) // Optional callback for progress updates (TUI mode)
+	conn        net.Conn
+	sessionID   string
+	platform    string       // "windows", "linux", or "unknown"
+	progressFn  func(string) // Optional callback for progress updates (TUI mode)
+	ptyUpgraded bool         // Use smaller chunks for PTY-upgraded shells
 }
 
 // TransferConfig holds transfer configuration
@@ -107,10 +108,10 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	// Send file in chunks
 	config := DefaultTransferConfig()
 
-	// Platform-specific chunk sizes
+	// Chunk size: smaller for Windows and PTY-upgraded shells (PTY buffer limits)
 	chunkSize := config.ChunkSize
-	if t.platform == "windows" {
-		chunkSize = 1024 // 1KB chunks for Windows (safe from quote escaping issues)
+	if t.platform == "windows" || t.ptyUpgraded {
+		chunkSize = 1024 // 1KB chunks — safe for PTY buffers and Windows
 	}
 	chunks := splitIntoChunks(encoded, chunkSize)
 
@@ -166,11 +167,10 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 		}
 
 		// Small sleep to avoid overwhelming the shell
-		// Optimized for speed while maintaining stability
-		if t.platform == "windows" {
-			time.Sleep(15 * time.Millisecond) // Windows: 1KB every 15ms = ~67KB/s
+		if t.platform == "windows" || t.ptyUpgraded {
+			time.Sleep(15 * time.Millisecond) // 1KB every 15ms = ~67KB/s (safe for PTY/Windows)
 		} else {
-			time.Sleep(5 * time.Millisecond) // Linux: 32KB every 5ms = ~6.4MB/s
+			time.Sleep(5 * time.Millisecond) // 32KB every 5ms = ~6.4MB/s (raw shell)
 		}
 
 		bytesSent += len(chunk)
@@ -193,15 +193,13 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 			}
 		}
 
-		// Drain buffer to prevent overflow (platform-specific timing)
-		if t.platform == "windows" {
-			// Windows PowerShell: drain every 10 chunks (more frequent, same as UploadToPowerShellVariable)
+		// Drain buffer to prevent overflow
+		if t.platform == "windows" || t.ptyUpgraded {
 			if i%10 == 0 && i > 0 {
 				time.Sleep(150 * time.Millisecond)
 				t.drainConnection()
 			}
 		} else {
-			// Linux: drain every 25 chunks
 			if i%25 == 0 && i > 0 {
 				time.Sleep(100 * time.Millisecond)
 				t.drainConnection()
@@ -230,10 +228,8 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	endMarker := "GUMMY_MD5_END"
 	var checksumCmd string
 	if t.platform == "windows" {
-		// PowerShell: Calculate MD5 hash
 		checksumCmd = fmt.Sprintf("echo %s; (Get-FileHash '%s' -Algorithm MD5).Hash.ToLower(); echo %s", marker, remotePath, endMarker)
 	} else {
-		// Linux/Unix
 		checksumCmd = fmt.Sprintf("echo %s; md5sum %s 2>/dev/null | awk '{print $1}'; echo %s", marker, remotePath, endMarker)
 	}
 	t.conn.Write([]byte(checksumCmd + "\r\n"))

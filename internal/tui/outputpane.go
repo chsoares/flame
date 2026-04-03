@@ -248,6 +248,11 @@ func (o *OutputPane) StartSpinner(id int, text string) {
 	o.refreshSpinnerContent()
 }
 
+// IsSpinnerActive returns whether a spinner is currently running.
+func (o *OutputPane) IsSpinnerActive() bool {
+	return o.spinnerActive
+}
+
 // StopSpinner removes the spinner if the ID matches.
 func (o *OutputPane) StopSpinner(id int) {
 	if o.spinnerID == id {

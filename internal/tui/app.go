@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,9 +43,10 @@ type CommandExecutor interface {
 	WriteToShell(data string) error                            // write to selected session's conn
 	ResizePTY(cols, rows int)                                  // send stty resize to remote PTY
 	CompleteInput(line string) string                          // tab completion
-	SetTransferProgressFunc(fn func(string, int, string, bool))                               // transfer progress (filename, pct, right, upload)
-	StartUpload(localPath, remotePath string, progressFn func(string), doneFn func(error))   // async upload
-	StartDownload(remotePath, localPath string, progressFn func(string), doneFn func(error)) // async download
+	SetTransferProgressFunc(fn func(string, int, string, bool))  // transfer progress (filename, pct, right, upload)
+	SetTransferDoneFunc(fn func(string, bool, error))           // transfer done (filename, upload, error)
+	StartUpload(ctx context.Context, localPath, remotePath string) // async upload
+	StartDownload(ctx context.Context, remotePath, localPath string) // async download
 }
 
 // App is the root Bubble Tea model for the Gummy TUI.
@@ -69,6 +71,10 @@ type App struct {
 	menuBuffer     *strings.Builder          // Menu output buffer
 	sessionBuffers map[int]*strings.Builder   // Per-session shell output buffers
 	activeSession  int                        // NumID of the session currently shown in viewport (0 = menu)
+
+	// Transfer state
+	transferActive bool               // True while upload/download is in progress (blocks input)
+	transferCancel context.CancelFunc // Cancel function for active transfer
 
 	// Notifications
 	notifyID int // Incremented on each notification to invalidate stale clear timers
@@ -231,10 +237,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case transferDoneMsg:
-		// Clear progress bar
+		// Clear progress bar and transfer lock
 		a.statusBar.TransferPct = -1
 		a.statusBar.TransferMsg = ""
 		a.statusBar.TransferRight = ""
+		a.transferActive = false
 		action := "Download"
 		if msg.Upload {
 			action = "Upload"
@@ -306,7 +313,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Append entering message with session number to menu buffer
 		a.menuAppend(ui.Info(fmt.Sprintf("Entering interactive shell #%d", selectedID)) + "\n")
-		a.menuAppend(ui.CommandHelp("Press F12 to detach") + "\n")
+		a.menuAppend(ui.CommandHelp("Press F12 to detach") + "\n\n")
 		a.context = ContextShell
 		a.header.Context = ContextShell
 		a.statusBar.Context = ContextShell
@@ -339,7 +346,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.statusBar.Context = ContextMenu
 			a.input.SetContext(ContextMenu)
 			a.switchToMenu()
-			a.menuAppend("\n" + styleRed.Render("--- Session disconnected ---") + "\n\n")
 		}
 		a.syncSessionInfo()
 		return a, nil
@@ -481,21 +487,62 @@ func (a App) updateDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
-		if a.context == ContextShell {
-			a.executor.WriteToShell("\x03")
+	key := msg.String()
+
+	// Bang mode: backspace on empty input exits bang mode
+	if a.input.InBangMode() && (key == "backspace" || key == "delete") {
+		if a.input.Value() == "" {
+			a.input.ExitBangMode()
 			return a, nil
+		}
+	}
+
+	// Shell context: ! as first character enters bang mode
+	if a.context == ContextShell && !a.input.InBangMode() && key == "!" {
+		if a.input.Value() == "" {
+			a.input.EnterBangMode()
+			return a, nil // consume the !
+		}
+	}
+
+	switch key {
+	case "ctrl+c", "escape":
+		// Cancel active transfer
+		if a.transferActive && a.transferCancel != nil {
+			a.transferCancel()
+			return a, nil
+		}
+		if key == "ctrl+c" {
+			if a.context == ContextShell && !a.input.InBangMode() {
+				a.executor.WriteToShell("\x03")
+				return a, nil
+			}
+		}
+		if a.input.InBangMode() {
+			a.input.ExitBangMode()
 		}
 		return a, nil
 
 	case "ctrl+d":
+		if a.input.InBangMode() {
+			a.input.ExitBangMode()
+			return a, nil
+		}
 		return a.tryQuitCtrlD()
 
 	case "enter":
+		// Block commands during active transfer or spinner
+		if a.transferActive || a.output.IsSpinnerActive() {
+			return a, nil
+		}
 		cmd := a.input.Submit()
 		if cmd == "" {
 			return a, nil
+		}
+		if a.input.InBangMode() {
+			// Execute as gummy command from shell context
+			a.input.ExitBangMode()
+			return a.executeBangCommand(cmd)
 		}
 		return a.executeInput(cmd)
 
@@ -508,8 +555,7 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case "tab":
-		if a.context == ContextMenu {
-			// Tab completion in menu mode
+		if a.context == ContextMenu || a.input.InBangMode() {
 			current := a.input.Value()
 			completed := a.executor.CompleteInput(current)
 			if completed != current {
@@ -519,6 +565,9 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case "f12":
+		if a.transferActive {
+			return a, nil // Block detach during transfer
+		}
 		if a.context == ContextShell {
 			a.context = ContextMenu
 			a.header.Context = ContextMenu
@@ -730,9 +779,45 @@ func (a *App) showScrollbar() tea.Cmd {
 
 // menuAppend appends text to the menu buffer and, if menu is active, also to the viewport.
 func (a *App) menuAppend(text string) {
+	// Suppress double blank lines: if buffer ends with \n\n and text starts with \n, skip leading \n
+	buf := a.menuBuffer.String()
+	if strings.HasSuffix(buf, "\n\n") && strings.HasPrefix(text, "\n") {
+		text = strings.TrimLeft(text, "\n")
+		if text == "" {
+			return
+		}
+	}
 	a.menuBuffer.WriteString(text)
 	if a.activeSession == 0 {
 		a.output.Append(text)
+	}
+}
+
+// executeBangCommand runs a gummy command from shell mode (!prefix).
+// Output goes to menuBuffer (visible on detach), notifications show immediately.
+func (a App) executeBangCommand(cmd string) (tea.Model, tea.Cmd) {
+	// Echo the bang command in menu buffer
+	prompt := styleMagenta.Bold(true).Render("!") + " "
+	a.menuAppend(prompt + styleBase.Render(cmd) + "\n")
+
+	// Route upload/download to async handlers
+	switch {
+	case strings.HasPrefix(cmd, "upload "):
+		return a.handleUploadCmd(cmd)
+	case strings.HasPrefix(cmd, "download "):
+		return a.handleDownloadCmd(cmd)
+	default:
+		// Sync commands — execute and buffer output
+		output := a.executor.ExecuteCommand(cmd)
+		if output != "" {
+			a.menuAppend(output)
+			if !strings.HasSuffix(output, "\n") {
+				a.menuAppend("\n")
+			}
+		}
+		a.menuAppend("\n")
+		a.syncSessionInfo()
+		return a, nil
 	}
 }
 
@@ -747,7 +832,7 @@ func expandTilde(path string) string {
 	return path
 }
 
-// handleUploadCmd parses and launches an async upload.
+// handleUploadCmd parses and launches an async upload (fire-and-forget).
 func (a App) handleUploadCmd(cmd string) (tea.Model, tea.Cmd) {
 	parts := strings.Fields(cmd)
 	if len(parts) < 2 {
@@ -765,17 +850,15 @@ func (a App) handleUploadCmd(cmd string) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	filename := filepath.Base(localPath)
-
-	// Launch async — spinner is managed by Manager.StartUpload
-	return a, func() tea.Msg {
-		done := make(chan error, 1)
-		a.executor.StartUpload(localPath, remotePath, nil, func(err error) { done <- err })
-		return transferDoneMsg{Err: <-done, Filename: filename, Upload: true}
-	}
+	// Fire-and-forget — completion arrives via transferDoneFunc → transferDoneMsg
+	ctx, cancel := context.WithCancel(context.Background())
+	a.transferActive = true
+	a.transferCancel = cancel
+	a.executor.StartUpload(ctx, localPath, remotePath)
+	return a, nil
 }
 
-// handleDownloadCmd parses and launches an async download.
+// handleDownloadCmd parses and launches an async download (fire-and-forget).
 func (a App) handleDownloadCmd(cmd string) (tea.Model, tea.Cmd) {
 	parts := strings.Fields(cmd)
 	if len(parts) < 2 {
@@ -793,14 +876,12 @@ func (a App) handleDownloadCmd(cmd string) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	filename := filepath.Base(remotePath)
-
-	// Launch async — spinner is managed by Manager.StartDownload
-	return a, func() tea.Msg {
-		done := make(chan error, 1)
-		a.executor.StartDownload(remotePath, localPath, nil, func(err error) { done <- err })
-		return transferDoneMsg{Err: <-done, Filename: filename, Upload: false}
-	}
+	// Fire-and-forget — completion arrives via transferDoneFunc → transferDoneMsg
+	ctx, cancel := context.WithCancel(context.Background())
+	a.transferActive = true
+	a.transferCancel = cancel
+	a.executor.StartDownload(ctx, remotePath, localPath)
+	return a, nil
 }
 
 // saveViewportToBuffer saves the current viewport content to the active buffer.
@@ -1179,24 +1260,27 @@ func Run(executor CommandExecutor, listenerAddr string) error {
 
 	// Wire up background notifications → TUI via program.Send()
 	executor.SetNotifyFunc(func(msg string) {
-		p.Send(CommandOutputMsg{Output: msg + "\n"})
+		go p.Send(CommandOutputMsg{Output: msg + "\n"})
 	})
 	executor.SetNotifyBarFunc(func(msg string, level int) {
-		p.Send(showNotifyMsg{Message: msg, Level: NotifyLevel(level)})
+		go p.Send(showNotifyMsg{Message: msg, Level: NotifyLevel(level)})
 	})
 	executor.SetSpinnerFunc(
-		func(id int, text string) { p.Send(spinnerStartMsg{ID: id, Text: text}) },
-		func(id int) { p.Send(spinnerStopMsg{ID: id}) },
-		func(id int, text string) { p.Send(spinnerUpdateMsg{ID: id, Text: text}) },
+		func(id int, text string) { go p.Send(spinnerStartMsg{ID: id, Text: text}) },
+		func(id int) { go p.Send(spinnerStopMsg{ID: id}) },
+		func(id int, text string) { go p.Send(spinnerUpdateMsg{ID: id, Text: text}) },
 	)
 	executor.SetTransferProgressFunc(func(filename string, pct int, right string, upload bool) {
-		p.Send(transferProgressMsg{Filename: filename, Pct: pct, Right: right, Upload: upload})
+		go p.Send(transferProgressMsg{Filename: filename, Pct: pct, Right: right, Upload: upload})
+	})
+	executor.SetTransferDoneFunc(func(filename string, upload bool, err error) {
+		go p.Send(transferDoneMsg{Filename: filename, Upload: upload, Err: err})
 	})
 	executor.SetShellOutputFunc(func(sessionID string, numID int, data []byte) {
-		p.Send(ShellOutputMsg{SessionID: sessionID, NumID: numID, Data: data})
+		go p.Send(ShellOutputMsg{SessionID: sessionID, NumID: numID, Data: data})
 	})
 	executor.SetSessionDisconnectFunc(func(numID int, remoteIP string) {
-		p.Send(SessionDisconnectedMsg{NumID: numID, RemoteIP: remoteIP})
+		go p.Send(SessionDisconnectedMsg{NumID: numID, RemoteIP: remoteIP})
 	})
 
 	_, err := p.Run()
@@ -1207,6 +1291,7 @@ func Run(executor CommandExecutor, listenerAddr string) error {
 	executor.SetNotifyBarFunc(nil)
 	executor.SetSpinnerFunc(nil, nil, nil)
 	executor.SetTransferProgressFunc(nil)
+	executor.SetTransferDoneFunc(nil)
 	executor.SetShellOutputFunc(nil)
 	executor.SetSessionDisconnectFunc(nil)
 	return err

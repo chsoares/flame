@@ -13,6 +13,7 @@ type Input struct {
 	context   ContextMode
 	width     int
 	sessionID int // Selected session NumID (0 = none)
+	bangMode  bool // In shell context, user typed ! to run gummy commands
 
 	// Per-context history
 	menuHistory    []string         // Menu command history
@@ -51,7 +52,14 @@ func (i *Input) SetWidth(w int) {
 
 func (i *Input) SetContext(ctx ContextMode) {
 	i.context = ctx
+	i.bangMode = false
 	i.histIdx = -1 // Reset history navigation on context switch
+	i.textinput.TextStyle = lipgloss.NewStyle().Foreground(colorBase)
+	if ctx == ContextShell {
+		i.textinput.Placeholder = "Type a shell command..."
+	} else {
+		i.textinput.Placeholder = "Type a command..."
+	}
 	i.updatePrompt()
 }
 
@@ -92,6 +100,9 @@ func (i *Input) Clear() {
 
 // history returns the active history slice for the current context.
 func (i *Input) history() []string {
+	if i.bangMode {
+		return i.menuHistory // Bang mode uses gummy command history
+	}
 	if i.context == ContextShell && i.sessionID > 0 {
 		return i.sessionHistory[i.sessionID]
 	}
@@ -100,6 +111,10 @@ func (i *Input) history() []string {
 
 // appendHistory adds a command to the active history.
 func (i *Input) appendHistory(val string) {
+	if i.bangMode {
+		i.menuHistory = append(i.menuHistory, val)
+		return
+	}
 	if i.context == ContextShell && i.sessionID > 0 {
 		i.sessionHistory[i.sessionID] = append(i.sessionHistory[i.sessionID], val)
 	} else {
@@ -148,7 +163,35 @@ func (i *Input) HistoryDown() {
 	}
 }
 
+// EnterBangMode switches the input to gummy command mode (! prefix in shell).
+func (i *Input) EnterBangMode() {
+	i.bangMode = true
+	i.histIdx = -1
+	i.prompt = styleMagenta.Bold(true).Render("!") + " "
+	i.textinput.Placeholder = "upload, download, run, spawn..."
+	i.textinput.TextStyle = lipgloss.NewStyle().Foreground(colorMagenta)
+	i.SetWidth(i.width)
+}
+
+// ExitBangMode switches back to normal shell input.
+func (i *Input) ExitBangMode() {
+	i.bangMode = false
+	i.histIdx = -1
+	i.textinput.Placeholder = "Type a shell command..."
+	i.textinput.TextStyle = lipgloss.NewStyle().Foreground(colorBase)
+	i.prompt = styleCyan.Render("$") + " "
+	i.SetWidth(i.width)
+}
+
+// InBangMode returns whether ! command mode is active.
+func (i *Input) InBangMode() bool {
+	return i.bangMode
+}
+
 func (i *Input) updatePrompt() {
+	if i.bangMode {
+		return // Don't override bang mode prompt
+	}
 	switch i.context {
 	case ContextShell:
 		if i.prompt == "" || i.prompt == menuPrompt(i.sessionID) {

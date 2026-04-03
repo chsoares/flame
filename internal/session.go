@@ -38,6 +38,7 @@ type Manager struct {
 	spinnerUpdate      func(int, string)       // Update spinner text in TUI (id, text)
 	nextSpinnerID      int                     // Auto-incrementing spinner ID
 	transferProgressFunc func(string, int, string, bool) // Callback for transfer progress (filename, pct, right, upload)
+	transferDoneFunc     func(string, bool, error)       // Callback for transfer completion (filename, upload, error)
 	shellOutputFunc    func(string, int, []byte) // Callback for shell relay output (sessionID, numID, data)
 	sessionDisconnFunc func(int, string)       // Callback for session disconnect (numID, remoteIP)
 	sttyResizeNano     atomic.Int64            // UnixNano of last stty resize (atomic for goroutine safety)
@@ -1034,6 +1035,11 @@ func (m *Manager) SetSpinnerFunc(start func(int, string), stop func(int), update
 // SetTransferProgressFunc sets the callback for transfer progress updates.
 func (m *Manager) SetTransferProgressFunc(fn func(string, int, string, bool)) {
 	m.transferProgressFunc = fn
+}
+
+// SetTransferDoneFunc sets the callback for transfer completion.
+func (m *Manager) SetTransferDoneFunc(fn func(string, bool, error)) {
+	m.transferDoneFunc = fn
 }
 
 // SetShellOutputFunc sets the callback for shell relay output to the TUI.
@@ -2446,28 +2452,55 @@ func (m *Manager) handleDownload(remotePath, localPath string) {
 }
 
 // StartUpload runs an upload asynchronously with TUI spinner progress.
-// doneFn is called when complete (with nil or error, and a result message).
-func (m *Manager) StartUpload(localPath, remotePath string, progressFn func(string), doneFn func(error)) {
+// Completion is reported via transferDoneFunc callback (non-blocking).
+func (m *Manager) StartUpload(ctx context.Context, localPath, remotePath string) {
 	m.mu.RLock()
 	session := m.selectedSession
 	m.mu.RUnlock()
 
+	filename := filepath.Base(localPath)
+
 	if session == nil {
-		doneFn(fmt.Errorf("No session selected"))
+		if m.transferDoneFunc != nil {
+			m.transferDoneFunc(filename, true, fmt.Errorf("No session selected"))
+		}
 		return
 	}
 
-	filename := filepath.Base(localPath)
 	spinID := m.startSpinner(fmt.Sprintf("Uploading %s...", filename))
 
 	go func() {
+		// Stop relay for exclusive conn access during transfer
+		wasRelaying := session.relayActive
+		if wasRelaying {
+			m.StopShellRelay()
+			time.Sleep(600 * time.Millisecond)
+		}
+		defer func() {
+			if wasRelaying {
+				m.StartShellRelay(0, 0)
+			}
+		}()
+
+		// Disable PTY echo to prevent backpressure (echo fills TCP buffers)
+		if session.Handler != nil && session.Handler.IsPTYUpgraded() {
+			session.Conn.Write([]byte("stty -echo\n"))
+			time.Sleep(100 * time.Millisecond)
+		}
+		defer func() {
+			if session.Handler != nil && session.Handler.IsPTYUpgraded() {
+				session.Conn.Write([]byte("stty echo\n"))
+				time.Sleep(100 * time.Millisecond)
+			}
+		}()
+
 		t := NewTransferer(session.Conn, session.ID)
 		t.SetPlatform(session.Platform)
+		t.ptyUpgraded = wasRelaying && session.Handler != nil && session.Handler.IsPTYUpgraded()
 		t.progressFn = func(text string) {
 			if m.spinnerUpdate != nil {
 				m.spinnerUpdate(spinID, text)
 			}
-			// Extract percentage and send to status bar
 			if m.transferProgressFunc != nil {
 				if pct := extractPercent(text); pct >= 0 {
 					m.transferProgressFunc(filename, pct, "", true)
@@ -2477,60 +2510,92 @@ func (m *Manager) StartUpload(localPath, remotePath string, progressFn func(stri
 
 		var err error
 		if GlobalRuntimeConfig.BinbagEnabled {
-			err = t.SmartUpload(context.Background(), localPath, remotePath)
+			err = t.SmartUpload(ctx, localPath, remotePath)
 		} else {
 			if _, statErr := os.Stat(localPath); os.IsNotExist(statErr) {
 				m.stopSpinner(spinID)
-				doneFn(fmt.Errorf("File not found: %s", localPath))
+				if m.transferDoneFunc != nil {
+					m.transferDoneFunc(filename, true, fmt.Errorf("File not found: %s", localPath))
+				}
 				return
 			}
-			err = t.Upload(context.Background(), localPath, remotePath)
+			err = t.Upload(ctx, localPath, remotePath)
 		}
 		m.stopSpinner(spinID)
-		doneFn(err)
+		if m.transferDoneFunc != nil {
+			m.transferDoneFunc(filename, true, err)
+		}
 	}()
 }
 
 // StartDownload runs a download asynchronously with TUI spinner progress.
-func (m *Manager) StartDownload(remotePath, localPath string, progressFn func(string), doneFn func(error)) {
+// Completion is reported via transferDoneFunc callback (non-blocking).
+func (m *Manager) StartDownload(ctx context.Context, remotePath, localPath string) {
 	m.mu.RLock()
 	session := m.selectedSession
 	m.mu.RUnlock()
 
+	filename := filepath.Base(remotePath)
+
 	if session == nil {
-		doneFn(fmt.Errorf("No session selected"))
+		if m.transferDoneFunc != nil {
+			m.transferDoneFunc(filename, false, fmt.Errorf("No session selected"))
+		}
 		return
 	}
 
-	filename := filepath.Base(remotePath)
 	spinID := m.startSpinner(fmt.Sprintf("Downloading %s...", filename))
 
-	// Show status bar immediately (download has no total size, so no %)
-	if m.transferProgressFunc != nil {
-		m.transferProgressFunc("Downloading "+filename, 0, "0 B", false)
-	}
-
 	go func() {
+		if m.transferProgressFunc != nil {
+			m.transferProgressFunc(filename, 0, "0 B", false)
+		}
+		// Download needs exclusive read access (marker-based protocol).
+		// Stop relay, download, restart relay.
+		wasRelaying := session.relayActive
+		if wasRelaying {
+			m.StopShellRelay()
+			time.Sleep(600 * time.Millisecond) // wait for relay goroutine to exit
+		}
+		defer func() {
+			if wasRelaying {
+				m.StartShellRelay(0, 0)
+			}
+		}()
+
+		// Disable PTY echo to prevent backpressure
+		if session.Handler != nil && session.Handler.IsPTYUpgraded() {
+			session.Conn.Write([]byte("stty -echo\n"))
+			time.Sleep(100 * time.Millisecond)
+		}
+		defer func() {
+			if session.Handler != nil && session.Handler.IsPTYUpgraded() {
+				session.Conn.Write([]byte("stty echo\n"))
+				time.Sleep(100 * time.Millisecond)
+			}
+		}()
+
 		t := NewTransferer(session.Conn, session.ID)
 		t.SetPlatform(session.Platform)
+		t.ptyUpgraded = wasRelaying && session.Handler != nil && session.Handler.IsPTYUpgraded()
 		t.progressFn = func(text string) {
 			if m.spinnerUpdate != nil {
 				m.spinnerUpdate(spinID, text)
 			}
-			// Update status bar with size info (no % available for downloads)
 			if m.transferProgressFunc != nil {
-				// Extract size from text like "Downloading CLAUDE.md... 15.2 KB"
 				sizeStr := ""
 				if idx := strings.LastIndex(text, "... "); idx >= 0 {
 					sizeStr = text[idx+4:]
 				}
-				m.transferProgressFunc("Downloading "+filename, 0, sizeStr, false)
+				m.transferProgressFunc(filename, 0, sizeStr, false)
 			}
 		}
 
-		err := t.Download(context.Background(), remotePath, localPath)
+		err := t.Download(ctx, remotePath, localPath)
 		m.stopSpinner(spinID)
-		doneFn(err)
+		if m.transferDoneFunc != nil {
+			m.transferDoneFunc(filename, false, err)
+		}
 	}()
 }
 

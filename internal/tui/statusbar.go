@@ -42,12 +42,17 @@ func NewStatusBar(width int) StatusBar {
 }
 
 func (s StatusBar) View() string {
-	// Transfer progress overlay takes priority over everything
+	// Notification priority: error/important notifications override transfer progress
+	if s.Notify != nil && s.Notify.Level >= NotifyImportant {
+		return s.renderNotification()
+	}
+
+	// Transfer progress overlay
 	if s.TransferPct >= 0 {
 		return s.renderTransferProgress()
 	}
 
-	// Notification overlay takes over the entire bar
+	// Info notifications (clipboard copy, etc.)
 	if s.Notify != nil {
 		return s.renderNotification()
 	}
