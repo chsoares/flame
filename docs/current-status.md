@@ -2,135 +2,116 @@
 
 ## What's Done
 
-### Core TUI (Phase 1-3)
+### Core TUI
 - Bubble Tea TUI with 3-tier responsive layout (Full/Medium/Compact)
+- F11 sidebar toggle (collapse/expand with layout recalculation)
+- F12 toggle: attach (menu) / detach (shell)
 - Per-session output buffers and command history
-- Shell relay with PTY upgrade, F12 detach/re-attach
+- Shell relay with PTY upgrade, SIGWINCH resize (debounced + relay suppression)
 - Mouse text selection, clipboard copy (OSC 52 + native)
-- Transient scrollbar, notification bar (3 levels), inline spinner
+- Transient scrollbar, notification bar (3 levels with z-depth), inline spinner
 - Quit confirmation (Ctrl+D double-press, exit/quit modal)
 - ANSI-aware word-wrap and line truncation
-- SIGWINCH → PTY resize (debounced, relay-level suppression)
+- Persistent menu history (~/.gummy/menu_history.txt, 500 entries)
+- Session auto-select (first session auto-selected)
+- Sidebar: listener, pivot, CWD, binbag (Full) / listener only (Medium) / +N more overflow
+- Exit banner with session log path (only if logs created this instance)
+- Compact attach/detach messages with dedicated icons (magenta/blue)
 
-### Transfers (Upload/Download)
+### Transfers
 - Async fire-and-forget with `transferDoneFunc` callback
 - Status bar progress overlay (hatching `/` for uploads, size counter for downloads)
-- SmartUpload: HTTP via binbag (fast) → b64 chunks (fallback)
-- SmartDownload: HTTP POST from remote → b64 markers (fallback)
-- Stop/restart relay during transfers for exclusive conn access
-- `stty -echo` + 1KB chunks for PTY-upgraded shells
+- SmartUpload: HTTP via binbag → b64 chunks fallback
+- SmartDownload: HTTP POST from remote → b64 markers fallback
+- Stop/restart relay + `stty -echo` + 1KB chunks for PTY shells
+- Chunk size based on `wasRelaying` (menu=fast 32KB, shell=safe 1KB)
 - Tilde expansion, Ctrl+C/Esc cancel, Enter/F12 blocked during transfer
-- Notification z-depth: error/important > progress > info
+- All `p.Send` wrapped in `go` to prevent deadlock
 
 ### Bang Mode (`!` prefix in shell)
-- `!` enters gummy command mode with magenta prompt
+- `!upload`, `!download`, `!spawn`, `!kill` from shell context
 - Tab completion, menu history, contextual placeholder
-- `!upload`, `!download`, `!spawn` work from shell context
 - Output goes to menuBuffer (visible on detach)
+- Kill own session: auto-detach before kill
 
 ### Spawn
-- Async with TUI spinner, non-blocking
-- Uses `ReverseShellGenerator` (single source of truth for payloads)
-- Payload echo suppressed via `stty -echo` + relay suppression (future timestamp mode)
+- Async with TUI spinner, uses `ReverseShellGenerator` (single source of truth)
+- Payload echo suppressed via dual-mode relay suppression (future timestamp)
 - Works from menu and bang mode
 
 ### Binbag System
-- `binbag ls` — multi-column file listing
-- `binbag on/off/path/port` — full management with auto-persist
+- `binbag ls/on/off/path/port` with auto-persist config
 - Upload path fallback: CWD → binbag (automatic)
 - Tab completion merges CWD + binbag files
-- HTTP POST endpoint for fast downloads (remote POSTs to gummy)
-- Status shown in splash screen and sidebar
+- HTTP POST endpoint for fast downloads
+- Splash screen shows binbag status
 
 ### Pivot
-- `pivot <ip>` — IP-only, ports preserved from original services
-- Affects all URLs/payloads: binbag HTTP, rev, spawn, ssh
-- `GetPivotIP()` single accessor for all consumers
+- `pivot <ip>` / `pivot off` — IP-only, ports preserved
+- Affects: binbag HTTP, rev, spawn, ssh (`GetPivotIP()`)
 - Not persisted (session-specific)
+- Sidebar display in Full mode
 
-### UI/UX
-- F11 toggles sidebar (collapse/expand with layout recalculation)
-- F12 toggle: attach (menu) / detach (shell)
-- Tab completion: commands, local paths, binbag files, subcommands
-- Status bar hints contextual per mode
-- Sidebar: listener, pivot, CWD, binbag (Full) / listener only (Medium)
-- Suppress double blank lines in menu output
+### Session Logging
+- Flat dir structure: `~/.gummy/sessions/YYYYMMDD-HHMMSS_IP_user/`
+- No date subdirectory (avoids midnight rollover edge cases)
+- Log created on first shell attach (lazy init)
+- Exit shows log path only if this instance created logs
 
-### Architecture
-- All `p.Send` wrapped in `go` to prevent deadlock
-- Dual-mode relay suppression (future=suppress all, past=stty filter only)
-- `isSttyEcho` matches any `stty` command + bare prompts
-- Stealth/speed toggle removed — modules define own execution mode
+## What's Next
 
-## What's Next — Priority Order
-
-### 1. Per-Command Help
-Every command needs `help <cmd>` with detailed behavior:
-- `help upload` — path resolution (CWD → binbag), HTTP vs b64, remote destination
-- `help download` — HTTP POST vs b64, local destination
-- `help binbag` — what it is, subcommands, file listing
-- `help spawn` — what it does, platform detection, pivot integration
-- `help run` — module list, execution modes, platform requirements
-- `help pivot` — what it affects, IP-only rationale
-
-### 2. Modules via TUI
-Same async pattern as transfers:
-- Review each module: keep/remove/modify
-- Async execution with spinner + streaming output
+### Priority 1: Modules via TUI
+The last major feature block. Same async pattern as transfers:
+- Review each module with user: keep/remove/modify
+- Async execution with spinner + streaming output to viewport
 - `!run peas` from shell mode
+- Module output in new terminal window (existing `terminal.go` opener)
+- Current modules: peas, lse, loot, pspy (Linux), winpeas, powerup, powerview, lazagne (Windows), privesc, bin, sh, ps1, net, py (generic)
 
-### 3. Windows Testing
+### Priority 2: Per-Command Help (TUI Modal)
+User wants modal-based help, not just CLI print:
+- `help upload` — path resolution, binbag fallback, HTTP vs b64
+- `help download` — HTTP POST vs b64, local destination
+- `help binbag` — subcommands, what binbag is
+- `help spawn/run/pivot/config` etc.
+- Consider: scrollable modal overlay in TUI
+
+### Priority 3: Windows Testing
 - Shell relay in readline mode (no PTY)
-- `isSttyEcho` false-positive on `>` prompts — verify
+- `isSttyEcho` false-positive on `>` prompts
 - Transfers with/without binbag
 - Modules (WinPEAS, PowerUp, etc.)
 - Spawn with PowerShell payloads
 
-### 4. Upload/Download Test Matrix
-Systematic testing:
-- Local file: CWD-relative, absolute, ~/tilde
-- Binbag: filename resolution order (CWD → binbag)
-- URL source: download then upload
-- Remote destination: explicit vs default
-- Large files: PTY mode (1KB chunks) vs raw (32KB)
-- With/without binbag, Linux and Windows
+### Priority 4: Upload/Download Test Matrix
+Systematic testing of all scenarios documented in memory.
 
-### 5. Polish & Small Features
+### Priority 5: Polish
 - Session switching shortcuts (Ctrl+1/2/3)
-- Remote tab completion (p0wny-shell style — send completion queries to remote)
-- `+N more` indicator when sessions overflow sidebar
-- Sidebar scroll (if needed)
-
-### 6. Suggestions for Discussion
-- **help system**: interactive? `help` alone could show categories, `help upload` shows detail. Or a single scrollable help page?
-- **session auto-select**: when only one session exists, auto-select it? Currently requires `use 1` every time.
-- **persistent menu history**: save to `~/.gummy/menu_history.txt` across restarts?
-- **config command**: currently shows raw config. Worth making it prettier? Or is `binbag`/`pivot`/`config` enough?
-- **rev command with pivot**: `rev` should show payloads with pivot IP when enabled. Currently uses `GetPivotIP()` — verify.
-- **kill from bang mode**: `!kill 1` should work but currently goes through sync ExecuteCommand. Needs testing.
-- **multiple listeners**: future? listen on multiple ports simultaneously.
+- Remote tab completion (p0wny-shell style)
+- Review `config` command output format
 
 ## Important Notes for Handoff
 
-- **Two-computer workflow**: handoff context must be in docs/ (not .claude/ memory)
-- **Build the binary**: always `go build -o gummy .` before asking user to test
-- **UI consistency**: always use `ui/colors.go` helpers, never raw styles. Emdash instead of parentheses.
-- **p.Send deadlock**: ALL `p.Send` calls in callbacks MUST use `go p.Send(...)`
+- **Two-computer workflow**: handoff context must be in docs/
+- **Build the binary**: always `go build -o gummy .` before testing
+- **UI consistency**: always use `ui/colors.go` helpers, emdash not parentheses
+- **p.Send deadlock**: ALL callbacks MUST use `go p.Send(...)`
 - **PTY transfers**: stop relay + stty -echo + 1KB chunks when relay was active
-- **Relay suppression**: future timestamp = suppress all (spawn), past timestamp = stty filter (resize)
+- **Relay suppression**: future timestamp = suppress all (spawn), past = stty filter (resize)
 - **Pivot is IP-only**: ports preserved from original services
 
 ## File Map
 
 ```
 internal/tui/
-├── app.go          # Root model, Update/View, shell relay, buffers, bang mode, transfers, spawn
+├── app.go          # Root model, Update/View, relay, buffers, bang mode, transfers, spawn, kill
 ├── styles.go       # Color palette, text styles
-├── logo.go         # ASCII art banner
-├── layout.go       # 3-tier layout (Full/Medium/Compact), F11 toggle
+├── logo.go         # ASCII art banner + RenderExitBanner
+├── layout.go       # 3-tier layout with F11 toggle support
 ├── header.go       # Compact header bar
 ├── statusbar.go    # Hotkey hints, notification overlay, transfer progress bar
-├── input.go        # Text input, per-context history, bang mode
+├── input.go        # Text input, per-context history, bang mode, persistent history
 ├── outputpane.go   # Scrollable viewport, word-wrap, selection, spinner
 ├── selection.go    # Mouse selection state
 ├── clipboard.go    # OSC 52 + native clipboard
@@ -139,12 +120,12 @@ internal/tui/
 └── messages.go     # All tea.Msg types
 
 internal/
-├── session.go      # Manager, commands, binbag/pivot, transfers, spawn, modules (~3000 LOC)
+├── session.go      # Manager, commands, binbag/pivot, transfers, spawn, modules (~3200 LOC)
 ├── transfer.go     # Upload/Download/SmartUpload/SmartDownload, HTTP + b64
 ├── fileserver.go   # HTTP server (GET=serve, POST=receive), progress tracking
 ├── config.go       # TOML config structure
 ├── runtime_config.go # Thread-safe runtime config, auto-persist, pivot
-├── shell.go        # Shell I/O handler, PTY/readline modes
+├── shell.go        # Shell I/O handler, PTY/readline modes, IsPTYUpgraded
 ├── pty.go          # PTY upgrade system
 ├── modules.go      # Module registry and implementations
 ├── listener.go     # TCP listener
@@ -152,7 +133,8 @@ internal/
 ├── ssh.go          # SSH + auto reverse shell
 ├── netutil.go      # Network utilities
 ├── downloader.go   # HTTP file downloader
-└── terminal.go     # Terminal opener
+├── terminal.go     # Terminal opener
+└── ui/colors.go    # UI helpers, symbols (attach/detach), color functions
 ```
 
 ## Branch: `tui` (based on `main`)
