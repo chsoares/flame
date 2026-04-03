@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -631,6 +632,65 @@ func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
 	// User can see raw output in real-time via tail -f in separate terminal
 	// If they want clean output later, they can manually clean it or use cat
 
+	return nil
+}
+
+// ExecuteWithStreamingCtx is like ExecuteWithStreaming but can be cancelled via context.
+// When cancelled, it clears the read deadline and returns — the connection is free.
+// Used for interruptible operations like tailing module output.
+func (h *Handler) ExecuteWithStreamingCtx(ctx context.Context, cmd, localOutputPath string) error {
+	localFile, err := os.Create(localOutputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create local file: %w", err)
+	}
+	defer localFile.Close()
+
+	marker := fmt.Sprintf("__GUMMY_DONE_%d__", time.Now().UnixNano())
+	fullCmd := fmt.Sprintf("%s\necho '%s'\n", cmd, marker)
+
+	if _, err := h.conn.Write([]byte(fullCmd)); err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+
+	buffer := make([]byte, 4096)
+	var accumulated strings.Builder
+
+	for {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			h.conn.SetReadDeadline(time.Time{})
+			return ctx.Err()
+		default:
+		}
+
+		// Short read deadline so we can check context frequently
+		h.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, err := h.conn.Read(buffer)
+		if n > 0 {
+			chunk := string(buffer[:n])
+			accumulated.WriteString(chunk)
+			localFile.WriteString(chunk)
+			localFile.Sync()
+
+			if strings.Contains(accumulated.String(), marker) {
+				h.conn.SetReadDeadline(time.Time{})
+				return nil
+			}
+		}
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue // Just a timeout, check context and retry
+			}
+			if err == io.EOF {
+				break
+			}
+			h.conn.SetReadDeadline(time.Time{})
+			return fmt.Errorf("read error: %w", err)
+		}
+	}
+
+	h.conn.SetReadDeadline(time.Time{})
 	return nil
 }
 

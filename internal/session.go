@@ -59,7 +59,8 @@ type SessionInfo struct {
 	Active      bool               // Se está sendo usada atualmente
 	CreatedAt   time.Time          // Timestamp de criação
 	LogFile     *os.File           // Session I/O log file (lazy init)
-	relayCancel context.CancelFunc // Cancel function for TUI relay goroutine
+	relayCancel  context.CancelFunc // Cancel function for TUI relay goroutine
+	moduleCancel context.CancelFunc // Cancel function for module streaming goroutine
 	relayActive bool               // Whether relay goroutine is running
 }
 
@@ -308,13 +309,17 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 		}
 		time.Sleep(300 * time.Millisecond)
 
+		// Start tail -f with cancellable context (cancelled when user does shell/F12)
+		moduleCtx, moduleCancel := context.WithCancel(context.Background())
+		s.moduleCancel = moduleCancel
+
 		go func() {
 			if cleanup != nil {
 				defer cleanup()
 			}
-			// tail -f on remote — streams to local file. Interruptible.
+			defer func() { s.moduleCancel = nil }()
 			remoteTailCmd := fmt.Sprintf("tail -f %s", remoteOutput)
-			s.Handler.ExecuteWithStreaming(remoteTailCmd, outputPath)
+			s.Handler.ExecuteWithStreamingCtx(moduleCtx, remoteTailCmd, outputPath)
 		}()
 
 		return nil
@@ -369,10 +374,14 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 	}
 	time.Sleep(300 * time.Millisecond)
 
-	// tail -f remote output → local file (interruptible, conn stays usable after)
+	// Start tail -f with cancellable context
+	moduleCtx, moduleCancel := context.WithCancel(context.Background())
+	s.moduleCancel = moduleCancel
+
 	go func() {
+		defer func() { s.moduleCancel = nil }()
 		remoteTailCmd := fmt.Sprintf("tail -f %s", remoteOutput)
-		s.Handler.ExecuteWithStreaming(remoteTailCmd, outputPath)
+		s.Handler.ExecuteWithStreamingCtx(moduleCtx, remoteTailCmd, outputPath)
 	}()
 
 	return nil
@@ -1137,10 +1146,14 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 		return nil
 	}
 
-	// Kill any running tail -f from module execution (prevents conn read race)
-	session.Conn.Write([]byte("\x03")) // Ctrl+C to kill remote tail
+	// Cancel any running module streaming (tail -f) before starting relay
+	if session.moduleCancel != nil {
+		session.moduleCancel()
+		time.Sleep(600 * time.Millisecond) // Wait for goroutine to exit
+	}
+	// Send Ctrl+C to kill remote tail -f and drain output
+	session.Conn.Write([]byte("\x03"))
 	time.Sleep(200 * time.Millisecond)
-	// Drain any pending output
 	drainBuf := make([]byte, 4096)
 	session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 	for {
