@@ -49,6 +49,8 @@ const (
 	SymbolUpload   = "" // Information
 	SymbolError    = "" // Information
 	SymbolWarning  = "" // Information
+	SymbolAttach   = "\ue795" // nf-dev-terminal — Shell attach
+	SymbolDetach   = "\uead5" // nf-cod-debug_step_out — Shell detach
 )
 
 // Themed color functions inspired by ezpz scripts
@@ -70,6 +72,14 @@ func Error(text string) string {
 
 func Warning(text string) string {
 	return fmt.Sprintf("%s%s %s%s", ColorMagenta, SymbolWarning, text, ColorReset)
+}
+
+func ShellAttach(text string) string {
+	return fmt.Sprintf("%s%s %s%s", ColorCyan, SymbolAttach, text, ColorReset)
+}
+
+func ShellDetach(text string) string {
+	return fmt.Sprintf("%s%s %s%s", ColorBlue, SymbolDetach, text, ColorReset)
 }
 
 func Command(text string) string {
