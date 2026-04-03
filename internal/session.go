@@ -1692,29 +1692,19 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 	spinID := m.startSpinner(fmt.Sprintf("Running %s...", moduleName))
 
 	go func() {
-		// Stop relay for exclusive conn access
-		wasRelaying := session.relayActive
-		if wasRelaying {
+		// Stop relay for exclusive conn access (module uses conn for ExecuteWithStreaming)
+		// NOTE: relay is NOT restarted here — module's goroutine keeps using conn.
+		// Relay restarts when user enters shell again (F12/shell command).
+		if session.relayActive {
 			m.StopShellRelay()
 			time.Sleep(600 * time.Millisecond)
 		}
-		defer func() {
-			if wasRelaying {
-				m.StartShellRelay(0, 0)
-			}
-		}()
 
-		// Disable PTY echo
+		// Disable PTY echo for the setup phase
 		if session.Handler != nil && session.Handler.IsPTYUpgraded() {
 			session.Conn.Write([]byte("stty -echo\n"))
 			time.Sleep(100 * time.Millisecond)
 		}
-		defer func() {
-			if session.Handler != nil && session.Handler.IsPTYUpgraded() {
-				session.Conn.Write([]byte("stty echo\n"))
-				time.Sleep(100 * time.Millisecond)
-			}
-		}()
 
 		// Suppress stdout to prevent module's fmt.Println from corrupting TUI
 		old := os.Stdout
@@ -1723,13 +1713,20 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		err := module.Run(context.Background(), session, args)
 		os.Stdout = old
 		devnull.Close()
+
+		// Restore echo (module setup is done, ExecuteWithStreaming runs in background)
+		if session.Handler != nil && session.Handler.IsPTYUpgraded() {
+			session.Conn.Write([]byte("stty echo\n"))
+			time.Sleep(100 * time.Millisecond)
+		}
+
 		m.stopSpinner(spinID)
 
 		if err != nil {
-			m.notify(ui.Error(fmt.Sprintf("Module %s failed: %v", moduleName, err)))
+			m.notify(ui.Error(fmt.Sprintf("Module %s failed: %v", moduleName, err)) + "\n")
 			m.notifyOverlay(fmt.Sprintf("Module %s failed", moduleName), 2)
 		} else {
-			m.notify(ui.Info(fmt.Sprintf("Module %s started — output in terminal window", moduleName)))
+			m.notify(ui.Info(fmt.Sprintf("Module %s — output sent to new terminal window", moduleName)) + "\n")
 			m.notifyOverlay(fmt.Sprintf("Module %s started", moduleName), 0)
 		}
 	}()
@@ -2828,9 +2825,8 @@ func (m *Manager) StartSpawn() {
 
 		// Timeout — payload sent but no connection yet
 		m.stopSpinner(spinID)
-		if m.notifyBar != nil {
-			m.notifyBar("Spawn payload sent — waiting for connection", 0)
-		}
+		m.notify(ui.Info("Spawn payload sent — waiting for connection") + "\n")
+		m.notifyOverlay("Spawn payload sent — waiting for connection", 0)
 	}()
 }
 
