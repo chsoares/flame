@@ -1156,36 +1156,39 @@ func (a App) renderSidebar() string {
 	// --- Listener + Pivot ---
 	lines = append(lines, " "+styleBase.Render("\uf095")+" "+styleMuted.Render(a.listenerAddr))
 	if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.PivotEnabled {
-		lines = append(lines, " "+styleMagenta.Render("\uf064")+" "+styleMuted.Render(internal.GlobalRuntimeConfig.PivotHost))
+		lines = append(lines, " "+styleBase.Render("\uf064")+" "+styleMuted.Render(internal.GlobalRuntimeConfig.PivotHost))
 	}
 
-	lines = append(lines, "")
+	// In Medium layout, skip CWD and binbag to save space for sessions
+	if a.layout.Mode == LayoutFull {
+		lines = append(lines, "")
 
-	// --- CWD ---
-	prettyPath := a.cwd
-	if home, err := os.UserHomeDir(); err == nil {
-		if rel, err := filepath.Rel(home, a.cwd); err == nil && !strings.HasPrefix(rel, "..") {
-			prettyPath = "~/" + rel
-		}
-	}
-	lines = append(lines, " "+styleBase.Render("\uf07c")+" "+styleMuted.Render(prettyPath))
-
-	lines = append(lines, "")
-
-	// --- Binbag status ---
-	binbagIcon := "\U000f059f" // nf-md-web 󰖟
-	if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.BinbagEnabled {
-		prettyBinbag := internal.GlobalRuntimeConfig.BinbagPath
+		// --- CWD ---
+		prettyPath := a.cwd
 		if home, err := os.UserHomeDir(); err == nil {
-			if rel, err := filepath.Rel(home, prettyBinbag); err == nil && !strings.HasPrefix(rel, "..") {
-				prettyBinbag = "~/" + rel
+			if rel, err := filepath.Rel(home, a.cwd); err == nil && !strings.HasPrefix(rel, "..") {
+				prettyPath = "~/" + rel
 			}
 		}
-		lines = append(lines, " "+styleBase.Render(binbagIcon)+" "+styleMuted.Render("binbag online"))
-		lines = append(lines, "   "+styleSubtle.Render(prettyBinbag))
-		lines = append(lines, "   "+styleSubtle.Render(fmt.Sprintf(":%d", internal.GlobalRuntimeConfig.HTTPPort)))
-	} else {
-		lines = append(lines, " "+styleSubtle.Render(binbagIcon)+" "+styleMuted.Render("binbag offline"))
+		lines = append(lines, " "+styleBase.Render("\uf07c")+" "+styleMuted.Render(prettyPath))
+
+		lines = append(lines, "")
+
+		// --- Binbag status ---
+		binbagIcon := "\U000f059f" // nf-md-web 󰖟
+		if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.BinbagEnabled {
+			prettyBinbag := internal.GlobalRuntimeConfig.BinbagPath
+			if home, err := os.UserHomeDir(); err == nil {
+				if rel, err := filepath.Rel(home, prettyBinbag); err == nil && !strings.HasPrefix(rel, "..") {
+					prettyBinbag = "~/" + rel
+				}
+			}
+			lines = append(lines, " "+styleBase.Render(binbagIcon)+" "+styleMuted.Render("binbag online"))
+			lines = append(lines, "   "+styleSubtle.Render(prettyBinbag))
+			lines = append(lines, "   "+styleSubtle.Render(fmt.Sprintf(":%d", internal.GlobalRuntimeConfig.HTTPPort)))
+		} else {
+			lines = append(lines, " "+styleSubtle.Render(binbagIcon)+" "+styleMuted.Render("binbag offline"))
+		}
 	}
 
 	lines = append(lines, "")
