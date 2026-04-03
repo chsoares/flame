@@ -1205,17 +1205,19 @@ func (a App) renderSidebar() string {
 	if a.executor != nil {
 		sessionCount = a.executor.SessionCount()
 	}
-	sessWord := "sessions"
-	if sessionCount == 1 {
-		sessWord = "session"
+	// Show counter only in Full mode — Medium saves space
+	if a.layout.Mode == LayoutFull {
+		sessWord := "sessions"
+		if sessionCount == 1 {
+			sessWord = "session"
+		}
+		countStyle := styleBase
+		if sessionCount == 0 {
+			countStyle = styleSubtle
+		}
+		lines = append(lines, " "+countStyle.Render(fmt.Sprintf("%d", sessionCount))+" "+styleMuted.Render(sessWord))
+		lines = append(lines, "")
 	}
-	countStyle := styleBase
-	if sessionCount == 0 {
-		countStyle = styleSubtle
-	}
-	lines = append(lines, " "+countStyle.Render(fmt.Sprintf("%d", sessionCount))+" "+styleMuted.Render(sessWord))
-
-	lines = append(lines, "")
 
 	// --- Active session section ---
 	lines = append(lines, sectionHeader("Active", w))
