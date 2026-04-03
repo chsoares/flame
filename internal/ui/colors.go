@@ -75,7 +75,7 @@ func Warning(text string) string {
 }
 
 func ShellAttach(text string) string {
-	return fmt.Sprintf("%s%s %s%s", ColorCyan, SymbolAttach, text, ColorReset)
+	return fmt.Sprintf("%s%s %s%s", ColorMagenta, SymbolAttach, text, ColorReset)
 }
 
 func ShellDetach(text string) string {
