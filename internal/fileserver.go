@@ -27,15 +27,18 @@ type FileServer struct {
 	server            *http.Server
 	mu                sync.Mutex
 	running           bool
+	downloadDir       string                          // Where to save received files (default: CWD)
 	transferListeners map[string]chan TransferProgress // Channels to notify transfer progress
 	listenerMu        sync.Mutex
 }
 
 // NewFileServer creates a new file server
 func NewFileServer(binbagPath string, port int) *FileServer {
+	cwd, _ := os.Getwd()
 	return &FileServer{
 		binbagPath:        binbagPath,
 		port:              port,
+		downloadDir:       cwd,
 		transferListeners: make(map[string]chan TransferProgress),
 	}
 }
@@ -94,9 +97,14 @@ func (fs *FileServer) Stop() error {
 	return nil
 }
 
-// ServeHTTP handles HTTP requests
+// ServeHTTP handles HTTP requests (GET = serve file, POST = receive file)
 func (fs *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Extract filename from URL path (Base prevents directory traversal)
+	if r.Method == http.MethodPost || r.Method == http.MethodPut {
+		fs.handleReceive(w, r)
+		return
+	}
+
+	// GET: serve file from binbag
 	filename := filepath.Base(r.URL.Path)
 	filePath := filepath.Join(fs.binbagPath, filename)
 
@@ -214,6 +222,86 @@ func (fs *FileServer) WaitForTransfer(filename string, inactivityTimeout time.Du
 }
 
 // notifyProgress notifies listeners about transfer progress
+// handleReceive accepts a file upload via POST (remote → local download)
+func (fs *FileServer) handleReceive(w http.ResponseWriter, r *http.Request) {
+	filename := filepath.Base(r.URL.Path)
+	if filename == "" || filename == "." || filename == "/" {
+		http.Error(w, "filename required in URL path", http.StatusBadRequest)
+		return
+	}
+
+	// Write to temp file in binbag first, then move to download dir
+	tmpPath := filepath.Join(fs.binbagPath, ".dl_"+filename)
+	finalPath := filepath.Join(fs.downloadDir, filename)
+
+	tmpFile, err := os.Create(tmpPath)
+	if err != nil {
+		http.Error(w, "failed to create temp file", http.StatusInternalServerError)
+		fs.notifyProgress(filename, TransferProgress{Done: true, Success: false})
+		return
+	}
+
+	// Copy with progress tracking
+	buf := make([]byte, 32*1024)
+	bytesReceived := int64(0)
+	totalBytes := r.ContentLength // -1 if unknown
+
+	for {
+		n, readErr := r.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
+				tmpFile.Close()
+				os.Remove(tmpPath)
+				http.Error(w, "write error", http.StatusInternalServerError)
+				fs.notifyProgress(filename, TransferProgress{Done: true, Success: false})
+				return
+			}
+			bytesReceived += int64(n)
+			fs.notifyProgress(filename, TransferProgress{
+				BytesTransferred: bytesReceived,
+				TotalBytes:       totalBytes,
+				Done:             false,
+				Success:          true,
+			})
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+			http.Error(w, "read error", http.StatusInternalServerError)
+			fs.notifyProgress(filename, TransferProgress{Done: true, Success: false})
+			return
+		}
+	}
+	tmpFile.Close()
+
+	// Move to final destination (try rename, fall back to copy+delete for cross-device)
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		// Cross-device: copy + delete
+		src, _ := os.ReadFile(tmpPath)
+		if writeErr := os.WriteFile(finalPath, src, 0644); writeErr != nil {
+			os.Remove(tmpPath)
+			http.Error(w, "failed to save file", http.StatusInternalServerError)
+			fs.notifyProgress(filename, TransferProgress{Done: true, Success: false})
+			return
+		}
+		os.Remove(tmpPath)
+	}
+
+	// Success
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "OK %d bytes", bytesReceived)
+
+	fs.notifyProgress(filename, TransferProgress{
+		BytesTransferred: bytesReceived,
+		TotalBytes:       bytesReceived,
+		Done:             true,
+		Success:          true,
+	})
+}
+
 func (fs *FileServer) notifyProgress(filename string, progress TransferProgress) {
 	fs.listenerMu.Lock()
 	defer fs.listenerMu.Unlock()

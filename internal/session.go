@@ -2455,8 +2455,8 @@ func (m *Manager) handleDownload(remotePath, localPath string) {
 	// Show hint
 	fmt.Println(ui.CommandHelp("Press Ctrl+D to cancel"))
 
-	// Perform download
-	err := t.Download(ctx, remotePath, localPath)
+	// Perform download (HTTP POST if binbag enabled, b64 fallback)
+	err := t.SmartDownload(ctx, remotePath, localPath)
 	if err != nil {
 		// Check if it was cancelled by user
 		if ctx.Err() == context.Canceled {
@@ -2600,7 +2600,7 @@ func (m *Manager) StartDownload(ctx context.Context, remotePath, localPath strin
 			}
 		}
 
-		err := t.Download(ctx, remotePath, localPath)
+		err := t.SmartDownload(ctx, remotePath, localPath)
 		m.stopSpinner(spinID)
 		if m.transferDoneFunc != nil {
 			m.transferDoneFunc(filename, false, err)
