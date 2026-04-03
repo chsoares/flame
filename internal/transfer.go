@@ -18,9 +18,10 @@ import (
 
 // Transferer handles file upload/download operations
 type Transferer struct {
-	conn      net.Conn
-	sessionID string
-	platform  string // "windows", "linux", or "unknown"
+	conn       net.Conn
+	sessionID  string
+	platform   string       // "windows", "linux", or "unknown"
+	progressFn func(string) // Optional callback for progress updates (TUI mode)
 }
 
 // TransferConfig holds transfer configuration
@@ -51,6 +52,20 @@ func (t *Transferer) SetPlatform(platform string) {
 	t.platform = platform
 }
 
+// progress reports a progress update via callback (TUI) or spinner (CLI).
+func (t *Transferer) progress(text string) {
+	if t.progressFn != nil {
+		t.progressFn(text)
+	}
+}
+
+// done prints a final message via stdout (CLI only — TUI uses doneFn callback).
+func (t *Transferer) done(text string) {
+	if t.progressFn == nil {
+		fmt.Println(text)
+	}
+}
+
 // Upload sends a local file to the remote system
 // localPath: path to local file
 // remotePath: destination path on remote system (if empty, uses filename in remote cwd)
@@ -69,10 +84,15 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 
 	fileSize := len(data)
 
-	// Start spinner
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Uploading %s... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
-	defer spinner.Stop() // Ensure cleanup on error paths
+	// Progress reporting: use callback (TUI) or spinner (CLI)
+	var spinner *ui.Spinner
+	if t.progressFn == nil {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Uploading %s... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
+		defer spinner.Stop()
+	} else {
+		t.progress(fmt.Sprintf("Uploading %s... 0 B / %s", filepath.Base(localPath), formatSize(fileSize)))
+	}
 
 	// Drain leftover data from previous shell interactions
 	t.drainConnection()
@@ -162,10 +182,15 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 		}
 		percent := int(float64(actualBytes) / float64(fileSize) * 100)
 
-		// Update spinner every 50 chunks or on last chunk
+		// Update progress every 50 chunks or on last chunk
 		if i%50 == 0 || i == len(chunks)-1 {
-			spinner.Update(fmt.Sprintf("Uploading %s... %s / %s (%d%s)",
-				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%"))
+			msg := fmt.Sprintf("Uploading %s... %s / %s (%d%s)",
+				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%")
+			if spinner != nil {
+				spinner.Update(msg)
+			} else {
+				t.progress(msg)
+			}
 		}
 
 		// Drain buffer to prevent overflow (platform-specific timing)
@@ -246,9 +271,10 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 				line = strings.TrimSpace(line)
 				if len(line) == 32 && isHex(line) {
 					if line == checksum {
-						spinner.Stop()
-						fmt.Println(ui.Success(fmt.Sprintf("Upload complete! (MD5: %s)", checksum[:8])))
-						// Don't drain here - let shell handler read naturally to avoid eating user input
+						if spinner != nil {
+							spinner.Stop()
+						}
+						t.done(ui.Success(fmt.Sprintf("Upload complete! (MD5: %s)", checksum[:8])))
 						return nil
 					}
 				}
@@ -257,9 +283,10 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	}
 
 	// Fallback if MD5 check failed
-	spinner.Stop()
-	fmt.Println(ui.Success("Upload complete!"))
-	// Don't drain here - let shell handler read naturally to avoid eating user input
+	if spinner != nil {
+		spinner.Stop()
+	}
+	t.done(ui.Success("Upload complete!"))
 	return nil
 }
 
@@ -526,10 +553,15 @@ func (t *Transferer) Download(ctx context.Context, remotePath, localPath string)
 		localPath = filepath.Base(remotePath)
 	}
 
-	// Start spinner for download
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Downloading %s... 0 B", filepath.Base(remotePath)))
-	defer spinner.Stop()
+	// Progress reporting: use callback (TUI) or spinner (CLI)
+	var spinner *ui.Spinner
+	if t.progressFn == nil {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Downloading %s... 0 B", filepath.Base(remotePath)))
+		defer spinner.Stop()
+	} else {
+		t.progress(fmt.Sprintf("Downloading %s...", filepath.Base(remotePath)))
+	}
 
 	// Drain leftover data from previous shell interactions
 	t.drainConnection()
@@ -579,9 +611,14 @@ func (t *Transferer) Download(ctx context.Context, remotePath, localPath string)
 			output.WriteString(string(buffer[:n]))
 			totalBytes += n
 
-			// Update spinner every 100KB to avoid spam
+			// Update progress every 100KB to avoid spam
 			if totalBytes-lastProgressUpdate >= 100*1024 {
-				spinner.Update(fmt.Sprintf("Downloading %s... %s", filepath.Base(remotePath), formatSize(totalBytes)))
+				msg := fmt.Sprintf("Downloading %s... %s", filepath.Base(remotePath), formatSize(totalBytes))
+				if spinner != nil {
+					spinner.Update(msg)
+				} else {
+					t.progress(msg)
+				}
 				lastProgressUpdate = totalBytes
 			}
 
@@ -647,11 +684,12 @@ func (t *Transferer) Download(ctx context.Context, remotePath, localPath string)
 	hash := md5.Sum(decoded)
 	checksum := hex.EncodeToString(hash[:])
 
-	spinner.Stop()
-	fmt.Println(ui.Success(fmt.Sprintf("Download complete! Saved to: %s (%s, MD5: %s)",
+	if spinner != nil {
+		spinner.Stop()
+	}
+	t.done(ui.Success(fmt.Sprintf("Download complete! Saved to: %s (%s, MD5: %s)",
 		localPath, formatSize(len(decoded)), checksum[:8])))
 
-	// Don't drain here - let shell handler read naturally to avoid eating user input
 	return nil
 }
 
@@ -806,8 +844,8 @@ func (t *Transferer) SmartUpload(ctx context.Context, source, remotePath string)
 		if err := t.uploadViaHTTP(ctx, localPath, remotePath); err == nil {
 			return nil // Success via HTTP!
 		}
-		// HTTP failed, log and fallback to chunks
-		fmt.Println(ui.Warning("HTTP upload failed, falling back to base64 chunks..."))
+		// HTTP failed, fallback to chunks
+		t.done(ui.Warning("HTTP upload failed, falling back to base64 chunks..."))
 	}
 
 	// Step 3: Fallback to b64 chunks (always works)
@@ -913,10 +951,15 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 	fileInfo, _ := os.Stat(localPath)
 	fileSize := fileInfo.Size()
 
-	// Start spinner
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Uploading %s via HTTP... 0 B / %s", filepath.Base(localPath), formatSize(int(fileSize))))
-	defer spinner.Stop()
+	// Progress reporting
+	var spinner *ui.Spinner
+	if t.progressFn == nil {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Uploading %s via HTTP... 0 B / %s", filepath.Base(localPath), formatSize(int(fileSize))))
+		defer spinner.Stop()
+	} else {
+		t.progress(fmt.Sprintf("Uploading %s via HTTP...", filepath.Base(localPath)))
+	}
 
 	// Send download command
 	if _, err := t.conn.Write([]byte(downloadCmd)); err != nil {
@@ -928,18 +971,25 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 		success := GlobalRuntimeConfig.FileServer.WaitForTransfer(filename, 10*time.Second, func(progress TransferProgress) {
 			if !progress.Done {
 				percent := int(float64(progress.BytesTransferred) / float64(progress.TotalBytes) * 100)
-				spinner.Update(fmt.Sprintf("Uploading %s via HTTP... %s / %s (%d%%)",
+				msg := fmt.Sprintf("Uploading %s via HTTP... %s / %s (%d%%)",
 					filepath.Base(localPath),
 					formatSize(int(progress.BytesTransferred)),
 					formatSize(int(progress.TotalBytes)),
-					percent))
+					percent)
+				if spinner != nil {
+					spinner.Update(msg)
+				} else {
+					t.progress(msg)
+				}
 			}
 		})
-		spinner.Stop()
+		if spinner != nil {
+			spinner.Stop()
+		}
 		if !success {
 			return fmt.Errorf("HTTP transfer timeout or failed")
 		}
-		fmt.Println(ui.Success(fmt.Sprintf("Upload complete! (%s via HTTP)", formatSize(int(fileSize)))))
+		t.done(ui.Success(fmt.Sprintf("Upload complete! (%s via HTTP)", formatSize(int(fileSize)))))
 		return nil
 	}
 

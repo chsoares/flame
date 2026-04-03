@@ -95,39 +95,80 @@ Dynamic terminal resize propagated to remote PTY.
 - Output only updates viewport if `activeSession == msg.NumID`
 - Menu output via `menuAppend()` — writes to buffer + viewport (if menu is active)
 
+### Stealth/Speed Toggle Removal (DONE — 2026-04-02)
+
+Removed the `stealth`/`speed` execution mode toggle entirely. Each module already defines its own fixed execution mode (`memory`, `disk-cleanup`, `disk-no-cleanup`). The toggle was never used in any logic path. Cleaned up: `ExecutionMode` field, `GetMode()`/`SetExecutionMode()`, `set mode` command, `[execution]` config section.
+
+### Upload/Download via TUI (DONE — 2026-04-02)
+
+Async file transfers with full TUI integration:
+
+**Architecture:**
+- `StartUpload`/`StartDownload` on Manager run transfers in goroutines
+- `Transferer.progressFn` callback routes progress to TUI spinner + status bar
+- `transferProgressMsg` → status bar overlay (full-width, blue background, hatching `/` progress bar)
+- `transferDoneMsg` → clears status bar, shows result via `ui.Success`/`ui.Error` + notification
+- Upload shows percentage in status bar hatching bar; download shows accumulated size (no total known)
+- Tilde expansion (`~/path`) supported in upload/download paths
+
+**Status bar progress overlay:**
+- Same visual style as notification bar (full-width colored background)
+- Upload icon () / Download icon () from `ui/colors.go`
+- Hatching `/` fills proportionally for uploads; downloads show size counter
+- Clears automatically on completion
+
+### Tab Completion in Menu (DONE — 2026-04-02)
+
+- `CompleteInput(line string) string` on Manager reuses `GummyCompleter` infrastructure
+- Tab in menu mode: command completion (empty/partial) + local path completion for upload/download
+- Single match auto-completes; multiple matches complete to longest common prefix
+- Tilde expansion in path completion works
+
+### Input Improvements (DONE — 2026-04-02)
+
+- `Input.SetValue()` method for programmatic input changes (tab completion)
+- `OutputPane.UpdateSpinner()` for live spinner text updates
+- `spinnerUpdateMsg` message type for spinner text changes from goroutines
+- Status bar hints updated: Tab→complete (menu), F11→sidebar (placeholder)
+
 ## What's Next
 
-### Priority 1: Transfers via TUI (includes review of transfer system)
+### Priority 1: `!` Command Prefix in Shell Mode
 
-**REVIEW FIRST:** The CLI transfer system (binbag, b64 chunking, HTTP file server) hasn't been touched in months. Before TUI integration, the next agent must:
+Run gummy menu commands without detaching from shell. `!upload file.sh /tmp/file.sh` in shell mode routes to upload logic, shows progress in status bar, viewport stays on shell output.
 
-1. Read `transfer.go`, `config.go`, `runtime_config.go`, `fileserver.go`
-2. Explain to the user how binbag works (HTTP server for fast uploads vs b64 fallback)
-3. Discuss simplifications:
-   - HTTP server port should be configurable in config (currently may be auto)
-   - Review `set`/`config` menu commands — are they all still needed?
-4. Test: upload/download with binbag ON, with binbag OFF, on Linux
-5. Then implement TUI integration:
-   - Progress shown in notification bar (or inline spinner)
-   - Transfer runs async (doesn't freeze TUI)
-   - Success/failure via notification overlay
-   - Redirect transfer output from stdout to callbacks
+**Implementation:**
+- In shell input handler, detect `!` prefix
+- Strip `!`, route to `executeInput` as if in menu mode
+- Progress/results shown via notification bar (not viewport, since we're in shell context)
 
-### Priority 2: Modules via TUI (includes review of module system)
+### Priority 2: Per-Command Help
 
-**REVIEW FIRST:** Same as transfers — modules haven't been revisited in a long time. Before TUI integration:
+Every command needs `help <cmd>` with detailed behavior explanation:
+- `help upload` — path resolution (CWD-relative, absolute, ~/tilde, binbag lookup order), remote destination default
+- `help download` — remote path, local destination, base64 transport
+- `help config` / `help set` — each setting explained
+- `help run` — module list, execution modes, platform requirements
 
-1. Read `modules.go`, list every module, explain what each does
-2. Discuss with user: keep/remove/modify each module
-3. **Execution mode cleanup:**
-   - Current modes: "stealth" (in-memory) and "speed" (disk) — names are bad
-   - Proposal: rename to "memory" and "disk" (objective names)
-   - Better proposal: **eliminate the toggle entirely** — just use in-memory when possible, disk when necessary. No user choice needed unless there's a real edge case.
-   - Question to resolve: is there ever a reason a user would PREFER disk over memory? If not, drop the toggle.
-4. Implement TUI integration:
-   - Spinner while downloading/executing
-   - Output streaming to viewport
-   - Completion notification
+### Priority 3: Modules via TUI
+
+Same async pattern as transfers. Modules need:
+- Spinner + streaming output to viewport
+- Completion notification
+- Review each module: keep/remove/modify
+
+### Priority 4: Windows Testing
+
+Shell relay, transfers, and modules all need testing on Windows (cmd + PowerShell).
+
+### Priority 5: Upload/Download Test Matrix
+
+Systematic testing of all upload scenarios (documented in memory):
+- Local file: CWD-relative, absolute, ~/tilde
+- With binbag: filename resolution order (binbag → CWD)
+- URL source: download then upload
+- Remote destination: explicit vs default (filename in remote CWD)
+- With/without binbag, Linux and Windows
 
 ### Priority 3: Windows Testing
 

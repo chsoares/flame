@@ -35,7 +35,9 @@ type Manager struct {
 	notifyBar       func(string, int)       // Callback for notification bar overlay (msg, level)
 	spinnerStart       func(int, string)       // Start spinner in TUI (id, text)
 	spinnerStop        func(int)               // Stop spinner in TUI (id)
+	spinnerUpdate      func(int, string)       // Update spinner text in TUI (id, text)
 	nextSpinnerID      int                     // Auto-incrementing spinner ID
+	transferProgressFunc func(string, int, string, bool) // Callback for transfer progress (filename, pct, right, upload)
 	shellOutputFunc    func(string, int, []byte) // Callback for shell relay output (sessionID, numID, data)
 	sessionDisconnFunc func(int, string)       // Callback for session disconnect (numID, remoteIP)
 	sttyResizeNano     atomic.Int64            // UnixNano of last stty resize (atomic for goroutine safety)
@@ -1022,10 +1024,16 @@ func (m *Manager) notifyOverlay(msg string, level int) {
 	}
 }
 
-// SetSpinnerFunc sets callbacks for spinner start/stop in the TUI.
-func (m *Manager) SetSpinnerFunc(start func(int, string), stop func(int)) {
+// SetSpinnerFunc sets callbacks for spinner start/stop/update in the TUI.
+func (m *Manager) SetSpinnerFunc(start func(int, string), stop func(int), update func(int, string)) {
 	m.spinnerStart = start
 	m.spinnerStop = stop
+	m.spinnerUpdate = update
+}
+
+// SetTransferProgressFunc sets the callback for transfer progress updates.
+func (m *Manager) SetTransferProgressFunc(fn func(string, int, string, bool)) {
+	m.transferProgressFunc = fn
 }
 
 // SetShellOutputFunc sets the callback for shell relay output to the TUI.
@@ -1175,6 +1183,30 @@ func (m *Manager) ResizePTY(cols, rows int) {
 	m.sttyResizeNano.Store(time.Now().UnixNano())
 	sttyCmd := fmt.Sprintf("stty rows %d cols %d\n", rows, cols)
 	session.Conn.Write([]byte(sttyCmd))
+}
+
+// extractPercent parses a percentage from progress text like "Uploading... 15.2 KB / 32.0 KB (47%)".
+// Returns -1 if no percentage found.
+func extractPercent(text string) int {
+	// Find last occurrence of "(" followed by digits and "%)"
+	idx := strings.LastIndex(text, "%")
+	if idx <= 0 {
+		return -1
+	}
+	// Walk backwards to find digits
+	start := idx - 1
+	for start >= 0 && text[start] >= '0' && text[start] <= '9' {
+		start--
+	}
+	start++ // move past non-digit
+	if start >= idx {
+		return -1
+	}
+	pct, err := strconv.Atoi(text[start:idx])
+	if err != nil {
+		return -1
+	}
+	return pct
 }
 
 // isSttyEcho returns true if a chunk of shell output looks like stty resize
@@ -2413,6 +2445,95 @@ func (m *Manager) handleDownload(remotePath, localPath string) {
 	// This is a known limitation - trade-off for having Ctrl+D cancel support
 }
 
+// StartUpload runs an upload asynchronously with TUI spinner progress.
+// doneFn is called when complete (with nil or error, and a result message).
+func (m *Manager) StartUpload(localPath, remotePath string, progressFn func(string), doneFn func(error)) {
+	m.mu.RLock()
+	session := m.selectedSession
+	m.mu.RUnlock()
+
+	if session == nil {
+		doneFn(fmt.Errorf("No session selected"))
+		return
+	}
+
+	filename := filepath.Base(localPath)
+	spinID := m.startSpinner(fmt.Sprintf("Uploading %s...", filename))
+
+	go func() {
+		t := NewTransferer(session.Conn, session.ID)
+		t.SetPlatform(session.Platform)
+		t.progressFn = func(text string) {
+			if m.spinnerUpdate != nil {
+				m.spinnerUpdate(spinID, text)
+			}
+			// Extract percentage and send to status bar
+			if m.transferProgressFunc != nil {
+				if pct := extractPercent(text); pct >= 0 {
+					m.transferProgressFunc(filename, pct, "", true)
+				}
+			}
+		}
+
+		var err error
+		if GlobalRuntimeConfig.BinbagEnabled {
+			err = t.SmartUpload(context.Background(), localPath, remotePath)
+		} else {
+			if _, statErr := os.Stat(localPath); os.IsNotExist(statErr) {
+				m.stopSpinner(spinID)
+				doneFn(fmt.Errorf("File not found: %s", localPath))
+				return
+			}
+			err = t.Upload(context.Background(), localPath, remotePath)
+		}
+		m.stopSpinner(spinID)
+		doneFn(err)
+	}()
+}
+
+// StartDownload runs a download asynchronously with TUI spinner progress.
+func (m *Manager) StartDownload(remotePath, localPath string, progressFn func(string), doneFn func(error)) {
+	m.mu.RLock()
+	session := m.selectedSession
+	m.mu.RUnlock()
+
+	if session == nil {
+		doneFn(fmt.Errorf("No session selected"))
+		return
+	}
+
+	filename := filepath.Base(remotePath)
+	spinID := m.startSpinner(fmt.Sprintf("Downloading %s...", filename))
+
+	// Show status bar immediately (download has no total size, so no %)
+	if m.transferProgressFunc != nil {
+		m.transferProgressFunc("Downloading "+filename, 0, "0 B", false)
+	}
+
+	go func() {
+		t := NewTransferer(session.Conn, session.ID)
+		t.SetPlatform(session.Platform)
+		t.progressFn = func(text string) {
+			if m.spinnerUpdate != nil {
+				m.spinnerUpdate(spinID, text)
+			}
+			// Update status bar with size info (no % available for downloads)
+			if m.transferProgressFunc != nil {
+				// Extract size from text like "Downloading CLAUDE.md... 15.2 KB"
+				sizeStr := ""
+				if idx := strings.LastIndex(text, "... "); idx >= 0 {
+					sizeStr = text[idx+4:]
+				}
+				m.transferProgressFunc("Downloading "+filename, 0, sizeStr, false)
+			}
+		}
+
+		err := t.Download(context.Background(), remotePath, localPath)
+		m.stopSpinner(spinID)
+		doneFn(err)
+	}()
+}
+
 // handleRev generates and displays reverse shell payloads
 func (m *Manager) handleRev(ip string, port int) {
 	// Validate that we have IP and port
@@ -2686,6 +2807,42 @@ func (m *Manager) handleSet(args []string) {
 }
 
 // --- TUI adapter methods ---
+
+// CompleteInput returns the completed input string for the given line and cursor position.
+// If there's exactly one match, it returns the completed string.
+// If multiple matches, returns the longest common prefix.
+// If no matches, returns the original line unchanged.
+func (m *Manager) CompleteInput(line string) string {
+	completer := &GummyCompleter{manager: m}
+	runes := []rune(line)
+	matches, replLen := completer.Do(runes, len(runes))
+
+	if len(matches) == 0 {
+		return line
+	}
+
+	// Single match — apply it
+	if len(matches) == 1 {
+		prefix := line[:len(line)-replLen]
+		return prefix + string(runes[len(runes)-replLen:]) + string(matches[0])
+	}
+
+	// Multiple matches — find longest common prefix
+	lcp := matches[0]
+	for _, m := range matches[1:] {
+		i := 0
+		for i < len(lcp) && i < len(m) && lcp[i] == m[i] {
+			i++
+		}
+		lcp = lcp[:i]
+	}
+	if len(lcp) > 0 {
+		prefix := line[:len(line)-replLen]
+		return prefix + string(runes[len(runes)-replLen:]) + string(lcp)
+	}
+
+	return line
+}
 
 // ExecuteCommand runs a gummy command and returns its text output.
 // This captures stdout from the existing handleCommand methods as a Phase 1

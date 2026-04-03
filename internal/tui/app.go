@@ -34,13 +34,17 @@ type CommandExecutor interface {
 	SetSilent(silent bool)
 	SetNotifyFunc(fn func(string))
 	SetNotifyBarFunc(fn func(string, int))                      // message, level (0=info, 1=important, 2=error)
-	SetSpinnerFunc(start func(int, string), stop func(int))    // start(id, text), stop(id)
+	SetSpinnerFunc(start func(int, string), stop func(int), update func(int, string))
 	SetShellOutputFunc(fn func(string, int, []byte))            // shell relay output (sessionID, numID, data)
 	SetSessionDisconnectFunc(fn func(int, string))             // session disconnect (numID, remoteIP)
 	StartShellRelay(cols, rows int) error                       // start reading from selected session's conn
 	StopShellRelay()                                           // stop relay goroutine
 	WriteToShell(data string) error                            // write to selected session's conn
 	ResizePTY(cols, rows int)                                  // send stty resize to remote PTY
+	CompleteInput(line string) string                          // tab completion
+	SetTransferProgressFunc(fn func(string, int, string, bool))                               // transfer progress (filename, pct, right, upload)
+	StartUpload(localPath, remotePath string, progressFn func(string), doneFn func(error))   // async upload
+	StartDownload(remotePath, localPath string, progressFn func(string), doneFn func(error)) // async download
 }
 
 // App is the root Bubble Tea model for the Gummy TUI.
@@ -219,6 +223,39 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case transferProgressMsg:
+		a.statusBar.TransferPct = msg.Pct
+		a.statusBar.TransferMsg = msg.Filename
+		a.statusBar.TransferRight = msg.Right
+		a.statusBar.TransferUpload = msg.Upload
+		return a, nil
+
+	case transferDoneMsg:
+		// Clear progress bar
+		a.statusBar.TransferPct = -1
+		a.statusBar.TransferMsg = ""
+		a.statusBar.TransferRight = ""
+		action := "Download"
+		if msg.Upload {
+			action = "Upload"
+		}
+		if msg.Err != nil {
+			a.menuAppend(ui.Error(fmt.Sprintf("%s failed: %v", action, msg.Err)) + "\n\n")
+			return a, func() tea.Msg {
+				return showNotifyMsg{
+					Message: fmt.Sprintf("%s failed: %s", action, msg.Filename),
+					Level:   NotifyError,
+				}
+			}
+		}
+		a.menuAppend(ui.Success(fmt.Sprintf("%s complete: %s", action, msg.Filename)) + "\n\n")
+		return a, func() tea.Msg {
+			return showNotifyMsg{
+				Message: fmt.Sprintf("%s complete: %s", action, msg.Filename),
+				Level:   NotifyInfo,
+			}
+		}
+
 	case sendResizeMsg:
 		if msg.id != a.resizeID {
 			return a, nil // Stale — a newer resize superseded this one
@@ -253,6 +290,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinnerStopMsg:
 		a.output.StopSpinner(msg.ID)
+		return a, nil
+
+	case spinnerUpdateMsg:
+		a.output.UpdateSpinner(msg.ID, msg.Text)
 		return a, nil
 
 	case shellReadyMsg:
@@ -467,7 +508,14 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case "tab":
-		// Phase 2: toggle sidebar
+		if a.context == ContextMenu {
+			// Tab completion in menu mode
+			current := a.input.Value()
+			completed := a.executor.CompleteInput(current)
+			if completed != current {
+				a.input.SetValue(completed)
+			}
+		}
 		return a, nil
 
 	case "f12":
@@ -536,6 +584,12 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 			a.menuBuffer.Reset()
 			a.output.Clear()
 			return a, nil
+
+		case strings.HasPrefix(cmd, "upload "):
+			return a.handleUploadCmd(cmd)
+
+		case strings.HasPrefix(cmd, "download "):
+			return a.handleDownloadCmd(cmd)
 
 		default:
 			output := a.executor.ExecuteCommand(cmd)
@@ -679,6 +733,73 @@ func (a *App) menuAppend(text string) {
 	a.menuBuffer.WriteString(text)
 	if a.activeSession == 0 {
 		a.output.Append(text)
+	}
+}
+
+// expandTilde replaces a leading ~ with the user's home directory.
+func expandTilde(path string) string {
+	if strings.HasPrefix(path, "~/") || path == "~" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, path[1:])
+		}
+	}
+	return path
+}
+
+// handleUploadCmd parses and launches an async upload.
+func (a App) handleUploadCmd(cmd string) (tea.Model, tea.Cmd) {
+	parts := strings.Fields(cmd)
+	if len(parts) < 2 {
+		a.menuAppend(ui.CommandHelp("Usage: upload <local_path> [remote_path]") + "\n\n")
+		return a, nil
+	}
+	localPath := expandTilde(parts[1])
+	remotePath := ""
+	if len(parts) >= 3 {
+		remotePath = parts[2]
+	}
+
+	if a.executor.GetSelectedSessionID() == 0 {
+		a.menuAppend(ui.Error("No session selected. Use 'use <id>' first") + "\n\n")
+		return a, nil
+	}
+
+	filename := filepath.Base(localPath)
+
+	// Launch async — spinner is managed by Manager.StartUpload
+	return a, func() tea.Msg {
+		done := make(chan error, 1)
+		a.executor.StartUpload(localPath, remotePath, nil, func(err error) { done <- err })
+		return transferDoneMsg{Err: <-done, Filename: filename, Upload: true}
+	}
+}
+
+// handleDownloadCmd parses and launches an async download.
+func (a App) handleDownloadCmd(cmd string) (tea.Model, tea.Cmd) {
+	parts := strings.Fields(cmd)
+	if len(parts) < 2 {
+		a.menuAppend(ui.CommandHelp("Usage: download <remote_path> [local_path]") + "\n\n")
+		return a, nil
+	}
+	remotePath := parts[1]
+	localPath := ""
+	if len(parts) >= 3 {
+		localPath = expandTilde(parts[2])
+	}
+
+	if a.executor.GetSelectedSessionID() == 0 {
+		a.menuAppend(ui.Error("No session selected. Use 'use <id>' first") + "\n\n")
+		return a, nil
+	}
+
+	filename := filepath.Base(remotePath)
+
+	// Launch async — spinner is managed by Manager.StartDownload
+	return a, func() tea.Msg {
+		done := make(chan error, 1)
+		a.executor.StartDownload(remotePath, localPath, nil, func(err error) { done <- err })
+		return transferDoneMsg{Err: <-done, Filename: filename, Upload: false}
 	}
 }
 
@@ -1066,7 +1187,11 @@ func Run(executor CommandExecutor, listenerAddr string) error {
 	executor.SetSpinnerFunc(
 		func(id int, text string) { p.Send(spinnerStartMsg{ID: id, Text: text}) },
 		func(id int) { p.Send(spinnerStopMsg{ID: id}) },
+		func(id int, text string) { p.Send(spinnerUpdateMsg{ID: id, Text: text}) },
 	)
+	executor.SetTransferProgressFunc(func(filename string, pct int, right string, upload bool) {
+		p.Send(transferProgressMsg{Filename: filename, Pct: pct, Right: right, Upload: upload})
+	})
 	executor.SetShellOutputFunc(func(sessionID string, numID int, data []byte) {
 		p.Send(ShellOutputMsg{SessionID: sessionID, NumID: numID, Data: data})
 	})
@@ -1080,7 +1205,8 @@ func Run(executor CommandExecutor, listenerAddr string) error {
 	executor.SetSilent(false)
 	executor.SetNotifyFunc(nil)
 	executor.SetNotifyBarFunc(nil)
-	executor.SetSpinnerFunc(nil, nil)
+	executor.SetSpinnerFunc(nil, nil, nil)
+	executor.SetTransferProgressFunc(nil)
 	executor.SetShellOutputFunc(nil)
 	executor.SetSessionDisconnectFunc(nil)
 	return err

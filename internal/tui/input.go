@@ -78,6 +78,12 @@ func (i *Input) Value() string {
 	return i.textinput.Value()
 }
 
+// SetValue sets the input text and moves cursor to end.
+func (i *Input) SetValue(s string) {
+	i.textinput.SetValue(s)
+	i.textinput.CursorEnd()
+}
+
 // Clear resets the input text.
 func (i *Input) Clear() {
 	i.textinput.SetValue("")

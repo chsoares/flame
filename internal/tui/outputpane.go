@@ -262,6 +262,14 @@ func (o *OutputPane) StopSpinner(id int) {
 	}
 }
 
+// UpdateSpinner changes the spinner text without restarting it.
+func (o *OutputPane) UpdateSpinner(id int, text string) {
+	if o.spinnerActive && o.spinnerID == id {
+		o.spinnerText = text
+		o.refreshSpinnerContent()
+	}
+}
+
 // TickSpinner advances the spinner animation frame.
 func (o *OutputPane) TickSpinner(id int) {
 	if o.spinnerActive && o.spinnerID == id {

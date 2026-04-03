@@ -71,6 +71,23 @@ type ModuleFinishedMsg struct {
 	Err        error
 }
 
+// --- Transfer events ---
+
+// transferProgressMsg updates the status bar progress indicator.
+type transferProgressMsg struct {
+	Filename string
+	Pct      int    // 0-100
+	Right    string // Right-side text override (e.g., "15.2 KB" for downloads)
+	Upload   bool   // true=upload, false=download
+}
+
+// transferDoneMsg signals a transfer completed (or failed).
+type transferDoneMsg struct {
+	Err      error
+	Filename string
+	Upload   bool // true=upload, false=download
+}
+
 // --- User actions ---
 
 // SendCommandMsg is dispatched when user presses Enter in shell context.
@@ -143,6 +160,12 @@ type spinnerStartMsg struct {
 // spinnerStopMsg stops and removes the spinner from the output pane.
 type spinnerStopMsg struct {
 	ID int
+}
+
+// spinnerUpdateMsg changes the text of an active spinner.
+type spinnerUpdateMsg struct {
+	ID   int
+	Text string
 }
 
 // spinnerTickMsg drives the spinner animation.

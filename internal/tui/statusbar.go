@@ -26,8 +26,10 @@ type Notification struct {
 // StatusBar renders the bottom status line with hotkey hints, or a notification overlay.
 type StatusBar struct {
 	Context     ContextMode
-	TransferPct int    // -1 = no transfer, 0-100 = progress
-	TransferMsg string // e.g., "linpeas.sh"
+	TransferPct    int    // -1 = no transfer, 0-100 = progress
+	TransferMsg    string // e.g., "Uploading CLAUDE.md"
+	TransferRight  string // Right side text: "47%" or "15.2 KB"
+	TransferUpload bool   // true=upload, false=download
 	Width       int
 	Notify      *Notification // Active notification (overlays entire bar)
 }
@@ -40,6 +42,11 @@ func NewStatusBar(width int) StatusBar {
 }
 
 func (s StatusBar) View() string {
+	// Transfer progress overlay takes priority over everything
+	if s.TransferPct >= 0 {
+		return s.renderTransferProgress()
+	}
+
 	// Notification overlay takes over the entire bar
 	if s.Notify != nil {
 		return s.renderNotification()
@@ -54,28 +61,86 @@ func (s StatusBar) View() string {
 	var left string
 	if s.Context == ContextShell {
 		left = hint("F12", "detach") + dot +
-			hint("Tab", "sidebar") + dot +
+			hint("F11", "sidebar") + dot +
 			hint("Ctrl+C", "interrupt") + dot +
 			hint("PgUp/PgDn", "scroll") + dot +
 			hint("Ctrl+D", "quit")
 	} else {
-		left = hint("Tab", "sidebar") + dot +
+		left = hint("Tab", "complete") + dot +
+			hint("F11", "sidebar") + dot +
 			hint("PgUp/PgDn", "scroll") + dot +
 			hint("Ctrl+D", "quit")
 	}
 
-	// Transfer progress on the right
-	var right string
-	if s.TransferPct >= 0 {
-		right = styleMagenta.Render(fmt.Sprintf("⬆ %d%% %s", s.TransferPct, s.TransferMsg))
-	}
-
-	gap := s.Width - lipgloss.Width(left) - lipgloss.Width(right)
+	gap := s.Width - lipgloss.Width(left)
 	if gap < 1 {
 		gap = 1
 	}
 
-	return left + fmt.Sprintf("%*s", gap, "") + right
+	return left + fmt.Sprintf("%*s", gap, "")
+}
+
+// renderTransferProgress renders a full-width progress bar overlay, same style as notifications.
+// Upload:   " ⬆ Uploading CLAUDE.md ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱              47% "
+// Download: " ⬇ Downloading passwd ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱         83% "
+func (s StatusBar) renderTransferProgress() string {
+	bg := lipgloss.Color("4") // Blue background (same family as notifications)
+
+	icon := ui.SymbolUpload
+	if !s.TransferUpload {
+		icon = ui.SymbolDownload
+	}
+
+	label := icon + " " + s.TransferMsg
+	pctStr := s.TransferRight
+	if pctStr == "" {
+		pctStr = fmt.Sprintf("%d%%", s.TransferPct)
+	}
+
+	// Style for text on colored background
+	textStyle := lipgloss.NewStyle().
+		Background(bg).
+		Foreground(lipgloss.Color("0")).
+		Bold(true)
+
+	// Calculate bar width: total - label - pct - spacing
+	labelW := lipgloss.Width(label) + 2 // " icon text "
+	pctW := len(pctStr) + 2              // " NN% "
+	barWidth := s.Width - labelW - pctW
+	if barWidth < 5 {
+		barWidth = 5
+	}
+
+	filled := barWidth * s.TransferPct / 100
+	if filled > barWidth {
+		filled = barWidth
+	}
+	empty := barWidth - filled
+
+	// Build hatching bar on colored background
+	var filledBar string
+	for i := 0; i < filled; i++ {
+		filledBar += "/"
+	}
+
+	barStyle := lipgloss.NewStyle().Background(bg).Foreground(lipgloss.Color("0"))
+	emptyStyle := lipgloss.NewStyle().Background(bg)
+
+	rendered := textStyle.Render(" "+label+" ") +
+		barStyle.Render(filledBar) +
+		emptyStyle.Render(fmt.Sprintf("%*s", empty, "")) +
+		textStyle.Render(" "+pctStr+" ")
+
+	// Fill remaining width
+	contentW := lipgloss.Width(rendered)
+	if contentW < s.Width {
+		fill := lipgloss.NewStyle().Background(bg).Render(
+			fmt.Sprintf("%*s", s.Width-contentW, ""),
+		)
+		rendered += fill
+	}
+
+	return rendered
 }
 
 func (s StatusBar) renderNotification() string {
