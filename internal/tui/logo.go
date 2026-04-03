@@ -163,3 +163,8 @@ func renderBannerSplash(width int) string {
 
 	return strings.Join(lines, "\n")
 }
+
+// RenderExitBanner generates a banner for display after the TUI exits.
+func RenderExitBanner(width int) string {
+	return renderBannerSplash(width)
+}

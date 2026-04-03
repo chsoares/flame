@@ -2371,6 +2371,25 @@ func (m *Manager) GetSessionCount() int {
 	return len(m.sessions)
 }
 
+// GetSessionLogDir returns the base session log directory if any logs were created.
+// Returns empty string if no sessions were logged.
+func (m *Manager) GetSessionLogDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	sessDir := filepath.Join(home, ".gummy", "sessions")
+	if _, err := os.Stat(sessDir); os.IsNotExist(err) {
+		return ""
+	}
+	// Check if any date subdirectories exist
+	entries, err := os.ReadDir(sessDir)
+	if err != nil || len(entries) == 0 {
+		return ""
+	}
+	return sessDir
+}
+
 // HasActiveSessions returns true if there are any active sessions
 func (m *Manager) HasActiveSessions() bool {
 	m.mu.RLock()

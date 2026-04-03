@@ -8,6 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"golang.org/x/term"
+
 	"github.com/chsoares/gummy/internal"
 	"github.com/chsoares/gummy/internal/tui"
 	"github.com/chsoares/gummy/internal/ui"
@@ -72,10 +74,31 @@ func main() {
 	}()
 
 	// Launch TUI
+	manager := l.GetSessionManager()
 	listenerAddr := fmt.Sprintf("%s:%d", config.IP, config.Port)
-	if err := tui.Run(l.GetSessionManager(), listenerAddr); err != nil {
+	if err := tui.Run(manager, listenerAddr); err != nil {
 		fmt.Println(ui.Error(fmt.Sprintf("TUI error: %v", err)))
 		os.Exit(1)
+	}
+
+	// Print exit banner
+	width := 80
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+		width = w
+	}
+	fmt.Println(tui.RenderExitBanner(width))
+	fmt.Println()
+
+	// Show session log path if logs exist
+	if logDir := manager.GetSessionLogDir(); logDir != "" {
+		// Pretty path: replace home with ~
+		if home, err := os.UserHomeDir(); err == nil {
+			if len(logDir) > len(home) && logDir[:len(home)] == home {
+				logDir = "~" + logDir[len(home):]
+			}
+		}
+		fmt.Println(ui.CommandHelp(fmt.Sprintf("Session logs saved to: %s", logDir)))
+		fmt.Println()
 	}
 }
 
