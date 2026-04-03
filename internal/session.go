@@ -784,7 +784,7 @@ func (c *GummyCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 	lineStr := string(line[:pos])
 	trimmed := strings.TrimLeft(lineStr, " \t")
 
-	commands := []string{"upload", "download", "list", "use", "shell", "kill", "help", "exit", "clear", "ssh", "rev", "spawn", "run", "modules"}
+	commands := []string{"upload", "download", "list", "use", "shell", "kill", "help", "exit", "clear", "ssh", "rev", "spawn", "run", "modules", "binbag", "pivot", "config"}
 
 	// Nothing typed yet, show all commands
 	if trimmed == "" {
@@ -817,8 +817,36 @@ func (c *GummyCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 	switch cmd {
 	case "upload":
 		if argCount == 1 {
-			// First arg: complete local paths
-			return c.completeLocalPath(currentArg)
+			// First arg: complete local paths + binbag files
+			localMatches, localLen := c.completeLocalPath(currentArg)
+
+			// If binbag enabled and no path separator in arg, also offer binbag files
+			if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled &&
+				!strings.ContainsAny(currentArg, "/\\") {
+				entries, err := os.ReadDir(GlobalRuntimeConfig.BinbagPath)
+				if err == nil {
+					seen := make(map[string]bool)
+					// Track existing matches to deduplicate
+					for _, m := range localMatches {
+						seen[string(m)] = true
+					}
+					for _, entry := range entries {
+						if entry.IsDir() || strings.HasPrefix(entry.Name(), "tmp_") {
+							continue
+						}
+						name := entry.Name()
+						if strings.HasPrefix(name, currentArg) {
+							suffix := []rune(name[len(currentArg):])
+							key := string(suffix)
+							if !seen[key] {
+								localMatches = append(localMatches, suffix)
+								seen[key] = true
+							}
+						}
+					}
+				}
+			}
+			return localMatches, localLen
 		} else if argCount == 2 {
 			// Second arg: complete remote paths
 			return c.completeRemotePath(currentArg)
@@ -830,6 +858,16 @@ func (c *GummyCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 		} else if argCount == 2 {
 			// Second arg: complete local paths
 			return c.completeLocalPath(currentArg)
+		}
+	case "binbag":
+		if argCount == 1 {
+			return c.completeFromList(currentArg, []string{"ls", "on", "off", "path", "port"})
+		} else if argCount == 2 && len(parts) >= 2 && parts[1] == "path" {
+			return c.completeLocalPath(currentArg)
+		}
+	case "pivot":
+		if argCount == 1 {
+			return c.completeFromList(currentArg, []string{"on", "off"})
 		}
 	}
 
@@ -2239,25 +2277,11 @@ func (m *Manager) handleCommand(command string) {
 		}
 		m.handleRunModule(parts[1], parts[2:])
 	case "config":
-		// config - show current config
-		// config save - save to file
-		if len(parts) == 1 {
-			m.handleShowConfig()
-		} else if parts[1] == "save" {
-			m.handleSaveConfig()
-		} else {
-			fmt.Println(ui.CommandHelp("Usage: config [save]"))
-		}
-	case "set":
-		// set binbag <path|disable>
-		// set pivot <host> <port> | disable
-		if len(parts) < 2 {
-			fmt.Println(ui.CommandHelp("Usage: set <option> <value>"))
-			fmt.Println(ui.Command("  set binbag <path|disable>"))
-			fmt.Println(ui.Command("  set pivot <host> <port> | disable"))
-			return
-		}
-		m.handleSet(parts[1:])
+		m.handleShowConfig()
+	case "binbag":
+		m.handleBinbag(parts[1:])
+	case "pivot":
+		m.handlePivot(parts[1:])
 	default:
 		fmt.Println(ui.Warning(fmt.Sprintf("Unknown command: %s (type 'help' for available commands)", parts[0])))
 	}
@@ -2302,10 +2326,14 @@ func (m *Manager) showHelp() {
 
 	// Config category
 	lines = append(lines, ui.CommandHelp("config"))
+	lines = append(lines, ui.Command("binbag                       - List binbag files and status"))
+	lines = append(lines, ui.Command("binbag on/off                - Enable/disable binbag HTTP server"))
+	lines = append(lines, ui.Command("binbag path <dir>            - Set binbag directory"))
+	lines = append(lines, ui.Command("binbag port <N>              - Set HTTP server port"))
+	lines = append(lines, ui.Command("pivot                        - Show pivot status"))
+	lines = append(lines, ui.Command("pivot on/off                 - Enable/disable pivot"))
+	lines = append(lines, ui.Command("pivot <host:port>            - Set pivot endpoint"))
 	lines = append(lines, ui.Command("config                       - Show current configuration"))
-	lines = append(lines, ui.Command("config save                  - Save configuration to file"))
-	lines = append(lines, ui.Command("set binbag <path|disable>    - Set binbag path or disable"))
-	lines = append(lines, ui.Command("set pivot <host> <port>      - Set pivot host:port or disable"))
 	lines = append(lines, "")
 
 	// Program category
@@ -2385,19 +2413,8 @@ func (m *Manager) handleUpload(localPath, remotePath string) {
 	// Show hint
 	fmt.Println(ui.CommandHelp("Press Ctrl+D to cancel"))
 
-	// Perform upload (use SmartUpload if binbag is enabled)
-	var err error
-	if GlobalRuntimeConfig.BinbagEnabled {
-		// SmartUpload handles binbag lookup, URL download, and local file paths
-		err = t.SmartUpload(ctx, localPath, remotePath)
-	} else {
-		// Traditional upload requires local file to exist
-		if _, statErr := os.Stat(localPath); os.IsNotExist(statErr) {
-			fmt.Println(ui.Error(fmt.Sprintf("Local file not found: %s", localPath)))
-			return
-		}
-		err = t.Upload(ctx, localPath, remotePath)
-	}
+	// Always use SmartUpload (handles local, binbag, URL, with b64 fallback)
+	err := t.SmartUpload(ctx, localPath, remotePath)
 
 	if err != nil {
 		// Check if it was cancelled by user
@@ -2508,19 +2525,8 @@ func (m *Manager) StartUpload(ctx context.Context, localPath, remotePath string)
 			}
 		}
 
-		var err error
-		if GlobalRuntimeConfig.BinbagEnabled {
-			err = t.SmartUpload(ctx, localPath, remotePath)
-		} else {
-			if _, statErr := os.Stat(localPath); os.IsNotExist(statErr) {
-				m.stopSpinner(spinID)
-				if m.transferDoneFunc != nil {
-					m.transferDoneFunc(filename, true, fmt.Errorf("File not found: %s", localPath))
-				}
-				return
-			}
-			err = t.Upload(ctx, localPath, remotePath)
-		}
+		// Always use SmartUpload (handles local, binbag, URL, with b64 fallback)
+		err := t.SmartUpload(ctx, localPath, remotePath)
 		m.stopSpinner(spinID)
 		if m.transferDoneFunc != nil {
 			m.transferDoneFunc(filename, true, err)
@@ -2767,107 +2773,171 @@ func (m *Manager) handleShowConfig() {
 	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Configuration", ui.SymbolGem), lines))
 }
 
-// handleSaveConfig saves current runtime config to file
-func (m *Manager) handleSaveConfig() {
-	if err := GlobalRuntimeConfig.SaveToFile(); err != nil {
-		fmt.Println(ui.Error(fmt.Sprintf("Failed to save config: %v", err)))
+// handleBinbag handles the 'binbag' command and subcommands
+func (m *Manager) handleBinbag(args []string) {
+	rc := GlobalRuntimeConfig
+
+	// No args or "ls": show status and list files
+	if len(args) == 0 || args[0] == "ls" {
+		if !rc.BinbagEnabled {
+			fmt.Println(ui.Info("Binbag is disabled"))
+			fmt.Println(ui.CommandHelp("Enable with: binbag on"))
+			if rc.BinbagPath != "" {
+				fmt.Println(ui.Command(fmt.Sprintf("  path: %s", rc.BinbagPath)))
+			}
+			return
+		}
+
+		// Show status
+		fmt.Println(ui.Info(fmt.Sprintf("Binbag: %s", rc.BinbagPath)))
+		fmt.Println(ui.Command(fmt.Sprintf("  http://%s:%d/", rc.ListenerIP, rc.HTTPPort)))
+
+		// List files
+		entries, err := os.ReadDir(rc.BinbagPath)
+		if err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Failed to read binbag directory: %v", err)))
+			return
+		}
+
+		var lines []string
+		for _, entry := range entries {
+			if !entry.IsDir() && !strings.HasPrefix(entry.Name(), "tmp_") {
+				lines = append(lines, ui.Command(entry.Name()))
+			}
+		}
+
+		if len(lines) == 0 {
+			fmt.Println(ui.Warning("No files in binbag"))
+		} else {
+			fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Binbag Files (%d)", ui.SymbolGem, len(lines)), lines))
+		}
 		return
 	}
 
-	home, _ := os.UserHomeDir()
-	configPath := filepath.Join(home, ".gummy", "config.toml")
-	fmt.Println(ui.Success(fmt.Sprintf("Configuration saved to: %s", configPath)))
-}
-
-// handleSet handles the 'set' command
-func (m *Manager) handleSet(args []string) {
-	if len(args) < 2 {
-		fmt.Println(ui.Error("Not enough arguments"))
-		return
-	}
-
-	option := args[0]
-	value := args[1]
-
-	switch option {
-	case "binbag":
-		if value == "disable" {
-			if err := GlobalRuntimeConfig.DisableBinbag(); err != nil {
-				fmt.Println(ui.Error(fmt.Sprintf("Failed to disable binbag: %v", err)))
-				return
-			}
-			fmt.Println(ui.Success("Binbag disabled"))
-		} else {
-			// Treat value as path (with optional "enable" keyword)
-			path := value
-			if value == "enable" {
-				if len(args) < 3 {
-					fmt.Println(ui.Error("Path required: set binbag <path>"))
-					return
-				}
-				path = args[2]
-			}
-
-			// Expand ~ to home directory
-			if strings.HasPrefix(path, "~/") {
-				home, err := os.UserHomeDir()
-				if err != nil {
-					fmt.Println(ui.Error(fmt.Sprintf("Failed to get home directory: %v", err)))
-					return
-				}
-				path = filepath.Join(home, path[2:])
-			}
-
-			if err := GlobalRuntimeConfig.EnableBinbag(path); err != nil {
-				fmt.Println(ui.Error(fmt.Sprintf("Failed to enable binbag: %v", err)))
-				return
-			}
-			fmt.Println(ui.Info(fmt.Sprintf("Binbag enabled (serving %s on http://%s:%d/)", path, GlobalRuntimeConfig.ListenerIP, GlobalRuntimeConfig.HTTPPort)))
+	switch args[0] {
+	case "on":
+		path := rc.BinbagPath
+		if path == "" {
+			fmt.Println(ui.Error("No binbag path configured. Set one first: binbag path <dir>"))
+			return
 		}
-
-	case "pivot":
-		if value == "disable" {
-			if err := GlobalRuntimeConfig.DisablePivot(); err != nil {
-				fmt.Println(ui.Error(fmt.Sprintf("Failed to disable pivot: %v", err)))
-				return
-			}
-			fmt.Println(ui.Success("Pivot disabled"))
-		} else {
-			// Treat value as host (with optional "enable" keyword)
-			host := value
-			portArg := ""
-
-			if value == "enable" {
-				if len(args) < 4 {
-					fmt.Println(ui.Error("Host and port required: set pivot <host> <port>"))
-					return
-				}
-				host = args[2]
-				portArg = args[3]
-			} else {
-				if len(args) < 3 {
-					fmt.Println(ui.Error("Port required: set pivot <host> <port>"))
-					return
-				}
-				portArg = args[2]
-			}
-
-			port, err := strconv.Atoi(portArg)
-			if err != nil {
-				fmt.Println(ui.Error(fmt.Sprintf("Invalid port: %s", portArg)))
-				return
-			}
-
-			if err := GlobalRuntimeConfig.SetPivot(host, port); err != nil {
-				fmt.Println(ui.Error(fmt.Sprintf("Failed to set pivot: %v", err)))
-				return
-			}
-			fmt.Println(ui.Success(fmt.Sprintf("Pivot enabled: %s:%d", host, port)))
+		if err := rc.EnableBinbag(path); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Failed to enable binbag: %v", err)))
+			return
 		}
+		fmt.Println(ui.Success(fmt.Sprintf("Binbag enabled (serving %s on http://%s:%d/)", path, rc.ListenerIP, rc.HTTPPort)))
+
+	case "off":
+		if err := rc.DisableBinbag(); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Failed to disable binbag: %v", err)))
+			return
+		}
+		fmt.Println(ui.Success("Binbag disabled"))
+
+	case "path":
+		if len(args) < 2 {
+			fmt.Println(ui.CommandHelp("Usage: binbag path <dir>"))
+			return
+		}
+		dir := expandUserPath(args[1])
+		if err := rc.SetBinbagPath(dir); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Failed to set binbag path: %v", err)))
+			return
+		}
+		fmt.Println(ui.Success(fmt.Sprintf("Binbag path set to: %s", dir)))
+
+	case "port":
+		if len(args) < 2 {
+			fmt.Println(ui.CommandHelp("Usage: binbag port <N>"))
+			return
+		}
+		port, err := strconv.Atoi(args[1])
+		if err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Invalid port: %s", args[1])))
+			return
+		}
+		if err := rc.SetBinbagPort(port); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Failed to set binbag port: %v", err)))
+			return
+		}
+		fmt.Println(ui.Success(fmt.Sprintf("Binbag HTTP port set to: %d", port)))
 
 	default:
-		fmt.Println(ui.Error(fmt.Sprintf("Unknown option: %s", option)))
-		fmt.Println(ui.CommandHelp("Available options: mode, binbag, pivot"))
+		fmt.Println(ui.CommandHelp("Usage: binbag [ls|on|off|path <dir>|port <N>]"))
+	}
+}
+
+// handlePivot handles the 'pivot' command and subcommands
+func (m *Manager) handlePivot(args []string) {
+	rc := GlobalRuntimeConfig
+
+	// No args: show status
+	if len(args) == 0 {
+		if rc.PivotEnabled {
+			fmt.Println(ui.Info(fmt.Sprintf("Pivot enabled: %s:%d", rc.PivotHost, rc.PivotPort)))
+		} else {
+			fmt.Println(ui.Info("Pivot is disabled"))
+			if rc.PivotHost != "" {
+				fmt.Println(ui.Command(fmt.Sprintf("  last: %s:%d", rc.PivotHost, rc.PivotPort)))
+			}
+			fmt.Println(ui.CommandHelp("Enable with: pivot on  or  pivot <host:port>"))
+		}
+		return
+	}
+
+	switch args[0] {
+	case "on":
+		if rc.PivotHost == "" {
+			fmt.Println(ui.Error("No pivot configured. Set one first: pivot <host:port>"))
+			return
+		}
+		if err := rc.SetPivot(rc.PivotHost, rc.PivotPort); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Failed to enable pivot: %v", err)))
+			return
+		}
+		fmt.Println(ui.Success(fmt.Sprintf("Pivot enabled: %s:%d", rc.PivotHost, rc.PivotPort)))
+
+	case "off":
+		if err := rc.DisablePivot(); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Failed to disable pivot: %v", err)))
+			return
+		}
+		fmt.Println(ui.Success("Pivot disabled"))
+
+	default:
+		// Try to parse as host:port
+		input := strings.Join(args, " ")
+		var host string
+		var port int
+
+		// Try net.SplitHostPort first (handles host:port format)
+		if h, p, err := net.SplitHostPort(input); err == nil {
+			host = h
+			portNum, err := strconv.Atoi(p)
+			if err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Invalid port: %s", p)))
+				return
+			}
+			port = portNum
+		} else if len(args) == 2 {
+			// Try "host port" format
+			host = args[0]
+			portNum, err := strconv.Atoi(args[1])
+			if err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("Invalid port: %s", args[1])))
+				return
+			}
+			port = portNum
+		} else {
+			fmt.Println(ui.CommandHelp("Usage: pivot [on|off|<host:port>|<host> <port>]"))
+			return
+		}
+
+		if err := rc.SetPivot(host, port); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("Failed to set pivot: %v", err)))
+			return
+		}
+		fmt.Println(ui.Success(fmt.Sprintf("Pivot enabled: %s:%d", host, port)))
 	}
 }
 

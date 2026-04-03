@@ -877,19 +877,10 @@ func (t *Transferer) resolveSource(source string) (string, func(), error) {
 		return tmpPath, cleanup, nil
 	}
 
-	// Case 2: Check binbag first (if enabled)
-	if GlobalRuntimeConfig.BinbagEnabled {
-		binbagFile := filepath.Join(GlobalRuntimeConfig.BinbagPath, source)
-		if _, statErr := os.Stat(binbagFile); statErr == nil {
-			return binbagFile, nil, nil // File exists in binbag!
-		} else {
-		}
-	}
-
-	// Case 3: Local file path
+	// Case 2: Local file path (check CWD first)
 	if _, err := os.Stat(source); err == nil {
-		// If binbag enabled, copy to binbag as tmp_*
-		if GlobalRuntimeConfig.BinbagEnabled {
+		// If binbag enabled, copy to binbag as tmp_* so HTTP server can serve it
+		if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
 			filename := filepath.Base(source)
 			tmpPath := filepath.Join(GlobalRuntimeConfig.BinbagPath, "tmp_"+filename)
 
@@ -911,6 +902,14 @@ func (t *Transferer) resolveSource(source string) (string, func(), error) {
 
 		// Binbag disabled, use file directly
 		return source, nil, nil
+	}
+
+	// Case 3: Check binbag directory (if enabled)
+	if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
+		binbagFile := filepath.Join(GlobalRuntimeConfig.BinbagPath, source)
+		if _, statErr := os.Stat(binbagFile); statErr == nil {
+			return binbagFile, nil, nil // File exists in binbag!
+		}
 	}
 
 	return "", nil, fmt.Errorf("file not found: %s", source)

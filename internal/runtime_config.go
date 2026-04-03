@@ -2,8 +2,10 @@ package internal
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/BurntSushi/toml"
@@ -79,6 +81,13 @@ func NewRuntimeConfig(config *Config, listenerIP string) *RuntimeConfig {
 	return rc
 }
 
+// autoPersist saves config to file silently (logs errors but doesn't bubble up)
+func (rc *RuntimeConfig) autoPersist() {
+	if err := rc.SaveToFile(); err != nil {
+		log.Printf("auto-persist config failed: %v", err)
+	}
+}
+
 // EnableBinbag enables binbag and starts HTTP server
 func (rc *RuntimeConfig) EnableBinbag(path string) error {
 	// Validate path exists
@@ -87,7 +96,6 @@ func (rc *RuntimeConfig) EnableBinbag(path string) error {
 	}
 
 	rc.mu.Lock()
-	defer rc.mu.Unlock()
 
 	// Stop existing server if running
 	if rc.FileServer != nil {
@@ -102,16 +110,18 @@ func (rc *RuntimeConfig) EnableBinbag(path string) error {
 	if err := rc.FileServer.Start(); err != nil {
 		rc.BinbagEnabled = false
 		rc.FileServer = nil
+		rc.mu.Unlock()
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
 
+	rc.mu.Unlock()
+	rc.autoPersist()
 	return nil
 }
 
 // DisableBinbag disables binbag and stops HTTP server
 func (rc *RuntimeConfig) DisableBinbag() error {
 	rc.mu.Lock()
-	defer rc.mu.Unlock()
 
 	// Stop server if running
 	if rc.FileServer != nil {
@@ -120,7 +130,9 @@ func (rc *RuntimeConfig) DisableBinbag() error {
 	}
 
 	rc.BinbagEnabled = false
+	rc.mu.Unlock()
 
+	rc.autoPersist()
 	return nil
 }
 
@@ -142,6 +154,7 @@ func (rc *RuntimeConfig) SetPivot(host string, port int) error {
 	rc.PivotPort = port
 	rc.mu.Unlock()
 
+	rc.autoPersist()
 	return nil
 }
 
@@ -151,6 +164,7 @@ func (rc *RuntimeConfig) DisablePivot() error {
 	rc.PivotEnabled = false
 	rc.mu.Unlock()
 
+	rc.autoPersist()
 	return nil
 }
 
@@ -171,6 +185,90 @@ func (rc *RuntimeConfig) GetHTTPURL(filename string) string {
 	}
 
 	return fmt.Sprintf("http://%s:%d/%s", host, port, filename)
+}
+
+// SetBinbagPort validates and updates the HTTP port, restarting the server if running
+func (rc *RuntimeConfig) SetBinbagPort(port int) error {
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid port: %d (must be 1-65535)", port)
+	}
+
+	rc.mu.Lock()
+	rc.HTTPPort = port
+	needRestart := rc.BinbagEnabled && rc.FileServer != nil
+	path := rc.BinbagPath
+	rc.mu.Unlock()
+
+	// Restart server if it was running
+	if needRestart {
+		rc.mu.Lock()
+		if rc.FileServer != nil {
+			rc.FileServer.Stop()
+			rc.FileServer = nil
+		}
+		rc.mu.Unlock()
+
+		rc.mu.Lock()
+		rc.FileServer = NewFileServer(path, port)
+		if err := rc.FileServer.Start(); err != nil {
+			rc.FileServer = nil
+			rc.mu.Unlock()
+			return fmt.Errorf("failed to restart HTTP server on port %d: %w", port, err)
+		}
+		rc.mu.Unlock()
+	}
+
+	rc.autoPersist()
+	return nil
+}
+
+// SetBinbagPath validates and updates the binbag path, restarting the server if running
+func (rc *RuntimeConfig) SetBinbagPath(path string) error {
+	// Expand tilde
+	if strings.HasPrefix(path, "~/") || path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("failed to get home directory: %w", err)
+		}
+		if path == "~" {
+			path = home
+		} else {
+			path = filepath.Join(home, path[2:])
+		}
+	}
+
+	// Validate path exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("path does not exist: %s", path)
+	}
+
+	rc.mu.Lock()
+	rc.BinbagPath = path
+	needRestart := rc.BinbagEnabled && rc.FileServer != nil
+	port := rc.HTTPPort
+	rc.mu.Unlock()
+
+	// Restart server if it was running
+	if needRestart {
+		rc.mu.Lock()
+		if rc.FileServer != nil {
+			rc.FileServer.Stop()
+			rc.FileServer = nil
+		}
+		rc.mu.Unlock()
+
+		rc.mu.Lock()
+		rc.FileServer = NewFileServer(path, port)
+		if err := rc.FileServer.Start(); err != nil {
+			rc.FileServer = nil
+			rc.mu.Unlock()
+			return fmt.Errorf("failed to restart HTTP server: %w", err)
+		}
+		rc.mu.Unlock()
+	}
+
+	rc.autoPersist()
+	return nil
 }
 
 // SaveToFile persists current runtime config to ~/.gummy/config.toml
