@@ -238,22 +238,15 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 	OpenTerminal(tailCmd)
 	time.Sleep(300 * time.Millisecond)
 
-	// Run script in foreground on remote — ExecuteWithStreamingCtx captures output
-	// to local file. The script runs until completion. While running, the conn is
-	// occupied by the goroutine reading output. When user does shell/F12, the relay
-	// starts and takes over — script output appears in the shell viewport (expected).
-	moduleCtx, moduleCancel := context.WithCancel(context.Background())
-	s.moduleCancel = moduleCancel
+	// Execute the command — BLOCKING (caller should run in goroutine)
+	// This captures all output to the local file in real-time.
+	err = s.Handler.ExecuteWithStreamingCtx(ctx, remoteCmd, outputPath)
 
-	go func() {
-		if cleanup != nil {
-			defer cleanup()
-		}
-		defer func() { s.moduleCancel = nil }()
-		s.Handler.ExecuteWithStreamingCtx(moduleCtx, remoteCmd, outputPath)
-	}()
+	if cleanup != nil {
+		cleanup()
+	}
 
-	return nil
+	return err
 }
 
 // RunBinary downloads (if URL), uploads to victim, makes executable, runs
@@ -1724,6 +1717,7 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		m.spinnerUpdate(spinID, fmt.Sprintf("Running %s...", moduleName))
 
 		// Run module on the WORKER session (main session stays free)
+		// module.Run is now BLOCKING — waits until script completes
 		old := os.Stdout
 		devnull, _ := os.Open(os.DevNull)
 		os.Stdout = devnull
@@ -1740,6 +1734,14 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 			m.notify(ui.Info(fmt.Sprintf("Module %s — output sent to new terminal window", moduleName)) + "\n")
 			m.notifyOverlay(fmt.Sprintf("Module %s started", moduleName), 0)
 		}
+
+		// module.Run is now blocking — when it returns, the script finished.
+		// The ExecuteWithStreamingCtx goroutine inside RunScriptInMemory will
+		// block until the done marker is received. After that, kill the worker.
+		// (Worker conn closes naturally when the remote shell exits, but we
+		// explicitly remove it to clean up)
+		workerSession.Conn.Close()
+		m.RemoveSession(workerSession.ID)
 	}()
 }
 
