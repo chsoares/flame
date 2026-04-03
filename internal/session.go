@@ -1726,13 +1726,11 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		m.stopSpinner(spinID)
 
 		if err != nil {
-			if m.transferDoneFunc != nil {
-				m.transferDoneFunc(moduleName, false, err)
-			}
+			m.notify(ui.Error(fmt.Sprintf("Module %s failed: %v", moduleName, err)))
+			m.notifyOverlay(fmt.Sprintf("Module %s failed", moduleName), 2)
 		} else {
-			if m.notifyBar != nil {
-				m.notifyBar(fmt.Sprintf("Module %s started — output in terminal window", moduleName), 0)
-			}
+			m.notify(ui.Info(fmt.Sprintf("Module %s started — output in terminal window", moduleName)))
+			m.notifyOverlay(fmt.Sprintf("Module %s started", moduleName), 0)
 		}
 	}()
 }
