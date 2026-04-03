@@ -83,7 +83,7 @@ func main() {
 	}
 	fmt.Println(tui.RenderExitBanner(width))
 
-	// Show session log path if logs exist today
+	// Show session log path if this instance created logs
 	if logDir := manager.GetSessionLogDir(); logDir != "" {
 		// Pretty path: replace home with ~
 		if home, err := os.UserHomeDir(); err == nil {
@@ -91,7 +91,7 @@ func main() {
 				logDir = "~" + logDir[len(home):]
 			}
 		}
-		fmt.Printf("  \033[2mSession logs saved to: \033[36m%s\033[0m\n", logDir)
+		fmt.Printf("\n\033[2mSession logs saved to: \033[36m%s\033[0m\n", logDir)
 	}
 	fmt.Println()
 }

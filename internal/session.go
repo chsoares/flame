@@ -31,6 +31,7 @@ type Manager struct {
 	selectedSession *SessionInfo            // Sessão selecionada (mas não necessariamente ativa)
 	menuActive      bool                    // Se estamos no menu principal
 	silent          bool                    // Suppress console output (TUI mode)
+	hasCreatedLogs  bool                    // Whether this instance created any session logs
 	notifyTUI       func(string)            // Callback to send messages to TUI output pane
 	notifyBar       func(string, int)       // Callback for notification bar overlay (msg, level)
 	spinnerStart       func(int, string)       // Start spinner in TUI (id, text)
@@ -1136,6 +1137,7 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 	// Init logging
 	if err := session.InitLogFile(); err == nil && session.LogFile != nil {
 		handler.SetLogWriter(session.LogFile)
+		m.hasCreatedLogs = true
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2371,24 +2373,20 @@ func (m *Manager) GetSessionCount() int {
 	return len(m.sessions)
 }
 
-// GetSessionLogDir returns today's session log directory if any logs were created.
-// Returns empty string if no sessions were logged today.
+// GetSessionLogDir returns today's session log directory if THIS instance created logs.
+// Returns empty string if no sessions were logged in this run.
 func (m *Manager) GetSessionLogDir() string {
+	m.mu.RLock()
+	hasLogs := m.hasCreatedLogs
+	m.mu.RUnlock()
+	if !hasLogs {
+		return ""
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	today := time.Now().Format("2006-01-02")
-	dateDir := filepath.Join(home, ".gummy", "sessions", today)
-	if _, err := os.Stat(dateDir); os.IsNotExist(err) {
-		return ""
-	}
-	// Verify there's at least one session subdirectory
-	entries, err := os.ReadDir(dateDir)
-	if err != nil || len(entries) == 0 {
-		return ""
-	}
-	return dateDir
+	return filepath.Join(home, ".gummy", "sessions", time.Now().Format("2006-01-02"))
 }
 
 // HasActiveSessions returns true if there are any active sessions
