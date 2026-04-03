@@ -65,15 +65,17 @@ func (s StatusBar) View() string {
 
 	var left string
 	if s.Context == ContextShell {
-		left = hint("F12", "detach") + dot +
+		left = hint("!", "gummy cmd") + dot +
+			hint("F12", "detach") + dot +
 			hint("F11", "sidebar") + dot +
-			hint("Ctrl+C", "interrupt") + dot +
 			hint("PgUp/PgDn", "scroll") + dot +
+			hint("Ctrl+C", "interrupt") + dot +
 			hint("Ctrl+D", "quit")
 	} else {
 		left = hint("Tab", "complete") + dot +
 			hint("F11", "sidebar") + dot +
 			hint("PgUp/PgDn", "scroll") + dot +
+			hint("Ctrl+C", "cancel") + dot +
 			hint("Ctrl+D", "quit")
 	}
 

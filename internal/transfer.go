@@ -736,7 +736,7 @@ func (t *Transferer) downloadViaHTTP(ctx context.Context, remotePath, localPath 
 
 	// Wait for HTTP server to receive the file
 	if GlobalRuntimeConfig.FileServer != nil {
-		success := GlobalRuntimeConfig.FileServer.WaitForTransfer(filename, 30*time.Second, func(progress TransferProgress) {
+		success := GlobalRuntimeConfig.FileServer.WaitForTransfer(filename, 10*time.Second, func(progress TransferProgress) {
 			if !progress.Done {
 				msg := fmt.Sprintf("Downloading %s via HTTP... %s",
 					filename, formatSize(int(progress.BytesTransferred)))
