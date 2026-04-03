@@ -314,7 +314,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Switch context and viewport to session buffer
 		selectedID := a.executor.GetSelectedSessionID()
 
-		a.menuAppend(ui.ShellAttach(fmt.Sprintf("Attached to shell #%d", selectedID)) + "\n")
+		a.menuAppend(ui.ShellAttach(fmt.Sprintf("Attached to interactive shell #%d", selectedID)) + "\n")
 		a.context = ContextShell
 		a.header.Context = ContextShell
 		a.statusBar.Context = ContextShell
@@ -584,7 +584,7 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.statusBar.Context = ContextMenu
 			a.input.SetContext(ContextMenu)
 			a.switchToMenu()
-			a.menuAppend(ui.ShellDetach("Detached from shell") + "\n\n")
+			a.menuAppend(ui.ShellDetach("Detached from interactive shell") + "\n\n")
 			return a, nil
 		}
 		// Menu mode: F12 = attach (same as typing "shell")
