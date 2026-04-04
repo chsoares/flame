@@ -1,4 +1,4 @@
-module github.com/chsoares/gummy
+module github.com/chsoares/flame
 
 go 1.25.2
 

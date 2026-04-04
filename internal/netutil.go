@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/chsoares/gummy/internal/ui"
+	"github.com/chsoares/flame/internal/ui"
 )
 
 // GetIPFromInterface resolves an IP address from a network interface name
@@ -86,7 +86,7 @@ func ListInterfaces() ([]string, error) {
 	return result, nil
 }
 
-// FormatInterfaceList formats the interface list for display with Gummy styling
+// FormatInterfaceList formats the interface list for display with Flame styling
 func FormatInterfaceList() string {
 	ifaces, err := ListInterfaces()
 	if err != nil {

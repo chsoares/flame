@@ -5,7 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/chsoares/gummy/internal/ui"
+	"github.com/chsoares/flame/internal/ui"
 )
 
 // NotifyLevel determines the notification severity and color.

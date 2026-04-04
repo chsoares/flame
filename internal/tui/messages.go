@@ -1,6 +1,6 @@
 package tui
 
-// All tea.Msg types for the Gummy TUI.
+// All tea.Msg types for the Flame TUI.
 
 // --- Context ---
 
@@ -8,7 +8,7 @@ package tui
 type ContextMode int
 
 const (
-	ContextMenu  ContextMode = iota // Gummy command input
+	ContextMenu  ContextMode = iota // Flame command input
 	ContextShell                    // Shell command input to remote
 )
 
@@ -96,8 +96,8 @@ type SendCommandMsg struct {
 	Command   string
 }
 
-// ExecuteGummyMsg is dispatched when user presses Enter in menu context.
-type ExecuteGummyMsg struct {
+// ExecuteFlameMsg is dispatched when user presses Enter in menu context.
+type ExecuteFlameMsg struct {
 	Command string
 }
 

@@ -10,9 +10,9 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/chsoares/gummy/internal"
-	"github.com/chsoares/gummy/internal/tui"
-	"github.com/chsoares/gummy/internal/ui"
+	"github.com/chsoares/flame/internal"
+	"github.com/chsoares/flame/internal/tui"
+	"github.com/chsoares/flame/internal/ui"
 )
 
 // Config holds the application configuration
@@ -118,7 +118,7 @@ func parseFlags() *Config {
 
 	flag.StringVar(&ipFlag, "ip", "", "IP address to bind to (alternative to -i)")
 
-	// Custom usage message with Gummy styling
+	// Custom usage message with Flame styling
 	flag.Usage = func() {
 		// Print banner first
 		fmt.Println(ui.Banner())

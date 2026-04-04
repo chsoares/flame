@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chsoares/gummy/internal/ui"
+	"github.com/chsoares/flame/internal/ui"
 )
 
 // Transferer handles file upload/download operations

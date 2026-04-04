@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	internal "github.com/chsoares/gummy/internal"
+	internal "github.com/chsoares/flame/internal"
 )
 
 // Input is the bottom input bar with dynamic prompt and command history.

@@ -14,8 +14,8 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	internal "github.com/chsoares/gummy/internal"
-	"github.com/chsoares/gummy/internal/ui"
+	internal "github.com/chsoares/flame/internal"
+	"github.com/chsoares/flame/internal/ui"
 )
 
 const (
@@ -52,7 +52,7 @@ type CommandExecutor interface {
 	StartModule(moduleName string, args []string)                    // async module execution
 }
 
-// App is the root Bubble Tea model for the Gummy TUI.
+// App is the root Bubble Tea model for the Flame TUI.
 type App struct {
 	// Layout
 	layout Layout

@@ -17,7 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/chsoares/gummy/internal/ui"
+	"github.com/chsoares/flame/internal/ui"
 	"github.com/chzyer/readline"
 	"golang.org/x/term"
 )
@@ -139,7 +139,7 @@ func (s *SessionInfo) InitLogFile() error {
 	s.LogFile = f
 
 	// Write session header
-	header := fmt.Sprintf("=== Gummy Session Log ===\n"+
+	header := fmt.Sprintf("=== Flame Session Log ===\n"+
 		"Session ID: %d\n"+
 		"Remote IP:  %s\n"+
 		"Whoami:     %s\n"+
@@ -704,13 +704,13 @@ func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string
 	return s.Handler.ExecuteWithStreamingCtx(ctx, remoteCmd, outputPath)
 }
 
-// GummyCompleter implements readline.AutoCompleter for smart path completion
-type GummyCompleter struct {
+// FlameCompleter implements readline.AutoCompleter for smart path completion
+type FlameCompleter struct {
 	manager *Manager
 }
 
 // Do implements the AutoCompleter interface
-func (c *GummyCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
+func (c *FlameCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
 	lineStr := string(line[:pos])
 	trimmed := strings.TrimLeft(lineStr, " \t")
 
@@ -848,7 +848,7 @@ func (c *GummyCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 }
 
 // getCurrentArg extracts the current argument being typed
-func (c *GummyCompleter) getCurrentArg(line string) string {
+func (c *FlameCompleter) getCurrentArg(line string) string {
 	if strings.HasSuffix(line, " ") {
 		return ""
 	}
@@ -862,7 +862,7 @@ func (c *GummyCompleter) getCurrentArg(line string) string {
 }
 
 // completeFromList completes from a list of strings
-func (c *GummyCompleter) completeFromList(prefix string, list []string) ([][]rune, int) {
+func (c *FlameCompleter) completeFromList(prefix string, list []string) ([][]rune, int) {
 	var candidates []string
 	for _, item := range list {
 		if strings.HasPrefix(item, prefix) {
@@ -888,7 +888,7 @@ func (c *GummyCompleter) completeFromList(prefix string, list []string) ([][]run
 }
 
 // completeLocalPath completes local file paths
-func (c *GummyCompleter) completeLocalPath(arg string) ([][]rune, int) {
+func (c *FlameCompleter) completeLocalPath(arg string) ([][]rune, int) {
 	replacementLen := utf8.RuneCountInString(arg)
 
 	dirPart, basePart := splitPathForCompletion(arg)
@@ -944,7 +944,7 @@ func (c *GummyCompleter) completeLocalPath(arg string) ([][]rune, int) {
 }
 
 // completeRemotePath attempts to complete remote file paths
-func (c *GummyCompleter) completeRemotePath(prefix string) ([][]rune, int) {
+func (c *FlameCompleter) completeRemotePath(prefix string) ([][]rune, int) {
 	return nil, utf8.RuneCountInString(prefix)
 }
 
@@ -2235,7 +2235,7 @@ func (m *Manager) StartMenu() {
 	os.MkdirAll(appDataPath(), 0755)
 
 	// Create completer
-	completer := &GummyCompleter{manager: m}
+	completer := &FlameCompleter{manager: m}
 
 	rl, err := readline.NewEx(&readline.Config{
 		HistoryFile:            historyFile,
@@ -2498,7 +2498,7 @@ func (m *Manager) showHelp() {
 	lines = append(lines, ui.Command("config                       - Show current configuration"))
 	lines = append(lines, ui.Command("help                         - Show this help"))
 	lines = append(lines, ui.Command("clear                        - Clear screen"))
-	lines = append(lines, ui.Command("exit, quit                   - Exit Gummy"))
+	lines = append(lines, ui.Command("exit, quit                   - Exit Flame"))
 
 	// Render everything inside a box
 	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Available Commands", ui.SymbolGem), lines))
@@ -3116,7 +3116,7 @@ func (m *Manager) handlePivot(args []string) {
 // If multiple matches, returns the longest common prefix.
 // If no matches, returns the original line unchanged.
 func (m *Manager) CompleteInput(line string) string {
-	completer := &GummyCompleter{manager: m}
+	completer := &FlameCompleter{manager: m}
 	runes := []rune(line)
 	matches, replLen := completer.Do(runes, len(runes))
 

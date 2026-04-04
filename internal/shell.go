@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chsoares/gummy/internal/ui"
+	"github.com/chsoares/flame/internal/ui"
 	"github.com/peterh/liner"
 	"golang.org/x/term"
 )
