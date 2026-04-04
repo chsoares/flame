@@ -100,10 +100,10 @@ The module system spawns an invisible "worker session" to execute modules. This 
 - [ ] `sh <url>` — arbitrary bash script (RunScriptInMemory)
 - [ ] `elf <url|file>` — arbitrary Linux/native binary (RunBinary)
 
-**Untested Windows modules (baseline Windows TUI validation comes first):**
+**Windows modules:**
 - [x] `winpeas` — WinPEAS (.NET in-memory, RunDotNetInMemory; buffered output caveat) ✅
 - [x] `seatbelt` — Seatbelt (.NET in-memory, RunDotNetInMemory; default args `-group=all`; buffered output caveat) ✅
-- [ ] `lazagne` — LaZagne (native `.exe`, blocked until dedicated Windows binary runner returns)
+- [ ] `lazagne` — removed from active module registry; native `.exe` runner is a future dedicated project
 - [ ] `ps1 <url>` — arbitrary PowerShell script (RunPowerShellInMemory)
 
 **Tested Windows custom runners:**

