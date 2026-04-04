@@ -323,10 +323,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusBar.Context = ContextShell
 		a.input.SetContext(ContextShell)
 		a.switchToSession(selectedID)
-		if _, _, platform, ok := a.executor.GetActiveSessionDisplay(); ok && platform == "windows" {
-			if a.getSessionBuffer(selectedID).Len() == 0 {
-				a.executor.WriteToShell("\n")
-			}
+		if a.getSessionBuffer(selectedID).Len() == 0 {
+			a.executor.WriteToShell("\n")
 		}
 
 		return a, func() tea.Msg {
@@ -695,7 +693,7 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 	case ContextShell:
 		if !a.input.InBangMode() {
 			prompt := a.sessionPrompts[a.activeSession]
-			if prompt != "" {
+			if prompt != "" && shouldLocallyEchoCurrentShell(a.executor) {
 				buf := a.getSessionBuffer(a.activeSession)
 				updated := applyLocalShellEcho(buf.String(), prompt, cmd)
 				buf.Reset()
@@ -742,6 +740,21 @@ func extractTrailingShellPrompt(s string) string {
 		return last
 	}
 	return ""
+}
+
+func shouldLocallyEchoShellCommand(platform string) bool {
+	return platform == "windows"
+}
+
+func shouldLocallyEchoCurrentShell(executor CommandExecutor) bool {
+	if executor == nil {
+		return false
+	}
+	_, _, platform, ok := executor.GetActiveSessionDisplay()
+	if !ok {
+		return false
+	}
+	return shouldLocallyEchoShellCommand(platform)
 }
 
 func formatLocalShellEcho(prompt, cmd string) string {
@@ -891,6 +904,8 @@ func (a App) executeBangCommand(cmd string) (tea.Model, tea.Cmd) {
 		return a.handleSpawnCmd()
 	case strings.HasPrefix(cmd, "kill "):
 		return a.handleKillCmd(cmd)
+	case strings.HasPrefix(cmd, "use "):
+		return a.handleUseCmd(cmd)
 	case strings.HasPrefix(cmd, "run "):
 		return a.handleRunCmd(cmd)
 	default:
@@ -906,6 +921,31 @@ func (a App) executeBangCommand(cmd string) (tea.Model, tea.Cmd) {
 		a.syncSessionInfo()
 		return a, nil
 	}
+}
+
+func shouldDetachForBangUse(context ContextMode) bool {
+	return context == ContextShell
+}
+
+func (a App) handleUseCmd(cmd string) (tea.Model, tea.Cmd) {
+	if shouldDetachForBangUse(a.context) {
+		a.context = ContextMenu
+		a.header.Context = ContextMenu
+		a.statusBar.Context = ContextMenu
+		a.input.SetContext(ContextMenu)
+		a.switchToMenu()
+	}
+
+	output := a.executor.ExecuteCommand(cmd)
+	if output != "" {
+		a.menuAppend(output)
+		if !strings.HasSuffix(output, "\n") {
+			a.menuAppend("\n")
+		}
+	}
+	a.menuAppend("\n")
+	a.syncSessionInfo()
+	return a, nil
 }
 
 // handleKillCmd handles kill with proper context switching if killing active session.

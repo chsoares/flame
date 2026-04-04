@@ -72,3 +72,24 @@ func TestExpandModuleSourceArg(t *testing.T) {
 		t.Fatalf("expected non-source args unchanged, got %v", got)
 	}
 }
+
+func TestShouldLocallyEchoShellCommand(t *testing.T) {
+	if !shouldLocallyEchoShellCommand("windows") {
+		t.Fatal("expected windows shell to use local echo")
+	}
+	if shouldLocallyEchoShellCommand("linux") {
+		t.Fatal("expected linux PTY shell to avoid local echo")
+	}
+	if shouldLocallyEchoShellCommand("macos") {
+		t.Fatal("expected macos PTY shell to avoid local echo")
+	}
+}
+
+func TestShouldDetachForBangUse(t *testing.T) {
+	if !shouldDetachForBangUse(ContextShell) {
+		t.Fatal("expected shell context to detach before bang use")
+	}
+	if shouldDetachForBangUse(ContextMenu) {
+		t.Fatal("expected menu context to avoid detach before bang use")
+	}
+}

@@ -290,6 +290,18 @@ Conclusion:
 - this fixes the practical usability issue where the original shell became useless after spawning a second shell
 - `spawn` also works from shell context through bang mode (`!spawn`)
 
+## Bang Mode Session Switch Safety — 2026-04-04
+
+Validated:
+
+- `!use <id>` from shell context now detaches safely before switching sessions
+- this prevents the TUI from ending up attached to one shell while the manager selects another
+
+Behavior:
+
+- in shell context, `!use <id>` now returns to menu context first, then switches the selected session
+- this matches the existing defensive behavior already used for `!kill` on the active attached session
+
 ## Transfer Baseline — 2026-04-04
 
 Validated on Windows:

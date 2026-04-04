@@ -33,6 +33,7 @@
 ### Bang Mode (`!` prefix in shell)
 - `!upload`, `!download`, `!spawn`, `!kill`, `!run` from shell context
 - Tab completion, menu history, contextual placeholder
+- `!use <id>` now detaches safely before switching sessions
 
 ### Spawn
 - Async with TUI spinner, payload echo suppressed via dual-mode relay suppression
