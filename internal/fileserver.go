@@ -178,60 +178,8 @@ func (fs *FileServer) WaitForTransfer(filename string, inactivityTimeout time.Du
 
 // WaitForTransferCtx waits for transfer completion and can be cancelled via context.
 func (fs *FileServer) WaitForTransferCtx(ctx context.Context, filename string, inactivityTimeout time.Duration, progressCallback func(TransferProgress)) error {
-	// Create channel for this transfer
-	ch := make(chan TransferProgress, 10)
-
-	fs.listenerMu.Lock()
-	fs.transferListeners[filename] = ch
-	fs.listenerMu.Unlock()
-
-	// Cleanup function
-	cleanup := func() {
-		fs.listenerMu.Lock()
-		delete(fs.transferListeners, filename)
-		fs.listenerMu.Unlock()
-	}
-
-	// Use a timer that resets on every progress update
-	timer := time.NewTimer(inactivityTimeout)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			cleanup()
-			return ctx.Err()
-
-		case progress := <-ch:
-			// Reset timer on every progress update (activity detected)
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(inactivityTimeout)
-
-			// Call progress callback
-			if progressCallback != nil {
-				progressCallback(progress)
-			}
-
-			// Check if done
-			if progress.Done {
-				cleanup()
-				if progress.Success {
-					return nil
-				}
-				return fmt.Errorf("transfer failed")
-			}
-
-		case <-timer.C:
-			// Inactivity timeout reached
-			cleanup()
-			return fmt.Errorf("transfer timeout")
-		}
-	}
+	ch, cleanup := fs.listenForTransfer(filename)
+	return fs.waitOnTransferChannel(ctx, ch, cleanup, inactivityTimeout, progressCallback)
 }
 
 // notifyProgress notifies listeners about transfer progress

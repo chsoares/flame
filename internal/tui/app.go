@@ -1004,7 +1004,7 @@ func expandModuleSourceArg(moduleName string, args []string) []string {
 		return args
 	}
 	switch moduleName {
-	case "sh", "bin", "ps1", "dotnet", "py":
+	case "sh", "elf", "ps1", "dotnet", "py":
 		out := append([]string(nil), args...)
 		out[0] = expandTilde(out[0])
 		return out

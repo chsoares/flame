@@ -25,6 +25,96 @@ type Transferer struct {
 	ptyUpgraded bool         // Use smaller chunks for PTY-upgraded shells
 }
 
+func buildWindowsHTTPUploadCommand(url, remotePath, marker string) string {
+	escapedPath := strings.ReplaceAll(remotePath, "'", "''")
+	return fmt.Sprintf("$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri '%s' -OutFile '%s'; Write-Output '%s' } catch { Write-Output 'GUMMY_HTTP_ERROR'; Write-Output $_ }\r\n", url, escapedPath, marker)
+}
+
+func buildWindowsBase64DecodeCommand(remotePath string) string {
+	escapedPath := strings.ReplaceAll(remotePath, "'", "''")
+	return fmt.Sprintf("$b64 = Get-Content '%s.b64' -Raw; [IO.File]::WriteAllBytes('%s', [Convert]::FromBase64String($b64)); Remove-Item '%s.b64' -Force\r\n", escapedPath, escapedPath, escapedPath)
+}
+
+func waitForRemoteMarker(ctx context.Context, conn net.Conn, marker string) error {
+	buffer := make([]byte, 4096)
+	var output strings.Builder
+	for {
+		select {
+		case <-ctx.Done():
+			conn.SetReadDeadline(time.Time{})
+			return ctx.Err()
+		default:
+		}
+
+		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, err := conn.Read(buffer)
+		if n > 0 {
+			output.Write(buffer[:n])
+			text := output.String()
+			if strings.Contains(text, marker) {
+				conn.SetReadDeadline(time.Time{})
+				if strings.Contains(text, "GUMMY_HTTP_ERROR") {
+					return fmt.Errorf("remote HTTP upload command failed")
+				}
+				return nil
+			}
+		}
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			conn.SetReadDeadline(time.Time{})
+			return err
+		}
+	}
+}
+
+func (fs *FileServer) listenForTransfer(filename string) (chan TransferProgress, func()) {
+	ch := make(chan TransferProgress, 10)
+	fs.listenerMu.Lock()
+	fs.transferListeners[filename] = ch
+	fs.listenerMu.Unlock()
+	cleanup := func() {
+		fs.listenerMu.Lock()
+		delete(fs.transferListeners, filename)
+		fs.listenerMu.Unlock()
+	}
+	return ch, cleanup
+}
+
+func (fs *FileServer) waitOnTransferChannel(ctx context.Context, ch chan TransferProgress, cleanup func(), inactivityTimeout time.Duration, progressCallback func(TransferProgress)) error {
+	timer := time.NewTimer(inactivityTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			cleanup()
+			return ctx.Err()
+		case progress := <-ch:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(inactivityTimeout)
+			if progressCallback != nil {
+				progressCallback(progress)
+			}
+			if progress.Done {
+				cleanup()
+				if progress.Success {
+					return nil
+				}
+				return fmt.Errorf("transfer failed")
+			}
+		case <-timer.C:
+			cleanup()
+			return fmt.Errorf("transfer timeout")
+		}
+	}
+}
+
 // TransferConfig holds transfer configuration
 type TransferConfig struct {
 	ChunkSize int // Size of each chunk in bytes
@@ -219,8 +309,7 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	var decodeCmd string
 	if t.platform == "windows" {
 		// PowerShell: Read base64 from file, decode to bytes, write to final file, cleanup
-		escapedPath := strings.ReplaceAll(remotePath, "'", "''")
-		decodeCmd = fmt.Sprintf("$b64 = Get-Content '%s.b64' -Raw; [IO.File]::WriteAllBytes((Resolve-Path '.').Path+'\\%s', [Convert]::FromBase64String($b64)); Remove-Item '%s.b64' -Force\r\n", escapedPath, escapedPath, escapedPath)
+		decodeCmd = buildWindowsBase64DecodeCommand(remotePath)
 	} else {
 		// Linux/Unix: Decode from temp file
 		decodeCmd = fmt.Sprintf("base64 -d %s.b64 > %s && rm %s.b64\n", remotePath, remotePath, remotePath)
@@ -1015,9 +1104,11 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 
 	// Platform-specific download command
 	var downloadCmd string
+	marker := ""
 	if t.platform == "windows" {
-		// PowerShell: Invoke-WebRequest (wget alias)
-		downloadCmd = fmt.Sprintf("Invoke-WebRequest -Uri '%s' -OutFile '%s'\r\n", url, remotePath)
+		marker = fmt.Sprintf("GUMMY_HTTP_DONE_%d", time.Now().UnixNano())
+		downloadCmd = buildWindowsHTTPUploadCommand(url, remotePath, marker)
+		defer func() { t.drainConnection() }()
 	} else {
 		// Linux: wget or curl
 		downloadCmd = fmt.Sprintf("wget -q '%s' -O '%s' || curl -s '%s' -o '%s'\r\n", url, remotePath, url, remotePath)
@@ -1037,33 +1128,43 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 		t.progress(fmt.Sprintf("Uploading %s via HTTP...", displayName))
 	}
 
-	// Send download command
-	if _, err := t.conn.Write([]byte(downloadCmd)); err != nil {
-		return fmt.Errorf("failed to send download command: %w", err)
-	}
-
-	// Wait for HTTP server to complete the transfer (10 seconds inactivity timeout)
 	if GlobalRuntimeConfig.FileServer != nil {
-		err := GlobalRuntimeConfig.FileServer.WaitForTransferCtx(ctx, filename, 10*time.Second, func(progress TransferProgress) {
-			if !progress.Done {
-				percent := int(float64(progress.BytesTransferred) / float64(progress.TotalBytes) * 100)
-				msg := fmt.Sprintf("Uploading %s via HTTP... %s / %s (%d%%)",
-					displayName,
-					formatSize(int(progress.BytesTransferred)),
-					formatSize(int(progress.TotalBytes)),
-					percent)
-				if spinner != nil {
-					spinner.Update(msg)
-				} else {
-					t.progress(msg)
+		ch, cleanup := GlobalRuntimeConfig.FileServer.listenForTransfer(filename)
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- GlobalRuntimeConfig.FileServer.waitOnTransferChannel(ctx, ch, cleanup, 10*time.Second, func(progress TransferProgress) {
+				if !progress.Done {
+					percent := int(float64(progress.BytesTransferred) / float64(progress.TotalBytes) * 100)
+					msg := fmt.Sprintf("Uploading %s via HTTP... %s / %s (%d%%)",
+						displayName,
+						formatSize(int(progress.BytesTransferred)),
+						formatSize(int(progress.TotalBytes)),
+						percent)
+					if spinner != nil {
+						spinner.Update(msg)
+					} else {
+						t.progress(msg)
+					}
 				}
-			}
-		})
+			})
+		}()
+
+		// Send download command only after the HTTP listener is active
+		if _, err := t.conn.Write([]byte(downloadCmd)); err != nil {
+			return fmt.Errorf("failed to send download command: %w", err)
+		}
+
+		err := <-errCh
 		if spinner != nil {
 			spinner.Stop()
 		}
 		if err != nil {
 			return err
+		}
+		if t.platform == "windows" {
+			if err := waitForRemoteMarker(ctx, t.conn, marker); err != nil {
+				return err
+			}
 		}
 		t.done(ui.Success(fmt.Sprintf("Upload complete! (%s via HTTP)", formatSize(int(fileSize)))))
 		return nil

@@ -9,9 +9,9 @@ import (
 
 // Module interface for all gummy modules
 type Module interface {
-	Name() string        // Module identifier (e.g., "peas", "lse", "sh")
-	Category() string    // Category (e.g., "linux", "windows", "custom")
-	Description() string // Short description
+	Name() string          // Module identifier (e.g., "peas", "lse", "sh")
+	Category() string      // Category (e.g., "linux", "windows", "custom")
+	Description() string   // Short description
 	ExecutionMode() string // "memory", "disk-cleanup"
 	Run(ctx context.Context, session *SessionInfo, args []string) error
 }
@@ -38,7 +38,7 @@ func GetModuleRegistry() *ModuleRegistry {
 		globalRegistry.Register(&SeatbeltModule{})
 		globalRegistry.Register(&LaZagneModule{})
 		// Custom modules (generic runners)
-		globalRegistry.Register(&BinaryModule{})
+		globalRegistry.Register(&ELFModule{})
 		globalRegistry.Register(&ShellScriptModule{})
 		globalRegistry.Register(&PowerShellScriptModule{})
 		globalRegistry.Register(&DotNetAssemblyModule{})
@@ -109,7 +109,7 @@ const (
 	URL_LSE     = "https://github.com/chsoares/linux-smart-enumeration/raw/refs/heads/master/lse.sh"
 	URL_LOOT    = "https://github.com/chsoares/ezpz/raw/refs/heads/main/utils/loot.sh"
 	URL_PSPY64  = "https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy64"
-	URL_LINEXP = "https://raw.githubusercontent.com/The-Z-Labs/linux-exploit-suggester/master/linux-exploit-suggester.sh"
+	URL_LINEXP  = "https://raw.githubusercontent.com/The-Z-Labs/linux-exploit-suggester/master/linux-exploit-suggester.sh"
 
 	// Windows
 	URL_WINPEAS  = "https://github.com/peass-ng/PEASS-ng/releases/latest/download/winPEASany.exe"
@@ -237,17 +237,19 @@ func (m *LaZagneModule) Run(ctx context.Context, session *SessionInfo, args []st
 // Custom Modules (generic runners)
 // ============================================================================
 
-// BinaryModule - Run arbitrary binary from URL or binbag (disk + cleanup)
-type BinaryModule struct{}
+// ELFModule - Run arbitrary Linux ELF/native binary from URL or binbag (disk + cleanup)
+type ELFModule struct{}
 
-func (m *BinaryModule) Name() string          { return "bin" }
-func (m *BinaryModule) Category() string      { return "custom" }
-func (m *BinaryModule) Description() string   { return "Run arbitrary binary (disk + cleanup)" }
-func (m *BinaryModule) ExecutionMode() string { return "disk-cleanup" }
+func (m *ELFModule) Name() string     { return "elf" }
+func (m *ELFModule) Category() string { return "custom" }
+func (m *ELFModule) Description() string {
+	return "Run arbitrary Linux ELF/native binary (disk + cleanup)"
+}
+func (m *ELFModule) ExecutionMode() string { return "disk-cleanup" }
 
-func (m *BinaryModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
+func (m *ELFModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: run bin <url|filename> [binary args...]")
+		return fmt.Errorf("usage: run elf <url|filename> [binary args...]")
 	}
 
 	source := args[0]
@@ -278,9 +280,11 @@ func (m *ShellScriptModule) Run(ctx context.Context, session *SessionInfo, args 
 // PowerShellScriptModule - Run arbitrary PowerShell script from URL
 type PowerShellScriptModule struct{}
 
-func (m *PowerShellScriptModule) Name() string          { return "ps1" }
-func (m *PowerShellScriptModule) Category() string      { return "custom" }
-func (m *PowerShellScriptModule) Description() string   { return "Run arbitrary PowerShell script from URL" }
+func (m *PowerShellScriptModule) Name() string     { return "ps1" }
+func (m *PowerShellScriptModule) Category() string { return "custom" }
+func (m *PowerShellScriptModule) Description() string {
+	return "Run arbitrary PowerShell script from URL"
+}
 func (m *PowerShellScriptModule) ExecutionMode() string { return "memory" }
 
 func (m *PowerShellScriptModule) Run(ctx context.Context, session *SessionInfo, args []string) error {

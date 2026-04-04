@@ -87,10 +87,10 @@ Back in gummy:
 
 | Module | Command | Mode | Description |
 |--------|---------|------|-------------|
-| Binary | `run bin <source>` | Disk + cleanup | Run any binary from URL or binbag |
+| ELF Binary | `run elf <source>` | Disk + cleanup | Run any Linux/native Unix binary from URL or binbag |
 | Shell Script | `run sh <url>` | In-memory | Run any bash script |
 | PowerShell | `run ps1 <url>` | In-memory | Run any PS1 script |
-| .NET | `run net <url>` | In-memory | Run any .NET assembly |
+| .NET | `run dotnet <url>` | In-memory | Run any .NET assembly |
 | Python | `run py <url>` | In-memory | Run any Python script |
 | Privesc | `run privesc` | Disk | Bulk upload privesc tools |
 

@@ -98,12 +98,12 @@ The module system spawns an invisible "worker session" to execute modules. This 
 
 **Untested Linux modules:**
 - [ ] `sh <url>` — arbitrary bash script (RunScriptInMemory)
-- [ ] `bin <url|file>` — arbitrary binary (RunBinary)
+- [ ] `elf <url|file>` — arbitrary Linux/native binary (RunBinary)
 
 **Untested Windows modules (baseline Windows TUI validation comes first):**
 - [ ] `winpeas` — WinPEAS (.NET in-memory, RunDotNetInMemory)
 - [ ] `seatbelt` — Seatbelt (.NET in-memory, RunDotNetInMemory)
-- [ ] `lazagne` — LaZagne (binary, RunBinary)
+- [ ] `lazagne` — LaZagne (native `.exe`, blocked until dedicated Windows binary runner returns)
 - [ ] `ps1 <url>` — arbitrary PowerShell script (RunPowerShellInMemory)
 
 **Tested Windows custom runners:**
@@ -154,9 +154,9 @@ First housekeeping pass complete:
 ## What's Next
 
 ### Immediate: Windows modules and customs
-1. validate `run bin`
-2. validate standard Windows modules: `winpeas`, `seatbelt`, `lazagne`
-3. document any remaining runner-specific fixes needed after real tests
+1. validate standard Windows modules: `winpeas`, `seatbelt`, `lazagne`
+2. document any remaining runner-specific fixes needed after real tests
+3. keep native Windows executable runner as a separate future problem
 
 ### Then: Payloads / `rev`
 1. improve the PowerShell oneliner only if real usage still shows pain after module work
@@ -186,6 +186,8 @@ First housekeeping pass complete:
 - **Windows payload caveat**: current PowerShell payload behaves like command/response, not a true streaming terminal; see `docs/testing/windows-baseline.md`
 - **Linux gap**: `Ctrl+C` still needs explicit validation on Linux shell relay
 - **Roadmap decision (2026-04-04):** modules/custom Windows execution comes before `rev`/payload product polish; payload work is the next major step after modules
+- **Runner scope decision (2026-04-04):** `run elf` is explicitly scoped to Linux/native Unix targets; native Windows `.exe` execution needs a separate design later
+- **Explicit runner guards (2026-04-04):** unsupported combos should fail early with clear errors (`run sh` on Windows, `run ps1`/`run dotnet` on Linux, `run elf` on Windows)
 
 ## File Map
 
@@ -193,7 +195,7 @@ First housekeeping pass complete:
 internal/
 ├── session.go      # Manager, commands, StartModule, RunScriptInMemory, RunBinary, worker sessions
 ├── shell.go        # Handler, ExecuteWithStreaming/Ctx, PTY modes
-├── modules.go      # Module registry: peas, lse, loot, linexp, pspy, winpeas, seatbelt, lazagne, bin, sh, ps1, dotnet, py
+├── modules.go      # Module registry: peas, lse, loot, linexp, pspy, winpeas, seatbelt, lazagne, elf, sh, ps1, dotnet, py
 ├── transfer.go     # SmartUpload/SmartDownload, HTTP + b64
 ├── fileserver.go   # HTTP server (GET=serve, POST=receive)
 ├── config.go       # TOML config

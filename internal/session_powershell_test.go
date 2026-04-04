@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -55,6 +56,59 @@ func TestBuildWindowsDotNetB64Command(t *testing.T) {
 		"[System.Reflection.Assembly]::Load($bytes)",
 		"@(,[string[]]@('audit', 'bar baz'))",
 		"Remove-Variable -Name gummy_asm_var",
+	}
+	for _, check := range checks {
+		if !strings.Contains(cmd, check) {
+			t.Fatalf("expected command to contain %q, got: %s", check, cmd)
+		}
+	}
+}
+
+func TestRunScriptInMemoryRejectsWindows(t *testing.T) {
+	s := &SessionInfo{Platform: "windows"}
+	err := s.RunScriptInMemory(context.Background(), "/tmp/test.sh", nil)
+	if err == nil || !strings.Contains(err.Error(), "run sh is not supported on Windows") {
+		t.Fatalf("expected Windows shell-script guard, got %v", err)
+	}
+}
+
+func TestRunPowerShellInMemoryRejectsLinux(t *testing.T) {
+	s := &SessionInfo{Platform: "linux"}
+	err := s.RunPowerShellInMemory(context.Background(), "/tmp/test.ps1", nil)
+	if err == nil || !strings.Contains(err.Error(), "run ps1 is only supported on Windows") {
+		t.Fatalf("expected Linux PowerShell guard, got %v", err)
+	}
+}
+
+func TestRunDotNetInMemoryRejectsLinux(t *testing.T) {
+	s := &SessionInfo{Platform: "linux"}
+	err := s.RunDotNetInMemory(context.Background(), "/tmp/test.exe", nil)
+	if err == nil || !strings.Contains(err.Error(), "run dotnet is only supported on Windows") {
+		t.Fatalf("expected Linux dotnet guard, got %v", err)
+	}
+}
+
+func TestRunBinaryRejectsWindows(t *testing.T) {
+	s := &SessionInfo{Platform: "windows"}
+	err := s.RunBinary(context.Background(), "/tmp/test.exe", nil)
+	if err == nil || !strings.Contains(err.Error(), "run elf is not supported on Windows") {
+		t.Fatalf("expected Windows ELF guard, got %v", err)
+	}
+}
+
+func TestBuildRemoteBinaryPathForLinux(t *testing.T) {
+	got := buildRemoteBinaryPath("linux", "pspy64", 123)
+	want := "/tmp/.gummy_123_pspy64"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestBuildUnixBinaryCommand(t *testing.T) {
+	cmd := buildUnixBinaryCommand("/tmp/.gummy_tool", []string{"audit"})
+	checks := []string{
+		"trap 'shred -uz /tmp/.gummy_tool 2>/dev/null || rm -f /tmp/.gummy_tool' EXIT",
+		"chmod +x /tmp/.gummy_tool && /tmp/.gummy_tool audit",
 	}
 	for _, check := range checks {
 		if !strings.Contains(cmd, check) {

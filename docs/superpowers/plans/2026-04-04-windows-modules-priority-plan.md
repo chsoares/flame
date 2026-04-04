@@ -4,7 +4,7 @@
 
 **Goal:** Finish the highest-value Windows module paths before returning to payload/rev polish.
 
-**Architecture:** Treat module validation as the next operational milestone. Start with the generic runners that unlock multiple tools (`dotnet`, `bin`), then validate the concrete Windows modules that depend on them (`winpeas`, `seatbelt`, `lazagne`). Keep payload/rev work as the next project immediately after modules.
+**Architecture:** Treat module validation as the next operational milestone. Start with the generic runner that unlocks multiple Windows tools (`dotnet`), then validate the concrete Windows modules that depend on it (`winpeas`, `seatbelt`). Keep payload/rev work as the next project immediately after modules, while native Windows `.exe` execution stays de-scoped.
 
 **Tech Stack:** Go, worker-session module execution, Windows PowerShell baseline already validated, binbag HTTP + b64 fallback.
 
@@ -13,16 +13,15 @@
 ### Priority Order
 
 1. `run dotnet` — core path for .NET-based Windows tooling
-2. `run bin` — core path for native binaries like LaZagne
-3. `run winpeas`
-4. `run seatbelt`
-5. `run lazagne`
+2. `run winpeas`
+3. `run seatbelt`
+4. `run lazagne`
 
 ### Why This Order
 
 - `run dotnet` validates the in-memory .NET path that multiple real modules depend on.
-- `run bin` validates the generic disk+cleanup path for Windows native tools.
-- Once the generic runners are trusted, failures in named modules are more likely to be module-specific, not architectural.
+- native Windows `.exe` execution has been de-scoped for now instead of blocking the higher-value .NET path.
+- once the .NET runner is trusted, failures in named modules are more likely to be module-specific, not architectural.
 
 ### Payload / `rev` Follow-Up (Next Project)
 

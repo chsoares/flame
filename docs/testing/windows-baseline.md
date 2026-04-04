@@ -211,7 +211,7 @@ Root cause found in code:
 
 - `RunPowerShellInMemory()` was still using the old async internal goroutine model
 - `StartModule()` therefore considered the module complete too early and could close the worker before real execution happened
-- `run` command handling was not expanding the first source argument for custom modules (`ps1`, `sh`, `bin`, `dotnet`, `py`)
+- `run` command handling was not expanding the first source argument for custom modules (`ps1`, `sh`, `elf`, `dotnet`, `py`)
 
 Fixes applied:
 
@@ -346,6 +346,26 @@ Conclusion:
 
 - `run dotnet` is now validated in the TUI branch
 - this unblocks the next Windows module checks that depend on the .NET runner (`winpeas`, `seatbelt`)
+
+## `run bin` / `run elf` Outcome — 2026-04-04
+
+Result after multiple Windows attempts:
+
+- native Windows executable execution remained unreliable in this TUI branch
+- several command-building and transfer fixes improved diagnostics, but the runner still did not produce trustworthy output on real Windows testing
+- the project decision is to de-scope this path for now instead of carrying a flaky cross-platform abstraction
+
+Local native Windows test binary prepared during investigation:
+
+- source: `/home/chsoares/Lab/tmp/gummy_run_bin_test.c`
+- binary: `/home/chsoares/Lab/tmp/gummy_run_bin_test.exe`
+
+Decision captured:
+
+- `run elf` is the Linux/native Unix binary runner name going forward
+- `run elf` is Linux/native Unix only for now
+- on Windows, the runner should fail early with a clear message telling the operator to use `run dotnet` or `run ps1`
+- native Windows `.exe` execution remains a future dedicated project if needed
 
 ## Transfer Baseline — 2026-04-04
 
