@@ -21,7 +21,7 @@ Validate `run py` against the current TUI worker-session model before changing W
 Command used:
 
 ```text
-run py /home/chsoares/Lab/tmp/gummy_run_py_test.py foo bar
+run py /home/chsoares/Lab/tmp/flame_run_py_test.py foo bar
 ```
 
 Observed behavior:
@@ -55,7 +55,7 @@ Code changes made after the failed baseline:
 Re-run the same command after rebuilding:
 
 ```text
-run py /home/chsoares/Lab/tmp/gummy_run_py_test.py foo bar
+run py /home/chsoares/Lab/tmp/flame_run_py_test.py foo bar
 ```
 
 Success criteria:
@@ -77,7 +77,7 @@ Retest outcome:
 Validated output sample:
 
 ```text
-=== GUMMY RUN PY TEST START ===
+=== FLAME RUN PY TEST START ===
 python=/usr/bin/python3
 hostname=archlinux
 cwd=/home/chsoares/Lab/tmp
@@ -85,7 +85,7 @@ args=["foo", "bar"]
 tick=0
 tick=1
 tick=2
-=== GUMMY RUN PY TEST END ===
+=== FLAME RUN PY TEST END ===
 ```
 
 Conclusion:

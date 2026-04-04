@@ -1,12 +1,12 @@
 # Configuration
 
-Gummy uses a combination of CLI flags, a TOML config file, and runtime commands for configuration.
+Flame uses a combination of CLI flags, a TOML config file, and runtime commands for configuration.
 
 ## CLI Flags
 
 ```bash
-./gummy -i <interface> -p <port>    # Bind to network interface
-./gummy -ip <address> -p <port>     # Bind to specific IP
+./flame -i <interface> -p <port>    # Bind to network interface
+./flame -ip <address> -p <port>     # Bind to specific IP
 ```
 
 | Flag | Description | Default |
@@ -19,7 +19,7 @@ Either `-i` or `-ip` is required (not both).
 
 ## Config File
 
-Persistent settings live in `~/.gummy/config.toml`:
+Persistent settings live in `~/.flame/config.toml`:
 
 ```toml
 [binbag]
@@ -43,22 +43,22 @@ host = ""
 port = 0
 ```
 
-The config file is optional. Gummy works fine without it using sensible defaults.
+The config file is optional. Flame works fine without it using sensible defaults.
 
 ### Creating the Config File
 
 ```
-󰗣 gummy ❯ config save
+󰗣 flame ❯ config save
 ```
 
-This creates `~/.gummy/config.toml` with the current settings (or defaults if first run).
+This creates `~/.flame/config.toml` with the current settings (or defaults if first run).
 
 ## Runtime Commands
 
 ### View Current Config
 
 ```
-󰗣 gummy ❯ config
+󰗣 flame ❯ config
 ```
 
 Shows all current settings including binbag status, execution mode, and pivot configuration.
@@ -69,13 +69,13 @@ Binbag is a local directory of CTF tools served via HTTP. When enabled, file tra
 
 ```
 # Enable binbag
-󰗣 gummy ❯ set binbag ~/Lab/binbag
+󰗣 flame ❯ set binbag ~/Lab/binbag
 
 # Disable binbag
-󰗣 gummy ❯ set binbag disable
+󰗣 flame ❯ set binbag disable
 ```
 
-When enabled, gummy starts an HTTP server on the configured port (default 8080) serving files from the binbag directory. The URL format is:
+When enabled, flame starts an HTTP server on the configured port (default 8080) serving files from the binbag directory. The URL format is:
 
 ```
 http://<listener-ip>:<http-port>/filename
@@ -87,10 +87,10 @@ Controls how modules run on the target:
 
 ```
 # In-memory execution (default) - no disk artifacts
-󰗣 gummy ❯ set mode stealth
+󰗣 flame ❯ set mode stealth
 
 # Disk-based execution - faster for large binaries
-󰗣 gummy ❯ set mode speed
+󰗣 flame ❯ set mode speed
 ```
 
 | Mode | Linux | Windows (PS1) | Windows (.NET) |
@@ -104,10 +104,10 @@ For internal network scenarios where the target can't reach your IP directly but
 
 ```
 # Enable pivot
-󰗣 gummy ❯ set pivot 172.16.0.1 8080
+󰗣 flame ❯ set pivot 172.16.0.1 8080
 
 # Disable pivot
-󰗣 gummy ❯ set pivot disable
+󰗣 flame ❯ set pivot disable
 ```
 
 When enabled, HTTP URLs use the pivot address instead of the listener IP. Useful when pivoting through compromised hosts.
@@ -115,17 +115,17 @@ When enabled, HTTP URLs use the pivot address instead of the listener IP. Useful
 ### Save Settings
 
 ```
-󰗣 gummy ❯ config save
+󰗣 flame ❯ config save
 ```
 
-Persists current runtime settings to `~/.gummy/config.toml` so they're loaded automatically next time.
+Persists current runtime settings to `~/.flame/config.toml` so they're loaded automatically next time.
 
 ## Data Directories
 
-Gummy stores all session data under `~/.gummy/`:
+Flame stores all session data under `~/.flame/`:
 
 ```
-~/.gummy/
+~/.flame/
 ├── config.toml              # Persistent configuration
 ├── history                  # Command history (1000 entries)
 ├── shell_history            # Shell mode history

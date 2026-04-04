@@ -37,18 +37,18 @@ const (
 	ColorBrightWhite   = "\033[97m"
 
 	// Symbols (nerdfont only) - simplified set
-	SymbolDroplet  = "\U000F18FB" // nf-md-teddy_bear — Main gummy theme
-	SymbolTarget   = "󰓾" // Target/session
-	SymbolFire     = "" // Received shell
-	SymbolGem      = "" // Active sessions header
-	SymbolSkull    = "" // Session died
-	SymbolCommand  = "" // Commands/arrows
-	SymbolInfo     = "" // Information
-	SymbolCheck    = "" // Information
-	SymbolDownload = "" // Information
-	SymbolUpload   = "" // Information
-	SymbolError    = "" // Information
-	SymbolWarning  = "" // Information
+	SymbolLogo     = ""      // nf-fa-fire — Main flame theme
+	SymbolTarget   = "󰓾"      // Target/session
+	SymbolFire     = ""      // Received shell
+	SymbolGem      = ""      // Active sessions header
+	SymbolSkull    = ""      // Session died
+	SymbolCommand  = ""      // Commands/arrows
+	SymbolInfo     = ""      // Information
+	SymbolCheck    = ""      // Information
+	SymbolDownload = ""      // Information
+	SymbolUpload   = ""      // Information
+	SymbolError    = ""      // Information
+	SymbolWarning  = ""      // Information
 	SymbolAttach   = "\ue795" // nf-dev-terminal — Shell attach
 	SymbolDetach   = "\uead5" // nf-cod-debug_step_out — Shell detach
 )
@@ -131,8 +131,8 @@ func Banner() string {
 		BorderForeground(lipgloss.Color("6")).
 		Padding(0, 1)
 
-	droplet := SymbolDroplet
-	title := fmt.Sprintf("gummy shell %s", droplet)
+	logo := SymbolLogo
+	title := fmt.Sprintf("flame shell %s", logo)
 
 	return boxStyle.Render(titleStyle.Render(title))
 }
@@ -149,8 +149,8 @@ func SubBanner(subtitle string) string {
 		BorderForeground(lipgloss.Color("6")).
 		Padding(0, 1)
 
-	droplet := SymbolDroplet
-	title := fmt.Sprintf("%s %s", droplet, subtitle)
+	logo := SymbolLogo
+	title := fmt.Sprintf("%s %s", logo, subtitle)
 
 	return boxStyle.Render(titleStyle.Render(title))
 }
@@ -213,14 +213,14 @@ func BoxWithTitlePadded(title string, lines []string, paddingRight int) string {
 	return boxStyle.Render(content)
 }
 
-// Prompt with gummy theme
+// Prompt with flame theme
 func Prompt() string {
-	return fmt.Sprintf("%s%s%s gummy%s%s ❯ %s", ColorMagenta, SymbolDroplet, ColorBold, ColorReset, ColorBrightMagenta, ColorReset)
+	return fmt.Sprintf("%s%s%s flame%s%s ❯ %s", ColorMagenta, SymbolLogo, ColorBold, ColorReset, ColorBrightMagenta, ColorReset)
 }
 
 // PromptWithSession shows prompt with selected session number
 func PromptWithSession(sessionID int) string {
-	return fmt.Sprintf("%s%s%s gummy [%d]%s%s ❯ %s", ColorMagenta, SymbolDroplet, ColorBold, sessionID, ColorReset, ColorBrightMagenta, ColorReset)
+	return fmt.Sprintf("%s%s%s flame [%d]%s%s ❯ %s", ColorMagenta, SymbolLogo, ColorBold, sessionID, ColorReset, ColorBrightMagenta, ColorReset)
 }
 
 // PTY status indicators

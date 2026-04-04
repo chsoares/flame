@@ -165,7 +165,7 @@ func (h *Handler) readlineLoop(errorChan chan error) {
 	line.SetBeep(false) // Sem beep em erros
 
 	// Carrega histórico se existir (da sessão do menu principal)
-	historyPath := os.ExpandEnv("$HOME/.gummy/shell_history")
+	historyPath := appDataPath("shell_history")
 	if f, err := os.Open(historyPath); err == nil {
 		line.ReadHistory(f)
 		f.Close()
@@ -571,7 +571,7 @@ func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
 	defer localFile.Close()
 
 	// Send command with a unique marker at the end
-	marker := fmt.Sprintf("__GUMMY_DONE_%d__", time.Now().UnixNano())
+	marker := fmt.Sprintf("__FLAME_DONE_%d__", time.Now().UnixNano())
 	fullCmd := fmt.Sprintf("%s\necho '%s'\n", cmd, marker)
 
 	_, err = h.conn.Write([]byte(fullCmd))
@@ -644,7 +644,7 @@ func (h *Handler) ExecuteWithStreamingCtx(ctx context.Context, cmd, localOutputP
 	}
 	defer localFile.Close()
 
-	marker := fmt.Sprintf("__GUMMY_DONE_%d__", time.Now().UnixNano())
+	marker := fmt.Sprintf("__FLAME_DONE_%d__", time.Now().UnixNano())
 	fullCmd := fmt.Sprintf("%s\necho '%s'\n", cmd, marker)
 
 	if _, err := h.conn.Write([]byte(fullCmd)); err != nil {

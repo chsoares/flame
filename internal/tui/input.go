@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	internal "github.com/chsoares/gummy/internal"
 )
 
 // Input is the bottom input bar with dynamic prompt and command history.
@@ -16,8 +17,8 @@ type Input struct {
 	prompt    string
 	context   ContextMode
 	width     int
-	sessionID int // Selected session NumID (0 = none)
-	bangMode  bool // In shell context, user typed ! to run gummy commands
+	sessionID int  // Selected session NumID (0 = none)
+	bangMode  bool // In shell context, user typed ! to run flame commands
 
 	// Per-context history
 	menuHistory    []string         // Menu command history
@@ -105,7 +106,7 @@ func (i *Input) Clear() {
 // history returns the active history slice for the current context.
 func (i *Input) history() []string {
 	if i.bangMode {
-		return i.menuHistory // Bang mode uses gummy command history
+		return i.menuHistory // Bang mode uses flame command history
 	}
 	if i.context == ContextShell && i.sessionID > 0 {
 		return i.sessionHistory[i.sessionID]
@@ -167,7 +168,7 @@ func (i *Input) HistoryDown() {
 	}
 }
 
-// EnterBangMode switches the input to gummy command mode (! prefix in shell).
+// EnterBangMode switches the input to flame command mode (! prefix in shell).
 func (i *Input) EnterBangMode() {
 	i.bangMode = true
 	i.histIdx = -1
@@ -208,17 +209,17 @@ func (i *Input) updatePrompt() {
 }
 
 func menuPrompt(sessionID int) string {
-	droplet := "\U000F18FB"
+	fire := ""
 	arrow := styleMagenta.Render("❯")
 
 	if sessionID > 0 {
-		return styleMagentaBold.Render(droplet+" gummy") +
+		return styleMagentaBold.Render(fire+" flame") +
 			styleSubtle.Render("[") +
 			styleCyan.Render(string(rune('0'+sessionID))) +
 			styleSubtle.Render("]") +
 			" " + arrow + " "
 	}
-	return styleMagentaBold.Render(droplet+" gummy") + " " + arrow + " "
+	return styleMagentaBold.Render(fire+" flame") + " " + arrow + " "
 }
 
 func (i *Input) Update(msg tea.Msg) (*Input, tea.Cmd) {
@@ -233,8 +234,7 @@ func (i *Input) View() string {
 
 // historyPath returns the path to the persistent menu history file.
 func historyPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".gummy", "menu_history.txt")
+	return internal.AppDataPath("menu_history.txt")
 }
 
 // LoadHistory loads menu history from disk.

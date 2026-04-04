@@ -37,6 +37,6 @@
 - Modify: `docs/testing/windows-baseline.md`
 - Modify: `docs/current-status.md`
 
-- [ ] **Step 1: Run targeted unit tests and `go build -o gummy .`**
+- [ ] **Step 1: Run targeted unit tests and `go build -o flame .`**
 - [ ] **Step 2: Update handoff docs with the detached-launcher design and retest expectations**
 - [ ] **Step 3: Leave the next manual retest steps explicit for Windows `run ps1` + `spawn`**

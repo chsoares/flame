@@ -12,9 +12,9 @@ PowerShell first. Capture `cmd` behavior too if available.
 
 ## Local Test Artifacts
 
-- PowerShell script: `/home/chsoares/Lab/tmp/gummy_windows_test.ps1`
-- Upload/download probe file: `/home/chsoares/Lab/tmp/gummy_upload_test.txt`
-- Optional `cmd` probe: `/home/chsoares/Lab/tmp/gummy_cmd_probe.bat`
+- PowerShell script: `/home/chsoares/Lab/tmp/flame_windows_test.ps1`
+- Upload/download probe file: `/home/chsoares/Lab/tmp/flame_upload_test.txt`
+- Optional `cmd` probe: `/home/chsoares/Lab/tmp/flame_cmd_probe.bat`
 
 ## First Pass Commands
 
@@ -39,17 +39,17 @@ ping 127.0.0.1 -n 6
 
 ### 2. Upload / download
 
-From gummy:
+From flame:
 
 ```text
-upload /home/chsoares/Lab/tmp/gummy_upload_test.txt C:\Windows\Temp\gummy_upload_test.txt
-download C:\Windows\Temp\gummy_upload_test.txt /home/chsoares/Lab/tmp/gummy_upload_test_returned.txt
+upload /home/chsoares/Lab/tmp/flame_upload_test.txt C:\Windows\Temp\flame_upload_test.txt
+download C:\Windows\Temp\flame_upload_test.txt /home/chsoares/Lab/tmp/flame_upload_test_returned.txt
 ```
 
 ### 3. PowerShell module-style execution baseline
 
 ```text
-run ps1 /home/chsoares/Lab/tmp/gummy_windows_test.ps1 foo bar
+run ps1 /home/chsoares/Lab/tmp/flame_windows_test.ps1 foo bar
 ```
 
 ### 4. Spawn baseline
@@ -66,7 +66,7 @@ If you can land a `cmd` shell, run:
 whoami
 hostname
 cd
-type C:\Windows\Temp\gummy_upload_test.txt
+type C:\Windows\Temp\flame_upload_test.txt
 ```
 
 ## Checklist
@@ -204,7 +204,7 @@ Remaining Windows baseline work after pause:
 
 Observed behavior:
 
-- `run ps1 ~/Lab/tmp/gummy_windows_test.ps1 foo bar` failed because `run` was not expanding `~`
+- `run ps1 ~/Lab/tmp/flame_windows_test.ps1 foo bar` failed because `run` was not expanding `~`
 - using the absolute path launched the output terminal but produced no script output
 
 Root cause found in code:
@@ -223,7 +223,7 @@ Fixes applied:
 Pending retest:
 
 ```text
-run ps1 ~/Lab/tmp/gummy_windows_test.ps1 foo bar
+run ps1 ~/Lab/tmp/flame_windows_test.ps1 foo bar
 ```
 
 Open question still worth checking after retest:
@@ -234,7 +234,7 @@ Open question still worth checking after retest:
 
 Validated after the fixes:
 
-- `run ps1 ~/Lab/tmp/gummy_windows_test.ps1 foo bar` worked
+- `run ps1 ~/Lab/tmp/flame_windows_test.ps1 foo bar` worked
 - `~` expansion worked
 - tab completion worked in practice during retest
 - script output appeared in the spawned terminal window
@@ -271,7 +271,7 @@ Design change applied:
 
 Pending retest:
 
-- run `run ps1 ~/Lab/tmp/gummy_windows_test.ps1`
+- run `run ps1 ~/Lab/tmp/flame_windows_test.ps1`
 - then `spawn`
 - confirm the original Windows shell stays responsive after the new shell connects
 
@@ -279,7 +279,7 @@ Pending retest:
 
 Validated after the launcher change:
 
-- `run ps1 ~/Lab/tmp/gummy_windows_test.ps1` still works
+- `run ps1 ~/Lab/tmp/flame_windows_test.ps1` still works
 - Windows worker creation still works
 - `spawn` still creates the new shell successfully
 - the original Windows shell remains responsive after `spawn`
@@ -311,13 +311,13 @@ Code changes applied before retest:
 
 Local test assembly prepared:
 
-- source: `/home/chsoares/Lab/tmp/GummyDotNetTest.cs`
-- assembly: `/home/chsoares/Lab/tmp/GummyDotNetTest.exe`
+- source: `/home/chsoares/Lab/tmp/FlameDotNetTest.cs`
+- assembly: `/home/chsoares/Lab/tmp/FlameDotNetTest.exe`
 
 Suggested retest command:
 
 ```text
-run dotnet ~/Lab/tmp/GummyDotNetTest.exe foo bar
+run dotnet ~/Lab/tmp/FlameDotNetTest.exe foo bar
 ```
 
 Success criteria:
@@ -331,7 +331,7 @@ Success criteria:
 
 Validated:
 
-- `run dotnet ~/Lab/tmp/GummyDotNetTest.exe foo bar` worked
+- `run dotnet ~/Lab/tmp/FlameDotNetTest.exe foo bar` worked
 - output appeared in the spawned terminal window
 - assembly arguments arrived correctly
 - worker-session flow behaved correctly from the operator point of view
@@ -340,7 +340,7 @@ Memory model note:
 
 - on the victim, the .NET assembly is executed in-memory via `DownloadData` or `FromBase64String` + `Reflection.Assembly.Load`
 - that means the assembly itself is not written to disk on the target in the `run dotnet` path
-- locally, gummy still keeps a copy of the assembly source file and writes a local output log file for the operator
+- locally, flame still keeps a copy of the assembly source file and writes a local output log file for the operator
 
 Conclusion:
 
@@ -357,8 +357,8 @@ Result after multiple Windows attempts:
 
 Local native Windows test binary prepared during investigation:
 
-- source: `/home/chsoares/Lab/tmp/gummy_run_bin_test.c`
-- binary: `/home/chsoares/Lab/tmp/gummy_run_bin_test.exe`
+- source: `/home/chsoares/Lab/tmp/flame_run_bin_test.c`
+- binary: `/home/chsoares/Lab/tmp/flame_run_bin_test.exe`
 
 Decision captured:
 

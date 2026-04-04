@@ -1,4 +1,4 @@
-# Crush Study Notes - UI/UX Reference for Gummy TUI
+# Crush Study Notes - UI/UX Reference for Flame TUI
 
 ## Color Palette (Charmtone-based)
 
@@ -195,12 +195,12 @@ program := tea.NewProgram(model,
 // v.AltScreen = true
 // v.MouseMode = tea.MouseModeCellMotion
 
-// Gummy currently:
+// Flame currently:
 p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 // Problem: mouse capture prevents native terminal text selection
 ```
 
-### Key Insight for Gummy
+### Key Insight for Flame
 
 Our `WithMouseCellMotion()` captures ALL mouse events — terminal can't do native selection.
 Crush solves this by implementing its own selection engine with UV ScreenBuffer.
@@ -208,7 +208,7 @@ Crush solves this by implementing its own selection engine with UV ScreenBuffer.
 **Our approach: Simplified selection engine (no UV needed)**
 
 Crush has a complex item-based selection (multiple chat messages, each with borders).
-Gummy is simpler: ONE scrollable output pane. We can implement selection by:
+Flame is simpler: ONE scrollable output pane. We can implement selection by:
 1. Track mouse down/drag/up positions relative to viewport content
 2. Map viewport coordinates to content lines (accounting for scroll offset)
 3. During rendering, apply ANSI reverse video to selected range
@@ -220,7 +220,7 @@ No UV dependency needed — just line/column math + ANSI manipulation.
 ### Crush Uses Bubble Tea v2
 
 - Crush: `charm.land/bubbletea/v2 v2.0.2` — View() returns `tea.View` struct
-- Gummy: `github.com/charmbracelet/bubbletea v1.3.10` — View() returns string
+- Flame: `github.com/charmbracelet/bubbletea v1.3.10` — View() returns string
 - v2 has separate mouse events: MouseClickMsg, MouseMotionMsg, MouseReleaseMsg, MouseWheelMsg
 - v1 has single MouseMsg with Type field
 - v2 allows dynamic mouse mode per frame via `v.MouseMode`
@@ -235,13 +235,13 @@ No UV dependency needed — just line/column math + ANSI manipulation.
 4. **Highlight Rendering** — UV ScreenBuffer + AttrReverse on cells
 5. **Text Extraction** — Walk highlighted cells, build plain text string
 
-For Gummy's simpler case (single output pane), layers 2-5 collapse into:
+For Flame's simpler case (single output pane), layers 2-5 collapse into:
 - Track start/end positions
 - Map to content lines via scroll offset
 - Apply reverse video during View() render
 - Extract text between positions on mouse up
 
-## Architecture Patterns for Gummy
+## Architecture Patterns for Flame
 
 ### What to Adopt
 1. **Text hierarchy** (base/muted/subtle) for visual depth
@@ -254,8 +254,8 @@ For Gummy's simpler case (single output pane), layers 2-5 collapse into:
 8. **Text selection support** - CRITICAL for CTF tool
 9. **Pubsub broker** for async events
 
-### What to Adapt for Gummy
-- Use terminal ANSI colors (0-15) instead of charmtone (Gummy runs on any terminal)
+### What to Adapt for Flame
+- Use terminal ANSI colors (0-15) instead of charmtone (Flame runs on any terminal)
 - Magenta/cyan theme instead of purple/green
 - Nerd Font symbols instead of Unicode-only
 - Session list in sidebar instead of file/LSP/MCP info

@@ -6,30 +6,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// ASCII art "GUMMY" in 3-line block characters.
-// The U is stretched with "eyes" (▀ ▀) on line 2 — the wide ▀▀▀▀▀ bottom
-// forms a smile, making the U look like a happy face :)
-var logoLetters = [5][3]string{
-	// G
-	{" ▄▀▀▀", " █ ▀█", "  ▀▀▀"},
-	// U (stretched, with eyes on line 2)
-	{" █     █", " █ ▀ ▀ █", "  ▀▀▀▀▀ "},
-	// M
-	{" █▄ ▄█", " █ ▀ █", " ▀   ▀"},
-	// M
-	{" █▄ ▄█", " █ ▀ █", " ▀   ▀"},
-	// Y
-	{" █   █", "  ▀█▀ ", "   ▀  "},
+var flameLogo = []string{
+	"▀▀▀▀▀ ▀▀     ▀▀▀▀  ▀▀   ▀▀ ▀▀▀▀▀ ",
+	"██▀▀  ██    ██▀▀██ ██▀▄▀██ ██▀▀  ",
+	"▀▀    ▀▀▀▀▀ ▀▀  ▀▀ ▀▀   ▀▀ ▀▀▀▀▀ ",
 }
 
-// renderLogo returns the 3 lines of the GUMMY ASCII art (plain, no color).
+// renderLogo returns the 3 lines of the FLAME ASCII art (plain, no color).
 func renderLogo() []string {
-	lines := make([]string, 3)
-	for line := 0; line < 3; line++ {
-		for _, letter := range logoLetters {
-			lines[line] += letter[line]
-		}
-	}
+	lines := append([]string(nil), flameLogo...)
 	// Pad all lines to same width
 	maxW := 0
 	for _, l := range lines {
@@ -45,25 +30,14 @@ func renderLogo() []string {
 	return lines
 }
 
-// renderLogoLine2 builds the second line of the logo with cyan eyes in the U.
-func renderLogoLine2() string {
-	eyeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
-	// G line 2 + U line 2 (with eyes) + M + M + Y line 2
-	return styleMagentaBold.Render(" █ ▀█") +
-		styleMagentaBold.Render(" █ ") + eyeStyle.Render("▀") + styleMagentaBold.Render(" ") + eyeStyle.Render("▀") + styleMagentaBold.Render(" █") +
-		styleMagentaBold.Render(" █ ▀ █") +
-		styleMagentaBold.Render(" █ ▀ █") +
-		styleMagentaBold.Render("  ▀█▀ ")
-}
-
 // renderBannerFull renders the full banner inspired by Crush's layout:
 //
 //	╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
 //	╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
-//	 shell handler 󰗣
-//	 ▄▀▀▀ █     █ █▄ ▄█ █▄ ▄█ █   █
-//	 █ ▀█ █ ▀ ▀ █ █ ▀ █ █ ▀ █  ▀█▀
-//	  ▀▀▀  ▀▀▀▀▀  ▀   ▀ ▀   ▀   ▀
+//	 shell handler 
+//	 ▀▀▀▀▀ ▀▀     ▀▀▀▀  ▀▀   ▀▀ ▀▀▀▀▀
+//	 ██▀▀  ██    ██▀▀██ ██▀▄▀██ ██▀▀
+//	 ▀▀    ▀▀▀▀▀ ▀▀  ▀▀ ▀▀   ▀▀ ▀▀▀▀▀
 //	╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
 func renderBannerFull(width int) string {
 	logo := renderLogo()
@@ -76,15 +50,12 @@ func renderBannerFull(width int) string {
 	lines = append(lines, hatchRow)
 
 	// Text line
-	label := styleMuted.Render(" shell handler")
+	label := " " + styleMuted.Render("shell handler")
 	lines = append(lines, label)
 
-	// Logo lines
-	// Line 0 and 2: pure magenta bold
-	// Line 1: has pre-colored cyan eyes, render each letter part separately
-	lines = append(lines, styleMagentaBold.Render(logo[0]))
-	lines = append(lines, renderLogoLine2())
-	lines = append(lines, styleMagentaBold.Render(logo[2]))
+	for _, line := range logo {
+		lines = append(lines, " "+styleMagentaBold.Render(line))
+	}
 
 	// Bottom hatching (1 row)
 	lines = append(lines, hatchRow)
@@ -93,10 +64,10 @@ func renderBannerFull(width int) string {
 }
 
 // renderBannerCompact renders the compact 1-line banner for smaller sidebar.
-// Format: gummy 󰗣 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+// Format: flame  ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
 func renderBannerCompact(width int) string {
-	droplet := "\U000F18FB"
-	logo := styleMagentaBold.Render("gummy " + droplet)
+	fire := ""
+	logo := styleMagentaBold.Render("flame " + fire)
 	logoW := lipgloss.Width(logo)
 	hatchW := width - logoW - 1
 	if hatchW < 0 {
@@ -113,10 +84,10 @@ func bannerFullHeight() int {
 // renderBannerSplash renders the splash screen banner — hatching only on the sides of the logo.
 // Like Crush's landing: logo left, hatching extends right. No top/bottom hatch rows.
 //
-//	 shell handler
-//	 ▄▀▀▀ █     █ █▄ ▄█ █▄ ▄█ █   █ ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
-//	 █ ▀█ █ ▀ ▀ █ █ ▀ █ █ ▀ █  ▀█▀  ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
-//	  ▀▀▀  ▀▀▀▀▀  ▀   ▀ ▀   ▀   ▀   ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+//	shell handler
+//	▄▀▀▀ █     █ █▄ ▄█ █▄ ▄█ █   █ ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+//	█ ▀█ █ ▀ ▀ █ █ ▀ █ █ ▀ █  ▀█▀  ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+//	 ▀▀▀  ▀▀▀▀▀  ▀   ▀ ▀   ▀   ▀   ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
 func renderBannerSplash(width int) string {
 	logo := renderLogo()
 
@@ -130,10 +101,11 @@ func renderBannerSplash(width int) string {
 			logoWidth = w
 		}
 	}
-	label := hatching(leftHatch) + styleMuted.Render(" shell handler")
+	left := hatching(leftHatch)
+	label := left + " " + styleMuted.Render("shell handler")
 	labelW := lipgloss.Width(label)
 	// Pad so right hatching starts at same position as logo lines
-	logoEnd := leftHatch + logoWidth + 1 // +1 for space before hatching
+	logoEnd := leftHatch + 1 + logoWidth // left pad + logo
 	padW := logoEnd - labelW
 	if padW < 1 {
 		padW = 1
@@ -145,20 +117,14 @@ func renderBannerSplash(width int) string {
 	lines = append(lines, label+strings.Repeat(" ", padW)+hatching(rightFill))
 
 	// Logo lines with hatching on both sides
-	for i, logoLine := range logo {
-		var rendered string
-		if i == 1 {
-			rendered = renderLogoLine2()
-		} else {
-			rendered = styleMagentaBold.Render(logoLine)
-		}
-		left := hatching(leftHatch)
+	for _, logoLine := range logo {
+		rendered := styleMagentaBold.Render(logoLine)
 		renderedW := lipgloss.Width(rendered)
-		fillW := width - leftHatch - renderedW - 1
+		fillW := width - leftHatch - 1 - renderedW
 		if fillW < 0 {
 			fillW = 0
 		}
-		lines = append(lines, left+rendered+" "+hatching(fillW))
+		lines = append(lines, left+" "+rendered+hatching(fillW))
 	}
 
 	return strings.Join(lines, "\n")

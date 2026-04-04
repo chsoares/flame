@@ -54,7 +54,7 @@
 - [ ] Confirm whether `WatchForCancel` is still actively used and therefore should stay.
 - [ ] Remove only the dead items that are not required for the upcoming Windows runner refactor.
 - [ ] Update `docs/current-status.md` to reflect the new dead-code status after the audit.
-- [ ] Run `go build -o gummy .` and record the result.
+- [ ] Run `go build -o flame .` and record the result.
 
 ### Task 4: Validate Linux `run py`
 

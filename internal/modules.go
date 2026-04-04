@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Module interface for all gummy modules
+// Module interface for all flame modules
 type Module interface {
 	Name() string          // Module identifier (e.g., "peas", "lse", "sh")
 	Category() string      // Category (e.g., "linux", "windows", "custom")

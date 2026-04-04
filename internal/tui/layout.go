@@ -29,13 +29,13 @@ const (
 	headerHeight    = 1
 	statusBarHeight = 1
 	inputHeight     = 1
-	sidebarWidth    = 32
+	sidebarWidth    = 34
 	minMainWidth    = 40
 
 	// Breakpoints
-	compactBreakpoint = 70                       // Below this: no sidebar
-	fullBreakpoint    = 15                        // Sidebar height needed for full banner
-	fullBannerLines   = 7                         // 2 top hatch + text + 3 logo + 1 bottom hatch
+	compactBreakpoint = 70 // Below this: no sidebar
+	fullBreakpoint    = 15 // Sidebar height needed for full banner
+	fullBannerLines   = 7  // 2 top hatch + text + 3 logo + 1 bottom hatch
 )
 
 // GenerateLayout calculates component positions for the given terminal size.

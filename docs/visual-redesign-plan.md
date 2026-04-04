@@ -1,7 +1,7 @@
 # Visual Redesign Plan — Crush-Inspired UI
 
 ## Goals
-Transform Gummy's TUI from functional-but-plain to polished and beautiful, taking visual inspiration from Crush while keeping Gummy's identity (magenta/cyan terminal colors, Nerd Font symbols).
+Transform Flame's TUI from functional-but-plain to polished and beautiful, taking visual inspiration from Crush while keeping Flame's identity (magenta/cyan terminal colors, Nerd Font symbols).
 
 ## Design Elements from Crush
 
@@ -11,13 +11,13 @@ Crush uses `╱` (diagonal slash) to fill empty space, creating a textured look:
 Charm™ Crush ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
 ```
 
-For Gummy:
+For Flame:
 ```
-gummy 󰗣 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+flame 󰗣 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
 ```
 Or with ASCII art logo:
 ```
- ╱╱ gummy 󰗣 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+ ╱╱ flame 󰗣 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
 ```
 
 ### 2. Header/Sidebar Integration
@@ -81,12 +81,12 @@ BgPanel = Color("236")   // Sidebar background (slightly lighter)
 ### Wide Mode (≥100 cols)
 ```
 ┌─────────────────────────────────┬──────────────────────────┐
-│                                 │ gummy 󰗣 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱ │
+│                                 │ flame 󰗣 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱ │
 │                                 │ 10.10.14.5:4444          │
 │ OUTPUT PANE                     │                          │
 │ (scrollable, selectable)        │ Sessions ─────────────── │
 │                                 │  ▶ 1  root@10.10.11.5   │
-│ gummy ❯ help                    │    2  www@10.10.11.23    │
+│ flame ❯ help                    │    2  www@10.10.11.23    │
 │ Available commands:             │                          │
 │   list     - List sessions      │ Info ────────────────── │
 │   use <id> - Select session     │  Binbag: ~/Lab/binbag    │
@@ -102,11 +102,11 @@ BgPanel = Color("236")   // Sidebar background (slightly lighter)
 ### Compact Mode (<100 cols)
 ```
 ┌────────────────────────────────────────────┐
-│ gummy 󰗣 ╱╱╱╱ 10.10.14.5:4444 │ 2 sessions│
+│ flame 󰗣 ╱╱╱╱ 10.10.14.5:4444 │ 2 sessions│
 ├────────────────────────────────────────────┤
 │ OUTPUT PANE (full width)                   │
 │                                            │
-│ gummy ❯ help                               │
+│ flame ❯ help                               │
 │ Available commands:                        │
 │   ...                                      │
 ├────────────────────────────────────────────┤
@@ -119,7 +119,7 @@ BgPanel = Color("236")   // Sidebar background (slightly lighter)
 ## Sidebar Design
 
 ```
-gummy 󰗣 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
+flame 󰗣 ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱
 10.10.14.5:4444
 2 sessions
 

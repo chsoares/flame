@@ -21,12 +21,12 @@ func TestBuildWindowsPowerShellHTTPCommand(t *testing.T) {
 }
 
 func TestBuildWindowsPowerShellB64Command(t *testing.T) {
-	cmd := buildWindowsPowerShellB64Command("gummy_ps_var", []string{"foo", "bar baz"})
+	cmd := buildWindowsPowerShellB64Command("flame_ps_var", []string{"foo", "bar baz"})
 	checks := []string{
-		"FromBase64String($gummy_ps_var)",
+		"FromBase64String($flame_ps_var)",
 		"[scriptblock]::Create($decoded)",
 		"& $sb 'foo' 'bar baz'",
-		"Remove-Variable -Name gummy_ps_var",
+		"Remove-Variable -Name flame_ps_var",
 	}
 	for _, check := range checks {
 		if !strings.Contains(cmd, check) {
@@ -50,12 +50,12 @@ func TestBuildWindowsDotNetHTTPCommand(t *testing.T) {
 }
 
 func TestBuildWindowsDotNetB64Command(t *testing.T) {
-	cmd := buildWindowsDotNetB64Command("gummy_asm_var", []string{"audit", "bar baz"})
+	cmd := buildWindowsDotNetB64Command("flame_asm_var", []string{"audit", "bar baz"})
 	checks := []string{
-		"FromBase64String($gummy_asm_var)",
+		"FromBase64String($flame_asm_var)",
 		"[System.Reflection.Assembly]::Load($bytes)",
 		"@(,[string[]]@('audit', 'bar baz'))",
-		"Remove-Variable -Name gummy_asm_var",
+		"Remove-Variable -Name flame_asm_var",
 	}
 	for _, check := range checks {
 		if !strings.Contains(cmd, check) {
@@ -98,17 +98,17 @@ func TestRunBinaryRejectsWindows(t *testing.T) {
 
 func TestBuildRemoteBinaryPathForLinux(t *testing.T) {
 	got := buildRemoteBinaryPath("linux", "pspy64", 123)
-	want := "/tmp/.gummy_123_pspy64"
+	want := "/tmp/.flame_123_pspy64"
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 
 func TestBuildUnixBinaryCommand(t *testing.T) {
-	cmd := buildUnixBinaryCommand("/tmp/.gummy_tool", []string{"audit"})
+	cmd := buildUnixBinaryCommand("/tmp/.flame_tool", []string{"audit"})
 	checks := []string{
-		"trap 'shred -uz /tmp/.gummy_tool 2>/dev/null || rm -f /tmp/.gummy_tool' EXIT",
-		"chmod +x /tmp/.gummy_tool && /tmp/.gummy_tool audit",
+		"trap 'shred -uz /tmp/.flame_tool 2>/dev/null || rm -f /tmp/.flame_tool' EXIT",
+		"chmod +x /tmp/.flame_tool && /tmp/.flame_tool audit",
 	}
 	for _, check := range checks {
 		if !strings.Contains(cmd, check) {

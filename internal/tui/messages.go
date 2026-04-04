@@ -122,7 +122,7 @@ type PromptDetectedMsg struct {
 
 // --- Internal ---
 
-// CommandOutputMsg carries output from a gummy command execution.
+// CommandOutputMsg carries output from a flame command execution.
 type CommandOutputMsg struct {
 	Output string
 }

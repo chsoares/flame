@@ -1,16 +1,16 @@
 # Sessions & Interactive Shell
 
-Gummy manages multiple reverse shell connections simultaneously. Each connection gets a unique session ID for easy switching.
+Flame manages multiple reverse shell connections simultaneously. Each connection gets a unique session ID for easy switching.
 
 ## Receiving Connections
 
-Start gummy and it listens for incoming reverse shells:
+Start flame and it listens for incoming reverse shells:
 
 ```bash
-./gummy -i tun0 -p 4444
+./flame -i tun0 -p 4444
 ```
 
-When a shell connects, gummy automatically:
+When a shell connects, flame automatically:
 
 1. Assigns a session ID (1, 2, 3, ...)
 2. Detects the platform (Linux/Windows)
@@ -26,7 +26,7 @@ When a shell connects, gummy automatically:
 ### List Sessions
 
 ```
-󰗣 gummy ❯ list
+󰗣 flame ❯ list
 ```
 
 Shows all active sessions with their ID, remote address, user, hostname, and platform.
@@ -34,7 +34,7 @@ Shows all active sessions with their ID, remote address, user, hostname, and pla
 ### Select a Session
 
 ```
-󰗣 gummy ❯ use 1
+󰗣 flame ❯ use 1
  Using session 1 (10.10.11.123)
 ```
 
@@ -43,7 +43,7 @@ All subsequent commands (shell, upload, download, run) operate on the selected s
 ### Kill a Session
 
 ```
-󰗣 gummy ❯ kill 1
+󰗣 flame ❯ kill 1
 ```
 
 Closes the connection and removes the session.
@@ -52,12 +52,12 @@ Closes the connection and removes the session.
 
 The Bubble Tea TUI has two contexts:
 
-- `menu` — gummy commands like `list`, `use`, `upload`, `download`, `spawn`, `run`
+- `menu` — flame commands like `list`, `use`, `upload`, `download`, `spawn`, `run`
 - `shell` — interactive shell relay for the selected session
 
 Use `shell` or press `F12` in menu mode to attach. Press `F12` again to detach.
 
-Inside shell context, you can prefix gummy commands with `!`:
+Inside shell context, you can prefix flame commands with `!`:
 
 ```text
 !upload
@@ -67,17 +67,17 @@ Inside shell context, you can prefix gummy commands with `!`:
 !run
 ```
 
-This lets you keep shell context while still launching gummy actions.
+This lets you keep shell context while still launching flame actions.
 
 ## Interactive Shell
 
 ### Linux (PTY Mode)
 
 ```
-󰗣 gummy [1] ❯ shell
+󰗣 flame [1] ❯ shell
 ```
 
-Gummy automatically upgrades the shell to a proper PTY:
+Flame automatically upgrades the shell to a proper PTY:
 
 1. Detects available interpreters (python3, python, script)
 2. Runs `python3 -c 'import pty; pty.spawn("/bin/bash")'`
@@ -87,7 +87,7 @@ Gummy automatically upgrades the shell to a proper PTY:
 
 **Result:** Full interactive shell with tab completion, Ctrl+C, arrow keys, clear screen, and everything you'd expect from a real terminal.
 
-**Exit:** Press `F12` to return to the gummy menu.
+**Exit:** Press `F12` to return to the flame menu.
 
 ### Windows (Line-Buffered Mode)
 
@@ -106,7 +106,7 @@ Platform is auto-detected from the prompt pattern (`PS C:\` = Windows).
 From an existing session, spawn a new reverse shell on a different port:
 
 ```
-󰗣 gummy [1] ❯ spawn
+󰗣 flame [1] ❯ spawn
 ```
 
 This sends a platform-appropriate reverse shell payload in the background. The new session appears automatically. Module execution also uses spawned worker sessions internally, but those workers stay hidden from the normal session list and sidebar.
@@ -116,11 +116,11 @@ This sends a platform-appropriate reverse shell payload in the background. The n
 Connect via SSH and auto-inject a reverse shell:
 
 ```
-󰗣 gummy ❯ ssh user@10.10.11.123
-󰗣 gummy ❯ ssh user@10.10.11.123:2222
+󰗣 flame ❯ ssh user@10.10.11.123
+󰗣 flame ❯ ssh user@10.10.11.123:2222
 ```
 
-Gummy will:
+Flame will:
 
 1. SSH into the target (prompts for password)
 2. Execute a reverse shell payload silently
@@ -131,7 +131,7 @@ Gummy will:
 Generate ready-to-use reverse shell payloads:
 
 ```
-󰗣 gummy ❯ rev
+󰗣 flame ❯ rev
 ```
 
 Generates payloads using the listener's IP and port:
@@ -143,7 +143,7 @@ Generates payloads using the listener's IP and port:
 You can also override the IP/port:
 
 ```
-󰗣 gummy ❯ rev 10.10.14.5 9001
+󰗣 flame ❯ rev 10.10.14.5 9001
 ```
 
 ## Session Logging
@@ -151,7 +151,7 @@ You can also override the IP/port:
 All session I/O is automatically logged to:
 
 ```
-~/.gummy/YYYY_MM_DD/IP_user_hostname/logs/session_N.log
+~/.flame/YYYY_MM_DD/IP_user_hostname/logs/session_N.log
 ```
 
 Logs capture remote output for later review. Session directories are created lazily (only when a module or log needs them).
@@ -161,7 +161,7 @@ Logs capture remote output for later review. Session directories are created laz
 Each unique host gets a shared directory:
 
 ```
-~/.gummy/2026_03_12/10.10.11.123_www-data_victim/
+~/.flame/2026_03_12/10.10.11.123_www-data_victim/
 ├── scripts/     # Downloaded module scripts
 └── logs/        # Session logs, module outputs
 ```

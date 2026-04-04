@@ -25,13 +25,13 @@ type Notification struct {
 
 // StatusBar renders the bottom status line with hotkey hints, or a notification overlay.
 type StatusBar struct {
-	Context     ContextMode
+	Context        ContextMode
 	TransferPct    int    // -1 = no transfer, 0-100 = progress
 	TransferMsg    string // e.g., "Uploading CLAUDE.md"
 	TransferRight  string // Right side text: "47%" or "15.2 KB"
 	TransferUpload bool   // true=upload, false=download
-	Width       int
-	Notify      *Notification // Active notification (overlays entire bar)
+	Width          int
+	Notify         *Notification // Active notification (overlays entire bar)
 }
 
 func NewStatusBar(width int) StatusBar {
@@ -65,7 +65,7 @@ func (s StatusBar) View() string {
 
 	var left string
 	if s.Context == ContextShell {
-		left = hint("!", "gummy cmd") + dot +
+		left = hint("!", "flame cmd") + dot +
 			hint("F11", "sidebar") + dot +
 			hint("F12", "detach") + dot +
 			hint("PgUp/PgDn", "scroll") + dot +
@@ -113,7 +113,7 @@ func (s StatusBar) renderTransferProgress() string {
 
 	// Calculate bar width: total - label - pct - spacing
 	labelW := lipgloss.Width(label) + 2 // " icon text "
-	pctW := len(pctStr) + 2              // " NN% "
+	pctW := len(pctStr) + 2             // " NN% "
 	barWidth := s.Width - labelW - pctW
 	if barWidth < 5 {
 		barWidth = 5
@@ -157,15 +157,15 @@ func (s StatusBar) renderNotification() string {
 
 	switch s.Notify.Level {
 	case NotifyInfo:
-		bg = lipgloss.Color("4")  // Blue
+		bg = lipgloss.Color("4") // Blue
 		icon = ui.SymbolInfo
 		prefix = "Done!"
 	case NotifyImportant:
-		bg = lipgloss.Color("6")  // Cyan
+		bg = lipgloss.Color("6") // Cyan
 		icon = ui.SymbolFire
 		prefix = "Yay!"
 	case NotifyError:
-		bg = lipgloss.Color("1")  // Red
+		bg = lipgloss.Color("1") // Red
 		icon = ui.SymbolSkull
 		prefix = "Oops!"
 	}

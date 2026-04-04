@@ -61,7 +61,7 @@ The module system spawns an invisible "worker session" to execute modules. This 
 
 **Flow:**
 1. `run <module>` → spinner "Spawning worker shell for <module>..."
-2. Gummy sends spawn payload from main session (suppressed from viewport)
+2. Flame sends spawn payload from main session (suppressed from viewport)
 3. `pendingWorker` atomic flag marks the next `AddSession` as a worker
 4. Worker session connects — completely invisible:
    - Not shown in list/sidebar/session count
@@ -73,7 +73,7 @@ The module system spawns an invisible "worker session" to execute modules. This 
    - `RunBinary`: SmartUpload → `chmod +x` → execute, with `trap EXIT` for cleanup (shred)
    - `ExecuteWithStreamingCtx` captures output to local file
    - Terminal window opens with `tail -f` of local output file
-   - Done marker (`__GUMMY_DONE_*__`) filtered from output file
+   - Done marker (`__FLAME_DONE_*__`) filtered from output file
 6. Spinner stops immediately after setup — notification in viewport
 7. When module finishes, worker session is closed and removed (cleanup via trap for binaries)
 
@@ -127,7 +127,7 @@ First housekeeping pass complete:
 ### Why Worker Sessions (Penelope Model)
 - Single TCP connection cannot be shared between module output streaming and shell interaction
 - Penelope solves this with "control sessions" — separate connections for command execution
-- Gummy spawns a reverse shell from the main session, uses it exclusively for the module
+- Flame spawns a reverse shell from the main session, uses it exclusively for the module
 - Main session stays 100% free — shell, spawn, upload, download all work normally
 
 ### Why BLOCKING Run* Methods
@@ -172,7 +172,7 @@ First housekeeping pass complete:
 
 ## Important Notes for Handoff
 
-- **Build the binary**: always `go build -o gummy .` before testing
+- **Build the binary**: always `go build -o flame .` before testing
 - **UI consistency**: always use `ui/colors.go` helpers, never raw styles
 - **p.Send deadlock**: ALL callbacks MUST use `go p.Send(...)`
 - **PTY transfers**: stop relay + stty -echo + 1KB chunks when relay was active

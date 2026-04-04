@@ -23,14 +23,14 @@ func TestBuildUnixPythonHTTPCommand(t *testing.T) {
 }
 
 func TestBuildUnixPythonB64Command(t *testing.T) {
-	cmd := buildUnixPythonB64Command("gummy_py_var", []string{"foo", "bar baz"})
+	cmd := buildUnixPythonB64Command("flame_py_var", []string{"foo", "bar baz"})
 
 	checks := []string{
-		"echo \"$gummy_py_var\"",
+		"echo \"$flame_py_var\"",
 		"base64 -d",
 		"python3 -c",
 		"sys.argv = ['script', 'foo', 'bar baz']",
-		"unset gummy_py_var",
+		"unset flame_py_var",
 	}
 
 	for _, check := range checks {

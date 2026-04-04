@@ -103,7 +103,7 @@ Code still needed for upcoming Windows runner refactors should be left in place 
 
 ## Verification Strategy
 
-- After documentation and housekeeping changes: `go build -o gummy .`
+- After documentation and housekeeping changes: `go build -o flame .`
 - After any behavior change: reproduce with the narrowest practical validation step first, then rebuild.
 - Testing evidence is written back into `docs/testing/*.md`, not left only in conversation history.
 

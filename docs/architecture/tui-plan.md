@@ -1,11 +1,11 @@
-# Gummy TUI Plan - Bubble Tea Implementation
+# Flame TUI Plan - Bubble Tea Implementation
 
 ## Context
-Gummy is a Go reverse shell handler for CTF. Currently uses a readline-based CLI (StartMenu() in session.go). We want a full Bubble Tea TUI inspired by Charmbracelet Crush's architecture, with:
+Flame is a Go reverse shell handler for CTF. Currently uses a readline-based CLI (StartMenu() in session.go). We want a full Bubble Tea TUI inspired by Charmbracelet Crush's architecture, with:
 
 - Live session sidebar
 - Shell output viewport with bidirectional I/O relay
-- Menu mode for gummy commands (upload, modules, config)
+- Menu mode for flame commands (upload, modules, config)
 - Background session notifications
 - Transfer progress in status bar
 
@@ -50,7 +50,7 @@ There are only two focus modes now (simplified from the raw-relay design):
 
 - **FocusInput** — The input bar is active. User types commands. Behavior depends on the context:
   - Shell context (session selected + shell active): Enter sends command to remote net.Conn + \n. Prompt shows user@host:/path$. Output from remote appears in main pane.
-  - Menu context (no shell active, or detached): Enter executes gummy command. Prompt shows gummy [N] >. Output from gummy appears in main pane.
+  - Menu context (no shell active, or detached): Enter executes flame command. Prompt shows flame [N] >. Output from flame appears in main pane.
 
 - **FocusSidebar** — Session list highlighted. j/k navigate, Enter selects session.
 
@@ -67,7 +67,7 @@ The input bar is always visible in both contexts. Only the prompt and command ro
 ```
 ┌─────────────────────────────────────────────────┐
 │ HEADER (1 line fixed)                           │
-│ gummy 󰗣 │ 10.10.14.5:4444 │ 3 sessions │ SHELL│
+│ flame 󰗣 │ 10.10.14.5:4444 │ 3 sessions │ SHELL│
 ├─────────────────────────────────┬───────────────┤
 │                                 │ SIDEBAR       │
 │ MAIN PANE (flex, scrollable)    │ (28 cols)     │
@@ -150,7 +150,7 @@ ModuleFinishedMsg{SessionID, ModuleName, Err}
 
 // User actions (from input bar)
 SendCommandMsg{SessionID, Command string}   // Enter in shell context
-ExecuteGummyMsg{Command string}             // Enter in menu context
+ExecuteFlameMsg{Command string}             // Enter in menu context
 SwitchSessionMsg{NumID}
 EnterShellMsg{}
 ExitShellMsg{}
@@ -192,7 +192,7 @@ Note: shellpane.go and menupane.go merged into outputpane.go — both modes use 
 ## Phased Implementation
 
 ### Phase 1: Skeleton TUI + Menu Mode (MVP foundation) ✅ DONE
-Goal: Replace readline with Bubble Tea. All gummy commands work through TUI input.
+Goal: Replace readline with Bubble Tea. All flame commands work through TUI input.
 - Create: tui/app.go, tui/layout.go, tui/focus.go, tui/messages.go, tui/components/{header,outputpane,input,statusbar}.go
 - Modify: main.go (launch TUI instead of StartMenu()), session.go (extract handleCommand() into ExecuteCommand(cmd) string)
 - **Current sub-goal:** Polish UI to match Crush's visual quality (ASCII art, ////// fills, integrated header/sidebar, gray help text)

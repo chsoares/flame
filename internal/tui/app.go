@@ -548,7 +548,7 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		if a.input.InBangMode() {
-			// Execute as gummy command from shell context
+			// Execute as flame command from shell context
 			a.input.ExitBangMode()
 			return a.executeBangCommand(cmd)
 		}
@@ -887,7 +887,7 @@ func (a *App) menuAppend(text string) {
 	}
 }
 
-// executeBangCommand runs a gummy command from shell mode (!prefix).
+// executeBangCommand runs a flame command from shell mode (!prefix).
 // Output goes to menuBuffer (visible on detach), notifications show immediately.
 func (a App) executeBangCommand(cmd string) (tea.Model, tea.Cmd) {
 	// Echo the bang command in menu buffer
