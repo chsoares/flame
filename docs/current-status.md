@@ -105,13 +105,14 @@ The module system spawns an invisible "worker session" to execute modules. This 
 - [ ] `seatbelt` — Seatbelt (.NET in-memory, RunDotNetInMemory)
 - [ ] `lazagne` — LaZagne (binary, RunBinary)
 - [ ] `ps1 <url>` — arbitrary PowerShell script (RunPowerShellInMemory)
-- [ ] `dotnet <url>` — arbitrary .NET assembly (RunDotNetInMemory)
 
-**Windows Run* methods still need refactoring:**
-- `RunPowerShellInMemory` — launches internal goroutines, not blocking
-- `RunDotNetInMemory` — launches internal goroutines, not blocking
+**Tested Windows custom runners:**
+- [x] `ps1 <url>` — arbitrary PowerShell script (RunPowerShellInMemory) ✅
+- [x] `dotnet <url>` — arbitrary .NET assembly (RunDotNetInMemory, in-memory on victim) ✅
+
+**Windows Run* methods still needing attention:**
 - `RunPythonInMemory` — Linux path now uses blocking execution, but Windows still needs a dedicated implementation/refactor
-- All three still need a consistent Windows-side treatment with `ExecuteWithStreamingCtx` and real baseline validation first
+- `RunPowerShellInMemory` and `RunDotNetInMemory` are now in the blocking worker-session model and validated at the custom-runner level
 
 ## Dead Code Audit
 
@@ -152,23 +153,22 @@ First housekeeping pass complete:
 
 ## What's Next
 
-### Immediate: Windows baseline
-1. capture `cmd` behavior and decide whether an explicit future `!psupgrade` still makes sense
-2. test `Ctrl+C` explicitly on Linux shell relay
-3. decide next Windows payload work: `cmd` UX, improved interactive payload, or `rev csharp`
+### Immediate: Windows modules and customs
+1. validate `run bin`
+2. validate standard Windows modules: `winpeas`, `seatbelt`, `lazagne`
+3. document any remaining runner-specific fixes needed after real tests
 
-### Then: Windows runner refactor
-1. refactor `RunPowerShellInMemory` to the blocking worker-session model
-2. refactor `RunDotNetInMemory` to the blocking worker-session model
-3. finish the Windows-specific `RunPythonInMemory` path
-4. remove `ExecuteWithStreaming` after those callers are gone
+### Then: Payloads / `rev`
+1. improve the PowerShell oneliner only if real usage still shows pain after module work
+2. reimplement and test `rev csharp` / generated `shell.exe` in the TUI branch
+3. reconsider the `rev` UX as a product feature, not just a payload dump
+4. evaluate clipboard-first subcommands like `rev bash`, `rev ps1`, `rev php`
+5. decide whether custom IP/port arguments still earn their complexity now that pivoting exists
 
 ### Then: Other priorities
 1. per-command help (TUI modal)
 2. upload/download test matrix
-3. test `Ctrl+C` behavior on Linux shell relay too
-4. investigate a better Windows interactive payload
-5. reimplement and test `rev csharp` / generated `shell.exe` in the TUI branch
+3. keep `cmd` support as low priority unless real usage proves it matters
 
 ## Important Notes for Handoff
 
@@ -185,6 +185,7 @@ First housekeeping pass complete:
 - **Windows-first rule**: do not refactor Windows module runners again without fresh baseline evidence in `docs/testing/windows-baseline.md`
 - **Windows payload caveat**: current PowerShell payload behaves like command/response, not a true streaming terminal; see `docs/testing/windows-baseline.md`
 - **Linux gap**: `Ctrl+C` still needs explicit validation on Linux shell relay
+- **Roadmap decision (2026-04-04):** modules/custom Windows execution comes before `rev`/payload product polish; payload work is the next major step after modules
 
 ## File Map
 

