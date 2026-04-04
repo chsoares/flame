@@ -112,19 +112,7 @@ Windows privilege escalation scanner from [PEASS-ng](https://github.com/peass-ng
 
 **Mode:** In-memory (.NET `Reflection.Assembly.Load`)
 **Default args:** `-group=all`
-
-### LaZagne — `run lazagne`
-
-[LaZagne](https://github.com/AlessandroZ/LaZagne) — Credential harvester that extracts passwords from browsers, email clients, databases, Wi-Fi, and more.
-
-```
-󰗣 flame [1] ❯ run lazagne          # Default: 'all' modules
-󰗣 flame [1] ❯ run lazagne browsers  # Only browser passwords
-```
-
-**Mode:** Disk + cleanup (native binary, not .NET — must touch disk)
-**Default args:** `all` (if no args provided)
-**Current status:** Deferred on Windows in the TUI branch until a dedicated native `.exe` runner exists again.
+**Current status:** Validated in the TUI branch, with buffered output caveat under the current Windows payload.
 
 ### ELF Binary — `run elf`
 

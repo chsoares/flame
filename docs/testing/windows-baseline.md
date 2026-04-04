@@ -347,6 +347,29 @@ Conclusion:
 - `run dotnet` is now validated in the TUI branch
 - this unblocks the next Windows module checks that depend on the .NET runner (`winpeas`, `seatbelt`)
 
+## `run winpeas` Validation — 2026-04-04
+
+Validated with caveat:
+
+- `run winpeas` works on the Windows target
+- the worker/session model keeps the main shell responsive while WinPEAS runs
+
+Caveat:
+
+- WinPEAS output is buffered and appears in a large batch after the command finishes instead of streaming live
+- this matches the current known limitation of the Windows PowerShell payload path
+
+## `run seatbelt` Validation — 2026-04-04
+
+Validated with caveat:
+
+- `run seatbelt` works on the Windows target
+- running `run seatbelt` with no explicit args uses the module default `-group=all`
+
+Caveat:
+
+- like `winpeas`, Seatbelt output is buffered instead of streaming live for long execution
+
 ## `run bin` / `run elf` Outcome — 2026-04-04
 
 Result after multiple Windows attempts:
@@ -393,6 +416,22 @@ Current transfer status summary:
 - Windows base64 fallback for small files: working
 - transfer cancel via `Ctrl+C`: working
 - large-file fallback performance: still worth characterizing later
+
+## TUI Output Hygiene Note — 2026-04-04
+
+Two maintainability/correctness concerns were identified during Windows module testing:
+
+1. Old CLI-oriented download/progress paths can still leak raw spinner/stdout behavior into the TUI if they bypass TUI callbacks.
+2. Some UI strings, symbols, and styles are still easier to change in one place than others because parts of the codebase bypass shared helpers.
+
+Action taken:
+
+- internal URL downloads used by runners/modules now use a quiet download path instead of the CLI spinner/stdout path
+
+Still worth auditing later:
+
+- legacy CLI-era input/output flows that may conflict with the TUI model
+- hardcoded UI strings/colors/symbols that should use shared helpers for consistency
 
 ## Current Hypotheses Before Testing
 

@@ -27,7 +27,11 @@ func (h Header) View() string {
 
 	logo := styleMagentaBold.Render("flame " + fire)
 	addr := styleMuted.Render(h.ListenerAddr)
-	sessions := styleMuted.Render(fmt.Sprintf("%d sessions", h.SessionCount))
+	label := "sessions"
+	if h.SessionCount == 1 {
+		label = "session"
+	}
+	sessions := styleMuted.Render(fmt.Sprintf("%d %s", h.SessionCount, label))
 
 	// logo + hatching + addr + sessions
 	miniHatch := hatching(2)

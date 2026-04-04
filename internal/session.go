@@ -225,7 +225,7 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 			var cached bool
 			localPath, cached = s.getCachedFile(scriptSource)
 			if !cached {
-				if err := DownloadFile(ctx, scriptSource, localPath); err != nil {
+				if err := DownloadFileQuiet(ctx, scriptSource, localPath, filepath.Base(scriptSource)); err != nil {
 					return fmt.Errorf("download failed: %w", err)
 				}
 			} else {
@@ -308,7 +308,7 @@ func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args [
 			var cached bool
 			localPath, cached = s.getCachedFile(binarySource)
 			if !cached {
-				if err := DownloadFile(ctx, binarySource, localPath); err != nil {
+				if err := DownloadFileQuiet(ctx, binarySource, localPath, filepath.Base(binarySource)); err != nil {
 					return fmt.Errorf("download failed: %w", err)
 				}
 			} else {
@@ -485,7 +485,7 @@ func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource st
 			var cached bool
 			localPath, cached = s.getCachedFile(scriptSource)
 			if !cached {
-				if err := DownloadFile(ctx, scriptSource, localPath); err != nil {
+				if err := DownloadFileQuiet(ctx, scriptSource, localPath, filepath.Base(scriptSource)); err != nil {
 					return fmt.Errorf("download failed: %w", err)
 				}
 			} else {
@@ -557,7 +557,7 @@ func (s *SessionInfo) RunDotNetInMemory(ctx context.Context, assemblySource stri
 			var cached bool
 			localPath, cached = s.getCachedFile(assemblySource)
 			if !cached {
-				if err := DownloadFile(ctx, assemblySource, localPath); err != nil {
+				if err := DownloadFileQuiet(ctx, assemblySource, localPath, filepath.Base(assemblySource)); err != nil {
 					return fmt.Errorf("download failed: %w", err)
 				}
 			} else {
@@ -658,7 +658,7 @@ func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string
 			var cached bool
 			localPath, cached = s.getCachedFile(scriptSource)
 			if !cached {
-				if err := DownloadFile(ctx, scriptSource, localPath); err != nil {
+				if err := DownloadFileQuiet(ctx, scriptSource, localPath, filepath.Base(scriptSource)); err != nil {
 					return fmt.Errorf("download failed: %w", err)
 				}
 			} else {

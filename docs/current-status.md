@@ -101,8 +101,8 @@ The module system spawns an invisible "worker session" to execute modules. This 
 - [ ] `elf <url|file>` — arbitrary Linux/native binary (RunBinary)
 
 **Untested Windows modules (baseline Windows TUI validation comes first):**
-- [ ] `winpeas` — WinPEAS (.NET in-memory, RunDotNetInMemory)
-- [ ] `seatbelt` — Seatbelt (.NET in-memory, RunDotNetInMemory)
+- [x] `winpeas` — WinPEAS (.NET in-memory, RunDotNetInMemory; buffered output caveat) ✅
+- [x] `seatbelt` — Seatbelt (.NET in-memory, RunDotNetInMemory; default args `-group=all`; buffered output caveat) ✅
 - [ ] `lazagne` — LaZagne (native `.exe`, blocked until dedicated Windows binary runner returns)
 - [ ] `ps1 <url>` — arbitrary PowerShell script (RunPowerShellInMemory)
 
@@ -154,9 +154,9 @@ First housekeeping pass complete:
 ## What's Next
 
 ### Immediate: Windows modules and customs
-1. validate standard Windows modules: `winpeas`, `seatbelt`, `lazagne`
-2. document any remaining runner-specific fixes needed after real tests
-3. keep native Windows executable runner as a separate future problem
+1. document any remaining runner/payload fixes needed after real tests
+2. keep native Windows executable runner as a separate future problem
+3. decide whether to attack buffered Windows module output now or after payload/rev work
 
 ### Then: Payloads / `rev`
 1. improve the PowerShell oneliner only if real usage still shows pain after module work
@@ -169,6 +169,8 @@ First housekeeping pass complete:
 1. per-command help (TUI modal)
 2. upload/download test matrix
 3. keep `cmd` support as low priority unless real usage proves it matters
+4. audit legacy CLI-era input/output paths that may still leak raw stdout/spinner behavior into the TUI
+5. audit hardcoded UI strings/colors/symbols that bypass shared helpers and make UI maintenance harder
 
 ## Important Notes for Handoff
 
@@ -188,6 +190,7 @@ First housekeeping pass complete:
 - **Roadmap decision (2026-04-04):** modules/custom Windows execution comes before `rev`/payload product polish; payload work is the next major step after modules
 - **Runner scope decision (2026-04-04):** `run elf` is explicitly scoped to Linux/native Unix targets; native Windows `.exe` execution needs a separate design later
 - **Explicit runner guards (2026-04-04):** unsupported combos should fail early with clear errors (`run sh` on Windows, `run ps1`/`run dotnet` on Linux, `run elf` on Windows)
+- **Windows module caveat (2026-04-04):** `run winpeas` and `run seatbelt` work, but their output is still buffered under the current Windows payload path
 
 ## File Map
 

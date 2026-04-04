@@ -1035,7 +1035,7 @@ func (t *Transferer) resolveSource(source string) (string, func(), error) {
 		}
 
 		// Download file
-		if err := DownloadFile(context.Background(), source, tmpPath); err != nil {
+		if err := DownloadFileQuiet(context.Background(), source, tmpPath, filename); err != nil {
 			return "", nil, fmt.Errorf("failed to download URL: %w", err)
 		}
 

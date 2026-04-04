@@ -11,11 +11,33 @@ import (
 	"github.com/chsoares/flame/internal/ui"
 )
 
-// DownloadFile downloads a file from URL with progress indication
+type downloadFeedback struct {
+	displayName string
+	quiet       bool
+}
+
+// DownloadFile downloads a file from URL with CLI progress indication.
 func DownloadFile(ctx context.Context, url, destPath string) error {
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Downloading %s...", filepath.Base(url)))
-	defer spinner.Stop()
+	return downloadFile(ctx, url, destPath, downloadFeedback{})
+}
+
+// DownloadFileQuiet downloads a file from URL without emitting CLI spinner/stdout noise.
+func DownloadFileQuiet(ctx context.Context, url, destPath, displayName string) error {
+	return downloadFile(ctx, url, destPath, downloadFeedback{displayName: displayName, quiet: true})
+}
+
+func downloadFile(ctx context.Context, url, destPath string, feedback downloadFeedback) error {
+	displayName := feedback.displayName
+	if displayName == "" {
+		displayName = filepath.Base(url)
+	}
+
+	var spinner *ui.Spinner
+	if !feedback.quiet {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Downloading %s...", displayName))
+		defer spinner.Stop()
+	}
 
 	// Make HTTP request
 	resp, err := http.Get(url)
@@ -53,11 +75,11 @@ func DownloadFile(ctx context.Context, url, destPath string) error {
 			out.Write(buf[:n])
 			downloaded += int64(n)
 
-			if size > 0 {
+			if spinner != nil && size > 0 {
 				percent := int(float64(downloaded) / float64(size) * 100)
 				kb := downloaded / 1024
 				spinner.Update(fmt.Sprintf("Downloading... %d%% (%d KB)", percent, kb))
-			} else {
+			} else if spinner != nil {
 				kb := downloaded / 1024
 				spinner.Update(fmt.Sprintf("Downloading... %d KB", kb))
 			}
@@ -70,11 +92,15 @@ func DownloadFile(ctx context.Context, url, destPath string) error {
 		}
 	}
 
-	spinner.Stop()
+	if spinner != nil {
+		spinner.Stop()
+	}
 
 	// Format size
 	sizeStr := formatBytes(downloaded)
-	fmt.Println(ui.Success(fmt.Sprintf("Downloaded %s (%s)", filepath.Base(destPath), sizeStr)))
+	if !feedback.quiet {
+		fmt.Println(ui.Success(fmt.Sprintf("Downloaded %s (%s)", displayName, sizeStr)))
+	}
 
 	return nil
 }

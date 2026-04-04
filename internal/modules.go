@@ -36,7 +36,6 @@ func GetModuleRegistry() *ModuleRegistry {
 		// Windows modules
 		globalRegistry.Register(&WinPEASModule{})
 		globalRegistry.Register(&SeatbeltModule{})
-		globalRegistry.Register(&LaZagneModule{})
 		// Custom modules (generic runners)
 		globalRegistry.Register(&ELFModule{})
 		globalRegistry.Register(&ShellScriptModule{})
@@ -240,11 +239,9 @@ func (m *LaZagneModule) Run(ctx context.Context, session *SessionInfo, args []st
 // ELFModule - Run arbitrary Linux ELF/native binary from URL or binbag (disk + cleanup)
 type ELFModule struct{}
 
-func (m *ELFModule) Name() string     { return "elf" }
-func (m *ELFModule) Category() string { return "custom" }
-func (m *ELFModule) Description() string {
-	return "Run arbitrary Linux ELF/native binary (disk + cleanup)"
-}
+func (m *ELFModule) Name() string          { return "elf" }
+func (m *ELFModule) Category() string      { return "custom" }
+func (m *ELFModule) Description() string   { return "Run arbitrary Linux ELF/native binary" }
 func (m *ELFModule) ExecutionMode() string { return "disk-cleanup" }
 
 func (m *ELFModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
@@ -263,7 +260,7 @@ type ShellScriptModule struct{}
 
 func (m *ShellScriptModule) Name() string          { return "sh" }
 func (m *ShellScriptModule) Category() string      { return "custom" }
-func (m *ShellScriptModule) Description() string   { return "Run arbitrary bash script from URL" }
+func (m *ShellScriptModule) Description() string   { return "Run arbitrary bash script" }
 func (m *ShellScriptModule) ExecutionMode() string { return "memory" }
 
 func (m *ShellScriptModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
@@ -280,11 +277,9 @@ func (m *ShellScriptModule) Run(ctx context.Context, session *SessionInfo, args 
 // PowerShellScriptModule - Run arbitrary PowerShell script from URL
 type PowerShellScriptModule struct{}
 
-func (m *PowerShellScriptModule) Name() string     { return "ps1" }
-func (m *PowerShellScriptModule) Category() string { return "custom" }
-func (m *PowerShellScriptModule) Description() string {
-	return "Run arbitrary PowerShell script from URL"
-}
+func (m *PowerShellScriptModule) Name() string          { return "ps1" }
+func (m *PowerShellScriptModule) Category() string      { return "custom" }
+func (m *PowerShellScriptModule) Description() string   { return "Run arbitrary PowerShell script" }
 func (m *PowerShellScriptModule) ExecutionMode() string { return "memory" }
 
 func (m *PowerShellScriptModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
@@ -303,7 +298,7 @@ type DotNetAssemblyModule struct{}
 
 func (m *DotNetAssemblyModule) Name() string          { return "dotnet" }
 func (m *DotNetAssemblyModule) Category() string      { return "custom" }
-func (m *DotNetAssemblyModule) Description() string   { return "Run arbitrary .NET assembly from URL" }
+func (m *DotNetAssemblyModule) Description() string   { return "Run arbitrary .NET assembly" }
 func (m *DotNetAssemblyModule) ExecutionMode() string { return "memory" }
 
 func (m *DotNetAssemblyModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
@@ -322,7 +317,7 @@ type PythonScriptModule struct{}
 
 func (m *PythonScriptModule) Name() string          { return "py" }
 func (m *PythonScriptModule) Category() string      { return "custom" }
-func (m *PythonScriptModule) Description() string   { return "Run arbitrary Python script from URL" }
+func (m *PythonScriptModule) Description() string   { return "Run arbitrary Python script" }
 func (m *PythonScriptModule) ExecutionMode() string { return "memory" }
 
 func (m *PythonScriptModule) Run(ctx context.Context, session *SessionInfo, args []string) error {
