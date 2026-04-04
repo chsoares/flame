@@ -60,6 +60,14 @@ func (t *Transferer) progress(text string) {
 	}
 }
 
+func displayTransferName(path string) string {
+	name := filepath.Base(path)
+	if strings.HasPrefix(name, "tmp_") {
+		return strings.TrimPrefix(name, "tmp_")
+	}
+	return name
+}
+
 // done prints a final message via stdout (CLI only — TUI uses doneFn callback).
 func (t *Transferer) done(text string) {
 	if t.progressFn == nil {
@@ -261,7 +269,7 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	if startIdx != -1 {
 		endIdx := strings.Index(fullOutput[startIdx:], endMarker)
 		if endIdx != -1 {
-			content := fullOutput[startIdx+len(marker):startIdx+endIdx]
+			content := fullOutput[startIdx+len(marker) : startIdx+endIdx]
 			lines := strings.Split(content, "\n")
 			for _, line := range lines {
 				line = strings.TrimSpace(line)
@@ -647,7 +655,7 @@ func (t *Transferer) Download(ctx context.Context, remotePath, localPath string)
 	endIdx += startIdx
 
 	// Extract base64 content
-	content := fullOutput[startIdx+len(marker):endIdx]
+	content := fullOutput[startIdx+len(marker) : endIdx]
 
 	// Clean and join base64 lines
 	lines := strings.Split(content, "\n")
@@ -707,6 +715,7 @@ func (t *Transferer) downloadViaHTTP(ctx context.Context, remotePath, localPath 
 	if localPath != "" {
 		filename = filepath.Base(localPath)
 	}
+	displayName := filename
 
 	// Build URL for the remote to POST to
 	url := GlobalRuntimeConfig.GetHTTPURL(filename)
@@ -723,10 +732,10 @@ func (t *Transferer) downloadViaHTTP(ctx context.Context, remotePath, localPath 
 	var spinner *ui.Spinner
 	if t.progressFn == nil {
 		spinner = ui.NewSpinner()
-		spinner.Start(fmt.Sprintf("Downloading %s via HTTP...", filename))
+		spinner.Start(fmt.Sprintf("Downloading %s via HTTP...", displayName))
 		defer spinner.Stop()
 	} else {
-		t.progress(fmt.Sprintf("Downloading %s via HTTP...", filename))
+		t.progress(fmt.Sprintf("Downloading %s via HTTP...", displayName))
 	}
 
 	// Send POST command to remote
@@ -736,10 +745,10 @@ func (t *Transferer) downloadViaHTTP(ctx context.Context, remotePath, localPath 
 
 	// Wait for HTTP server to receive the file
 	if GlobalRuntimeConfig.FileServer != nil {
-		success := GlobalRuntimeConfig.FileServer.WaitForTransfer(filename, 10*time.Second, func(progress TransferProgress) {
+		err := GlobalRuntimeConfig.FileServer.WaitForTransferCtx(ctx, filename, 10*time.Second, func(progress TransferProgress) {
 			if !progress.Done {
 				msg := fmt.Sprintf("Downloading %s via HTTP... %s",
-					filename, formatSize(int(progress.BytesTransferred)))
+					displayName, formatSize(int(progress.BytesTransferred)))
 				if spinner != nil {
 					spinner.Update(msg)
 				} else {
@@ -750,10 +759,10 @@ func (t *Transferer) downloadViaHTTP(ctx context.Context, remotePath, localPath 
 		if spinner != nil {
 			spinner.Stop()
 		}
-		if !success {
-			return fmt.Errorf("HTTP download timeout or failed")
+		if err != nil {
+			return err
 		}
-		t.done(ui.Success(fmt.Sprintf("Download complete! Saved to: %s", filename)))
+		t.done(ui.Success(fmt.Sprintf("Download complete! Saved to: %s", displayName)))
 		return nil
 	}
 
@@ -994,6 +1003,7 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 	}
 
 	filename := filepath.Base(localPath)
+	displayName := displayTransferName(localPath)
 
 	// If remotePath is empty, use filename in current directory
 	if remotePath == "" {
@@ -1021,10 +1031,10 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 	var spinner *ui.Spinner
 	if t.progressFn == nil {
 		spinner = ui.NewSpinner()
-		spinner.Start(fmt.Sprintf("Uploading %s via HTTP... 0 B / %s", filepath.Base(localPath), formatSize(int(fileSize))))
+		spinner.Start(fmt.Sprintf("Uploading %s via HTTP... 0 B / %s", displayName, formatSize(int(fileSize))))
 		defer spinner.Stop()
 	} else {
-		t.progress(fmt.Sprintf("Uploading %s via HTTP...", filepath.Base(localPath)))
+		t.progress(fmt.Sprintf("Uploading %s via HTTP...", displayName))
 	}
 
 	// Send download command
@@ -1034,11 +1044,11 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 
 	// Wait for HTTP server to complete the transfer (10 seconds inactivity timeout)
 	if GlobalRuntimeConfig.FileServer != nil {
-		success := GlobalRuntimeConfig.FileServer.WaitForTransfer(filename, 10*time.Second, func(progress TransferProgress) {
+		err := GlobalRuntimeConfig.FileServer.WaitForTransferCtx(ctx, filename, 10*time.Second, func(progress TransferProgress) {
 			if !progress.Done {
 				percent := int(float64(progress.BytesTransferred) / float64(progress.TotalBytes) * 100)
 				msg := fmt.Sprintf("Uploading %s via HTTP... %s / %s (%d%%)",
-					filepath.Base(localPath),
+					displayName,
 					formatSize(int(progress.BytesTransferred)),
 					formatSize(int(progress.TotalBytes)),
 					percent)
@@ -1052,8 +1062,8 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 		if spinner != nil {
 			spinner.Stop()
 		}
-		if !success {
-			return fmt.Errorf("HTTP transfer timeout or failed")
+		if err != nil {
+			return err
 		}
 		t.done(ui.Success(fmt.Sprintf("Upload complete! (%s via HTTP)", formatSize(int(fileSize)))))
 		return nil

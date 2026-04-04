@@ -1,4 +1,13 @@
-# TUI Current Status — 2026-04-03
+# TUI Current Status — 2026-04-04
+
+## Docs Map
+
+- `docs/current-status.md` — handoff source of truth
+- `docs/architecture/tui-plan.md` — original TUI architecture and phased plan
+- `docs/testing/linux-run-py.md` — Linux `run py` validation log
+- `docs/testing/windows-baseline.md` — Windows baseline validation log
+- `docs/superpowers/specs/2026-04-04-housekeeping-windows-validation-design.md` — approved design record
+- `docs/superpowers/plans/2026-04-04-housekeeping-windows-validation-plan.md` — execution plan
 
 ## What's Done
 
@@ -19,6 +28,7 @@
 - SmartUpload (HTTP binbag → b64 fallback), SmartDownload (HTTP POST → b64 fallback)
 - Stop/restart relay + stty -echo + 1KB chunks for PTY shells
 - Tilde expansion, Ctrl+C cancel, Enter/F12 blocked during transfer
+- Windows transfer baseline now validated for binbag HTTP and small-file b64 fallback
 
 ### Bang Mode (`!` prefix in shell)
 - `!upload`, `!download`, `!spawn`, `!kill`, `!run` from shell context
@@ -26,6 +36,16 @@
 
 ### Spawn
 - Async with TUI spinner, payload echo suppressed via dual-mode relay suppression
+- Visible session numbering no longer skips after hidden worker sessions
+
+### Windows baseline progress
+- PowerShell shell attach/render/command echo now works well for short commands
+- `Ctrl+C` on Windows is not working yet
+- Long-running PowerShell command output is still buffered and arrives in blocks, not as true streaming
+- Current evidence points to the Windows reverse-shell payload architecture, not the TUI renderer, as the main limitation
+- Upload/download on Windows now work with binbag HTTP and small-file non-binbag fallback
+- Transfer cancel via `Ctrl+C` now works for Windows uploads/downloads too
+- Detached Windows launcher now keeps the original shell responsive after worker creation and `spawn`
 
 ### Binbag + Pivot + Config
 - `binbag ls/on/off/path/port`, auto-persist, upload path fallback CWD → binbag
@@ -71,15 +91,15 @@ The module system spawns an invisible "worker session" to execute modules. This 
 - [x] `loot` — ezpz post-exploitation (RunScriptInMemory) ✅
 - [x] `linexp` — Linux Exploit Suggester (RunScriptInMemory) ✅
 - [x] `pspy` — process monitor (RunBinary, disk+cleanup, 5min timeout) ✅
+- [x] `py <url>` — arbitrary Python script (Linux path fixed and validated) ✅
   - trap EXIT cleanup confirmed working
   - Worker auto-closes after timeout
 
 **Untested Linux modules:**
 - [ ] `sh <url>` — arbitrary bash script (RunScriptInMemory)
 - [ ] `bin <url|file>` — arbitrary binary (RunBinary)
-- [ ] `py <url>` — arbitrary Python script (RunPythonInMemory — needs refactoring)
 
-**Untested Windows modules (need refactoring first):**
+**Untested Windows modules (baseline Windows TUI validation comes first):**
 - [ ] `winpeas` — WinPEAS (.NET in-memory, RunDotNetInMemory)
 - [ ] `seatbelt` — Seatbelt (.NET in-memory, RunDotNetInMemory)
 - [ ] `lazagne` — LaZagne (binary, RunBinary)
@@ -89,16 +109,16 @@ The module system spawns an invisible "worker session" to execute modules. This 
 **Windows Run* methods still need refactoring:**
 - `RunPowerShellInMemory` — launches internal goroutines, not blocking
 - `RunDotNetInMemory` — launches internal goroutines, not blocking
-- `RunPythonInMemory` — launches internal goroutines, not blocking
-- All three need the same treatment as RunBinary: remove goroutines, use ExecuteWithStreamingCtx, be BLOCKING
+- `RunPythonInMemory` — Linux path now uses blocking execution, but Windows still needs a dedicated implementation/refactor
+- All three still need a consistent Windows-side treatment with `ExecuteWithStreamingCtx` and real baseline validation first
 
-## Dead Code Warning
+## Dead Code Audit
 
-After refactoring RunBinary, there is dead code to clean up:
-1. `ExecuteWithStreaming` (non-Ctx version) — used only by the unrefactored Windows Run* methods
-2. `ExecuteScriptFromStdin` — never called from anywhere
-3. `moduleCancel` field on SessionInfo — was for old model, may be stale
-4. `WatchForCancel` — was for CLI mode cancel, check if still used in TUI context
+First housekeeping pass complete:
+1. `ExecuteScriptFromStdin` — removed
+2. `moduleCancel` field on `SessionInfo` — removed
+3. `ExecuteWithStreaming` (non-Ctx version) — still required by the current unrefactored Windows/Python runners
+4. `WatchForCancel` — still referenced by legacy/CLI-era paths; leave it until those paths are removed or refactored
 
 ## Architecture Decisions
 
@@ -131,27 +151,23 @@ After refactoring RunBinary, there is dead code to clean up:
 
 ## What's Next
 
-### Immediate: Complete Linux Module Testing
-1. Test `run loot` (same pattern as peas/lse)
-2. Test `run linexp` (same pattern)
-3. Test `run sh <url>` (custom script)
-4. Test `run bin <url|file>` (custom binary, ELF)
+### Immediate: Windows baseline
+1. capture `cmd` behavior and decide whether an explicit future `!psupgrade` still makes sense
+2. test `Ctrl+C` explicitly on Linux shell relay
+3. decide next Windows payload work: `cmd` UX, improved interactive payload, or `rev csharp`
 
-### Then: Dead Code Cleanup
-1. Remove `ExecuteScriptFromStdin` (never called)
-2. Check `moduleCancel` field — remove if unused
-3. `ExecuteWithStreaming` (non-Ctx) — keep until Windows Run* methods are refactored
+### Then: Windows runner refactor
+1. refactor `RunPowerShellInMemory` to the blocking worker-session model
+2. refactor `RunDotNetInMemory` to the blocking worker-session model
+3. finish the Windows-specific `RunPythonInMemory` path
+4. remove `ExecuteWithStreaming` after those callers are gone
 
-### Then: Windows Run* Refactoring
-1. Refactor `RunPowerShellInMemory` — remove goroutines, use ExecuteWithStreamingCtx
-2. Refactor `RunDotNetInMemory` — same
-3. Refactor `RunPythonInMemory` — same
-4. Then `ExecuteWithStreaming` (non-Ctx) can be removed
-
-### Then: Other Priorities
-1. Per-command help (TUI modal)
-2. Windows testing
-3. Upload/download test matrix
+### Then: Other priorities
+1. per-command help (TUI modal)
+2. upload/download test matrix
+3. test `Ctrl+C` behavior on Linux shell relay too
+4. investigate a better Windows interactive payload
+5. reimplement and test `rev csharp` / generated `shell.exe` in the TUI branch
 
 ## Important Notes for Handoff
 
@@ -164,7 +180,10 @@ After refactoring RunBinary, there is dead code to clean up:
 - **Module args**: use `-- args` separator (not just `args`) to avoid bash option conflicts
 - **Module output**: ExecuteWithStreamingCtx filters done markers from local file
 - **Binary cleanup**: RunBinary uses `trap EXIT` for shred — fires on conn close
-- **Two-computer workflow**: handoff context must be in docs/
+- **Two-computer workflow**: handoff context must live in `docs/`
+- **Windows-first rule**: do not refactor Windows module runners again without fresh baseline evidence in `docs/testing/windows-baseline.md`
+- **Windows payload caveat**: current PowerShell payload behaves like command/response, not a true streaming terminal; see `docs/testing/windows-baseline.md`
+- **Linux gap**: `Ctrl+C` still needs explicit validation on Linux shell relay
 
 ## File Map
 

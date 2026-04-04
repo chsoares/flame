@@ -27,7 +27,7 @@ type FileServer struct {
 	server            *http.Server
 	mu                sync.Mutex
 	running           bool
-	downloadDir       string                          // Where to save received files (default: CWD)
+	downloadDir       string                           // Where to save received files (default: CWD)
 	transferListeners map[string]chan TransferProgress // Channels to notify transfer progress
 	listenerMu        sync.Mutex
 }
@@ -172,6 +172,12 @@ func (fs *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // Uses an inactivity timeout that resets on every progress update
 // Returns true if successful, false if failed/timeout
 func (fs *FileServer) WaitForTransfer(filename string, inactivityTimeout time.Duration, progressCallback func(TransferProgress)) bool {
+	err := fs.WaitForTransferCtx(context.Background(), filename, inactivityTimeout, progressCallback)
+	return err == nil
+}
+
+// WaitForTransferCtx waits for transfer completion and can be cancelled via context.
+func (fs *FileServer) WaitForTransferCtx(ctx context.Context, filename string, inactivityTimeout time.Duration, progressCallback func(TransferProgress)) error {
 	// Create channel for this transfer
 	ch := make(chan TransferProgress, 10)
 
@@ -192,6 +198,10 @@ func (fs *FileServer) WaitForTransfer(filename string, inactivityTimeout time.Du
 
 	for {
 		select {
+		case <-ctx.Done():
+			cleanup()
+			return ctx.Err()
+
 		case progress := <-ch:
 			// Reset timer on every progress update (activity detected)
 			if !timer.Stop() {
@@ -210,13 +220,16 @@ func (fs *FileServer) WaitForTransfer(filename string, inactivityTimeout time.Du
 			// Check if done
 			if progress.Done {
 				cleanup()
-				return progress.Success
+				if progress.Success {
+					return nil
+				}
+				return fmt.Errorf("transfer failed")
 			}
 
 		case <-timer.C:
 			// Inactivity timeout reached
 			cleanup()
-			return false
+			return fmt.Errorf("transfer timeout")
 		}
 	}
 }

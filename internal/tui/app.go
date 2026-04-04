@@ -19,11 +19,11 @@ import (
 )
 
 const (
-	selectionClearDelay = 3 * time.Second       // Clear highlight after copy
-	notifyDuration      = 2 * time.Second       // Notification overlay duration (important)
-	notifyDurationLong  = 4 * time.Second       // Longer duration (info, error)
-	scrollbarHideDelay  = 1 * time.Second       // Hide scrollbar after scroll stops
-	quitPendingTimeout  = 3 * time.Second       // Double-press Ctrl+D timeout
+	selectionClearDelay = 3 * time.Second // Clear highlight after copy
+	notifyDuration      = 2 * time.Second // Notification overlay duration (important)
+	notifyDurationLong  = 4 * time.Second // Longer duration (info, error)
+	scrollbarHideDelay  = 1 * time.Second // Hide scrollbar after scroll stops
+	quitPendingTimeout  = 3 * time.Second // Double-press Ctrl+D timeout
 )
 
 // CommandExecutor is the interface the Manager must satisfy for the TUI.
@@ -35,18 +35,18 @@ type CommandExecutor interface {
 	GetActiveSessionDisplay() (ip, whoami, platform string, ok bool)
 	SetSilent(silent bool)
 	SetNotifyFunc(fn func(string))
-	SetNotifyBarFunc(fn func(string, int))                      // message, level (0=info, 1=important, 2=error)
+	SetNotifyBarFunc(fn func(string, int)) // message, level (0=info, 1=important, 2=error)
 	SetSpinnerFunc(start func(int, string), stop func(int), update func(int, string))
-	SetShellOutputFunc(fn func(string, int, []byte))            // shell relay output (sessionID, numID, data)
-	SetSessionDisconnectFunc(fn func(int, string))             // session disconnect (numID, remoteIP)
-	StartShellRelay(cols, rows int) error                       // start reading from selected session's conn
-	StopShellRelay()                                           // stop relay goroutine
-	WriteToShell(data string) error                            // write to selected session's conn
-	ResizePTY(cols, rows int)                                  // send stty resize to remote PTY
-	CompleteInput(line string) string                          // tab completion
-	SetTransferProgressFunc(fn func(string, int, string, bool))  // transfer progress (filename, pct, right, upload)
-	SetTransferDoneFunc(fn func(string, bool, error))           // transfer done (filename, upload, error)
-	StartUpload(ctx context.Context, localPath, remotePath string) // async upload
+	SetShellOutputFunc(fn func(string, int, []byte))                 // shell relay output (sessionID, numID, data)
+	SetSessionDisconnectFunc(fn func(int, string))                   // session disconnect (numID, remoteIP)
+	StartShellRelay(cols, rows int) error                            // start reading from selected session's conn
+	StopShellRelay()                                                 // stop relay goroutine
+	WriteToShell(data string) error                                  // write to selected session's conn
+	ResizePTY(cols, rows int)                                        // send stty resize to remote PTY
+	CompleteInput(line string) string                                // tab completion
+	SetTransferProgressFunc(fn func(string, int, string, bool))      // transfer progress (filename, pct, right, upload)
+	SetTransferDoneFunc(fn func(string, bool, error))                // transfer done (filename, upload, error)
+	StartUpload(ctx context.Context, localPath, remotePath string)   // async upload
 	StartDownload(ctx context.Context, remotePath, localPath string) // async download
 	StartSpawn()                                                     // async spawn
 	StartModule(moduleName string, args []string)                    // async module execution
@@ -72,9 +72,10 @@ type App struct {
 	sidebarCollapsed bool // F11 toggle — forces compact layout
 
 	// Per-session buffers
-	menuBuffer     *strings.Builder          // Menu output buffer
-	sessionBuffers map[int]*strings.Builder   // Per-session shell output buffers
-	activeSession  int                        // NumID of the session currently shown in viewport (0 = menu)
+	menuBuffer     *strings.Builder         // Menu output buffer
+	sessionBuffers map[int]*strings.Builder // Per-session shell output buffers
+	sessionPrompts map[int]string           // Last detected remote prompt per session
+	activeSession  int                      // NumID of the session currently shown in viewport (0 = menu)
 
 	// Transfer state
 	transferActive bool               // True while upload/download is in progress (blocks input)
@@ -122,6 +123,7 @@ func New(executor CommandExecutor, listenerAddr string) App {
 		context:        ContextMenu,
 		menuBuffer:     &strings.Builder{},
 		sessionBuffers: make(map[int]*strings.Builder),
+		sessionPrompts: make(map[int]string),
 		executor:       executor,
 		listenerAddr:   listenerAddr,
 		cwd:            cwd,
@@ -321,9 +323,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusBar.Context = ContextShell
 		a.input.SetContext(ContextShell)
 		a.switchToSession(selectedID)
+		if _, _, platform, ok := a.executor.GetActiveSessionDisplay(); ok && platform == "windows" {
+			if a.getSessionBuffer(selectedID).Len() == 0 {
+				a.executor.WriteToShell("\n")
+			}
+		}
 
-		// Trigger first prompt display
-		a.executor.WriteToShell("\n")
 		return a, func() tea.Msg {
 			return showNotifyMsg{
 				Message: fmt.Sprintf("Attached to shell #%d — Press F12 to detach", selectedID),
@@ -333,6 +338,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ShellOutputMsg:
 		text := sanitizeShellOutput(string(msg.Data))
+		if prompt := extractTrailingShellPrompt(text); prompt != "" {
+			a.sessionPrompts[msg.NumID] = prompt
+		}
 		// Always accumulate in session buffer
 		a.appendToSessionBuffer(msg.NumID, text)
 		// Only update viewport if this session is active
@@ -685,6 +693,18 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 		}
 
 	case ContextShell:
+		if !a.input.InBangMode() {
+			prompt := a.sessionPrompts[a.activeSession]
+			if prompt != "" {
+				buf := a.getSessionBuffer(a.activeSession)
+				updated := applyLocalShellEcho(buf.String(), prompt, cmd)
+				buf.Reset()
+				buf.WriteString(updated)
+				if a.activeSession == a.executor.GetSelectedSessionID() {
+					a.output.SetContent(updated)
+				}
+			}
+		}
 		if err := a.executor.WriteToShell(cmd + "\n"); err != nil {
 			a.output.Append(styleRed.Render("  Write error: "+err.Error()) + "\n\n")
 			a.context = ContextMenu
@@ -696,6 +716,53 @@ func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
 	}
 
 	return a, nil
+}
+
+func extractTrailingShellPrompt(s string) string {
+	trimmed := strings.ReplaceAll(s, "\r\n", "\n")
+	trimmed = strings.ReplaceAll(trimmed, "\r", "")
+	trimmed = strings.TrimRight(trimmed, "\n")
+	if trimmed == "" {
+		return ""
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(last, "PS ") && strings.HasSuffix(last, ">") {
+		return last
+	}
+	if strings.Contains(last, ":\\") && strings.HasSuffix(last, ">") {
+		return last
+	}
+	if strings.HasSuffix(last, "$") || strings.HasSuffix(last, "#") || strings.HasSuffix(last, "%") {
+		return last
+	}
+	return ""
+}
+
+func formatLocalShellEcho(prompt, cmd string) string {
+	if prompt == "" {
+		prompt = "$"
+	}
+	return prompt + " " + cmd + "\n"
+}
+
+func applyLocalShellEcho(content, prompt, cmd string) string {
+	echo := formatLocalShellEcho(prompt, cmd)
+	trimmedNewlines := strings.TrimRight(content, "\n")
+	trimmedLine := strings.TrimRight(trimmedNewlines, " ")
+	if strings.HasSuffix(trimmedLine, prompt) {
+		prefix := trimmedLine[:len(trimmedLine)-len(prompt)]
+		return prefix + prompt + " " + cmd + "\n"
+	}
+	if content == "" || strings.HasSuffix(content, "\n") {
+		return content + echo
+	}
+	return content + "\n" + echo
 }
 
 // sanitizeShellOutput normalizes line endings and strips dangerous terminal
@@ -887,9 +954,23 @@ func (a App) handleRunCmd(cmd string) (tea.Model, tea.Cmd) {
 	}
 
 	moduleName := parts[1]
-	args := parts[2:]
+	args := expandModuleSourceArg(moduleName, parts[2:])
 	a.executor.StartModule(moduleName, args)
 	return a, nil
+}
+
+func expandModuleSourceArg(moduleName string, args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	switch moduleName {
+	case "sh", "bin", "ps1", "dotnet", "py":
+		out := append([]string(nil), args...)
+		out[0] = expandTilde(out[0])
+		return out
+	default:
+		return args
+	}
 }
 
 // handleSpawnCmd launches spawn asynchronously.

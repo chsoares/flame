@@ -48,6 +48,27 @@ All subsequent commands (shell, upload, download, run) operate on the selected s
 
 Closes the connection and removes the session.
 
+## Interactive Shell in the TUI
+
+The Bubble Tea TUI has two contexts:
+
+- `menu` — gummy commands like `list`, `use`, `upload`, `download`, `spawn`, `run`
+- `shell` — interactive shell relay for the selected session
+
+Use `shell` or press `F12` in menu mode to attach. Press `F12` again to detach.
+
+Inside shell context, you can prefix gummy commands with `!`:
+
+```text
+!upload
+!download
+!spawn
+!kill
+!run
+```
+
+This lets you keep shell context while still launching gummy actions.
+
 ## Interactive Shell
 
 ### Linux (PTY Mode)
@@ -68,18 +89,15 @@ Gummy automatically upgrades the shell to a proper PTY:
 
 **Exit:** Press `F12` to return to the gummy menu.
 
-### Windows (Readline Mode)
+### Windows (Line-Buffered Mode)
 
-Windows PowerShell sessions use a readline-based shell:
+Windows shells use the TUI input bar in line-buffered mode:
 
-- Left/right arrows for cursor movement
-- Up/down arrows for command history
-- `Ctrl+A` / `Ctrl+E` — Jump to start/end of line
-- `Ctrl+W` — Delete word backward
-- `Ctrl+K` — Delete to end of line
-- Command history persisted to `~/.gummy/shell_history`
+- Up/down history in the TUI input
+- `Ctrl+C` forwarded to the remote shell
+- `F12` detach back to menu
 
-**Exit:** Press `Ctrl+D` to return to the gummy menu.
+Baseline PowerShell and `cmd` validation for the TUI is tracked separately in `docs/testing/windows-baseline.md`.
 
 Platform is auto-detected from the prompt pattern (`PS C:\` = Windows).
 
@@ -91,7 +109,7 @@ From an existing session, spawn a new reverse shell on a different port:
 󰗣 gummy [1] ❯ spawn
 ```
 
-This sends a platform-appropriate reverse shell payload in the background. The new session appears automatically.
+This sends a platform-appropriate reverse shell payload in the background. The new session appears automatically. Module execution also uses spawned worker sessions internally, but those workers stay hidden from the normal session list and sidebar.
 
 ## SSH Automation
 

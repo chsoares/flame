@@ -1,6 +1,6 @@
 # Modules
 
-Gummy includes a module system for running common CTF tools with a single command. Modules handle downloading, uploading, executing, and cleaning up automatically.
+Gummy includes a worker-session-based module system for running common CTF tools with a single command. When you launch a module, gummy spawns an invisible worker shell, runs the module there, streams output to a local file, and keeps your main session free for shell interaction.
 
 ## Quick Reference
 
@@ -24,7 +24,7 @@ Each module has an execution mode that determines how it runs on the target:
 |--------|------|-------------|
 | In-memory | `memory` | Script loaded and executed entirely in RAM — zero disk artifacts |
 | Disk + cleanup | `disk-cleanup` | Written to disk temporarily, shredded after execution |
-| Disk only | `disk-no-cleanup` | Files persist on disk (intentional, for later use) |
+| Disk only | `disk-no-cleanup` | Reserved for persistent uploads; not used by the current module set |
 
 ## Linux Modules
 
@@ -70,8 +70,18 @@ Post-exploitation script that grabs credentials, SSH keys, browser data, and oth
 ```
 
 **Mode:** Disk + cleanup (binary uploaded, executed, shredded after)
-**Timeout:** 5 minutes by default. Press `Ctrl+D` to stop early.
+**Timeout:** 5 minutes by default.
 **Note:** Uses pspy64. For 32-bit targets, use `run bin` with the pspy32 URL.
+
+### Linux Exploit Suggester — `run linexp`
+
+Linux privilege-escalation suggestion script.
+
+```
+󰗣 gummy [1] ❯ run linexp
+```
+
+**Mode:** In-memory
 
 ## Windows Modules
 
@@ -91,39 +101,17 @@ Windows privilege escalation scanner from [PEASS-ng](https://github.com/peass-ng
 3. `EntryPoint.Invoke()` executes the Main method
 4. Zero files written to disk
 
-### PowerUp — `run powerup`
+### Seatbelt — `run seatbelt`
 
-[PowerUp](https://github.com/PowerShellEmpire/PowerTools/tree/master/PowerUp) — Checks for common Windows privilege escalation vectors.
-
-```
-󰗣 gummy [1] ❯ run powerup
-```
-
-**Mode:** In-memory (PowerShell `IEX DownloadString`)
-**After loading:** PowerUp functions are available in the session. Enter the shell and run:
-
-```powershell
-Invoke-AllChecks
-```
-
-### PowerView — `run powerview`
-
-[PowerView](https://github.com/PowerShellMafia/PowerSploit/tree/master/Recon) — Active Directory enumeration and exploitation toolkit.
+[Seatbelt](https://github.com/GhostPack/Seatbelt) — Windows system-enumeration assembly executed in memory.
 
 ```
-󰗣 gummy [1] ❯ run powerview
+󰗣 gummy [1] ❯ run seatbelt
+󰗣 gummy [1] ❯ run seatbelt -group=all
 ```
 
-**Mode:** In-memory (PowerShell `IEX DownloadString`)
-**After loading:** All PowerView functions are available in the session. Enter the shell and run:
-
-```powershell
-Get-DomainUser
-Get-DomainGroup -Identity "Domain Admins"
-Find-LocalAdminAccess
-Get-DomainComputer -Unconstrained
-Invoke-Kerberoast
-```
+**Mode:** In-memory (.NET `Reflection.Assembly.Load`)
+**Default args:** `-group=all`
 
 ### LaZagne — `run lazagne`
 
@@ -136,21 +124,6 @@ Invoke-Kerberoast
 
 **Mode:** Disk + cleanup (native binary, not .NET — must touch disk)
 **Default args:** `all` (if no args provided)
-
-## Misc Modules
-
-### Privesc — `run privesc`
-
-Bulk upload all privilege escalation scripts to the target. Automatically selects Linux or Windows tools based on detected platform.
-
-```
-󰗣 gummy [1] ❯ run privesc
-```
-
-**Mode:** Disk only (files are intentionally left for manual use)
-
-**Linux tools uploaded:** LinPEAS, LSE, deepce, pspy64
-**Windows tools uploaded:** WinPEAS, PowerUp, LaZagne, SharpUp, PowerView
 
 ### Binary — `run bin`
 
@@ -186,17 +159,23 @@ These modules run arbitrary scripts/assemblies from URLs or binbag:
 
 **Mode:** In-memory (`IEX DownloadString`)
 
-### .NET Assembly — `run net`
+### .NET Assembly — `run dotnet`
 
 ```
-󰗣 gummy [1] ❯ run net SharpUp.exe audit
-󰗣 gummy [1] ❯ run net Rubeus.exe kerberoast
-󰗣 gummy [1] ❯ run net Seatbelt.exe -group=all
+󰗣 gummy [1] ❯ run dotnet SharpUp.exe audit
+󰗣 gummy [1] ❯ run dotnet Rubeus.exe kerberoast
+󰗣 gummy [1] ❯ run dotnet Seatbelt.exe -group=all
 ```
 
 **Mode:** In-memory (`DownloadData` + `Reflection.Assembly.Load`)
 
 Works with any .NET assembly that has a `Main()` entry point: SharpUp, Rubeus, Seatbelt, Certify, SharpHound, SharpDPAPI, Whisker, etc.
+
+## Current Validation Status
+
+- Linux: `peas`, `lse`, `loot`, `linexp`, and `pspy` have been tested in the current worker-session model.
+- Linux: `sh`, `bin`, and `py` still need fresh validation logs.
+- Windows: baseline TUI validation comes before trusting `ps1`, `dotnet`, `winpeas`, `seatbelt`, or `lazagne` in this TUI branch.
 
 ### Python — `run py`
 

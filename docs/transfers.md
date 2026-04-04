@@ -1,6 +1,6 @@
 # File Transfers
 
-Gummy supports uploading and downloading files with progress tracking and integrity verification.
+Gummy supports uploading and downloading files with progress tracking and integrity verification. In the TUI, transfers run asynchronously and progress appears in the status bar so the main output pane stays clean.
 
 ## Upload
 
@@ -67,13 +67,15 @@ The process:
 
 ## Progress & Cancellation
 
-Both upload and download show animated spinners with real-time progress:
+Both upload and download report live progress in the TUI status bar:
 
 ```
-⠹ Uploading linpeas.sh... 45% (128 KB)
+upload linpeas.sh 45% 128 KB
 ```
 
-**Cancel a transfer:** Press `Ctrl+D` during any transfer to abort it cleanly.
+**Cancel a transfer:** Press `Ctrl+C` or `Esc` during the transfer.
+
+While a transfer is active, command submission and shell detach are blocked intentionally.
 
 ## MD5 Verification
 
