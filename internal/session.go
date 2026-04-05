@@ -72,6 +72,7 @@ type SessionInfo struct {
 	RemoteIP    string             // IP da vítima
 	Whoami      string             // user@host da vítima
 	Platform    string             // Plataforma (linux/windows/unknown)
+	ShellFlavor string             // Shell implementation hint (powershell, csharp, etc.)
 	Handler     *Handler           // Shell handler
 	Active      bool               // Se está sendo usada atualmente
 	CreatedAt   time.Time          // Timestamp de criação
@@ -112,6 +113,20 @@ func resolveWorkerPlatform(workerPlatform, parentPlatform string) string {
 
 func shouldUseWorkerForSpawn(platform string) bool {
 	return platform == "windows"
+}
+
+func shouldSendPTYResize(session *SessionInfo) bool {
+	if session == nil || !session.relayActive || session.Handler == nil {
+		return false
+	}
+	return session.Handler.IsPTYUpgraded()
+}
+
+func shouldSendRelayCleanupCtrlC(session *SessionInfo) bool {
+	if session == nil || session.Handler == nil {
+		return false
+	}
+	return session.Handler.IsPTYUpgraded()
 }
 
 // Directory retorna o diretório base da sessão
@@ -1095,18 +1110,20 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 		return nil
 	}
 
-	// Send Ctrl+C to kill any leftover foreground process and drain output
-	session.Conn.Write([]byte("\x03"))
-	time.Sleep(200 * time.Millisecond)
-	drainBuf := make([]byte, 4096)
-	session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-	for {
-		_, err := session.Conn.Read(drainBuf)
-		if err != nil {
-			break
+	if shouldSendRelayCleanupCtrlC(session) {
+		// Send Ctrl+C to kill any leftover foreground process and drain output
+		session.Conn.Write([]byte("\x03"))
+		time.Sleep(200 * time.Millisecond)
+		drainBuf := make([]byte, 4096)
+		session.Conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		for {
+			_, err := session.Conn.Read(drainBuf)
+			if err != nil {
+				break
+			}
 		}
+		session.Conn.SetReadDeadline(time.Time{})
 	}
-	session.Conn.SetReadDeadline(time.Time{})
 
 	handler := session.Handler
 	platform := session.Platform
@@ -1231,7 +1248,7 @@ func (m *Manager) ResizePTY(cols, rows int) {
 	session := m.selectedSession
 	m.mu.RUnlock()
 
-	if session == nil || !session.relayActive {
+	if !shouldSendPTYResize(session) {
 		return
 	}
 
@@ -1376,15 +1393,16 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.mu.Lock()
 	isWorker := m.pendingWorker.CompareAndSwap(true, false)
 	session := &SessionInfo{
-		ID:        id,
-		NumID:     m.nextVisibleSessionID(isWorker),
-		Conn:      conn,
-		RemoteIP:  remoteIP,
-		Whoami:    "detecting...",
-		Platform:  "detecting...",
-		Handler:   handler,
-		Active:    false,
-		CreatedAt: time.Now(),
+		ID:          id,
+		NumID:       m.nextVisibleSessionID(isWorker),
+		Conn:        conn,
+		RemoteIP:    remoteIP,
+		Whoami:      "detecting...",
+		Platform:    "detecting...",
+		ShellFlavor: "unknown",
+		Handler:     handler,
+		Active:      false,
+		CreatedAt:   time.Now(),
 	}
 	// Check if this is a worker session (spawned for module execution)
 	if isWorker {
@@ -1854,6 +1872,11 @@ func (m *Manager) detectSessionInfo(session *SessionInfo) {
 		}
 
 		time.Sleep(150 * time.Millisecond)
+	}
+	if strings.Contains(initialPrompt, "FLAME_CSHARP") {
+		session.ShellFlavor = "csharp"
+		initialPrompt = strings.ReplaceAll(initialPrompt, "FLAME_CSHARP\r\n", "")
+		initialPrompt = strings.ReplaceAll(initialPrompt, "FLAME_CSHARP\n", "")
 	}
 
 	// Detect platform from initial prompt
@@ -3259,6 +3282,15 @@ func (m *Manager) GetActiveSessionDisplay() (ip, whoami, platform string, ok boo
 	}
 	s := m.selectedSession
 	return s.RemoteIP, s.Whoami, s.Platform, true
+}
+
+func (m *Manager) GetSelectedSessionFlavor() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.selectedSession == nil {
+		return "unknown"
+	}
+	return m.selectedSession.ShellFlavor
 }
 
 // captureStdout redirects os.Stdout to capture output from legacy fmt.Println calls.

@@ -74,14 +74,17 @@ func TestExpandModuleSourceArg(t *testing.T) {
 }
 
 func TestShouldLocallyEchoShellCommand(t *testing.T) {
-	if !shouldLocallyEchoShellCommand("windows") {
+	if !shouldLocallyEchoShellCommand("windows", "unknown") {
 		t.Fatal("expected windows shell to use local echo")
 	}
-	if shouldLocallyEchoShellCommand("linux") {
+	if shouldLocallyEchoShellCommand("linux", "unknown") {
 		t.Fatal("expected linux PTY shell to avoid local echo")
 	}
-	if shouldLocallyEchoShellCommand("macos") {
+	if shouldLocallyEchoShellCommand("macos", "unknown") {
 		t.Fatal("expected macos PTY shell to avoid local echo")
+	}
+	if shouldLocallyEchoShellCommand("windows", "csharp") {
+		t.Fatal("expected csharp windows shell to avoid local echo")
 	}
 }
 

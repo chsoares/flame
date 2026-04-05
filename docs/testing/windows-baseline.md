@@ -214,6 +214,8 @@ Validated positives:
 - the generated `shell.exe` can be launched from a Windows PowerShell shell without hanging the parent shell
 - the received C#-based shell executes commands normally
 - long-running commands like `ping` stream incrementally instead of arriving as one buffered block
+- attach no longer produces the initial spurious error seen in earlier iterations
+- command echo is no longer duplicated in the C# shell path
 
 Current caveats:
 
@@ -225,6 +227,10 @@ Conclusion for now:
 
 - the C# payload is a much stronger candidate for Windows worker payloads than the current PowerShell oneliner
 - but it is not polished enough yet to replace the default Windows shell path everywhere
+
+Implementation note:
+
+- the current fix uses a minimal internal shell-flavor marker so the TUI can disable local echo only for the C# shell path while preserving the existing PowerShell oneliner behavior
 
 Remaining Windows baseline work after pause:
 

@@ -33,6 +33,7 @@ type CommandExecutor interface {
 	SessionCount() int
 	GetSessionsForDisplay() string
 	GetActiveSessionDisplay() (ip, whoami, platform string, ok bool)
+	GetSelectedSessionFlavor() string
 	SetSilent(silent bool)
 	SetNotifyFunc(fn func(string))
 	SetNotifyBarFunc(fn func(string, int)) // message, level (0=info, 1=important, 2=error)
@@ -742,7 +743,10 @@ func extractTrailingShellPrompt(s string) string {
 	return ""
 }
 
-func shouldLocallyEchoShellCommand(platform string) bool {
+func shouldLocallyEchoShellCommand(platform, flavor string) bool {
+	if flavor == "csharp" {
+		return false
+	}
 	return platform == "windows"
 }
 
@@ -754,7 +758,7 @@ func shouldLocallyEchoCurrentShell(executor CommandExecutor) bool {
 	if !ok {
 		return false
 	}
-	return shouldLocallyEchoShellCommand(platform)
+	return shouldLocallyEchoShellCommand(platform, executor.GetSelectedSessionFlavor())
 }
 
 func formatLocalShellEcho(prompt, cmd string) string {
@@ -785,6 +789,8 @@ func applyLocalShellEcho(content, prompt, cmd string) string {
 func sanitizeShellOutput(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "FLAME_CSHARP\n", "")
+	s = strings.ReplaceAll(s, "FLAME_CSHARP", "")
 
 	// Strip dangerous CSI sequences (cursor movement, screen clear, scroll regions)
 	// Keep color/style sequences (SGR: ends with 'm')

