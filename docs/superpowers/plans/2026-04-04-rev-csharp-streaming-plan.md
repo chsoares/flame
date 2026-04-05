@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Reintroduce `rev csharp` as a usable Windows payload path, remove the old `rev` IP/port argument behavior, and prepare the C# payload to become the candidate worker payload for better Windows streaming.
+**Goal:** Reintroduce `rev csharp` as a usable Windows payload path, remove the old `rev` IP/port argument behavior, and evaluate whether the C# payload can become the candidate worker payload for better Windows streaming.
 
 **Architecture:** Simplify `rev` so it only uses the current listener address and no longer overloads positional arguments as alternate IP/port. Add a C# reverse shell payload generator that can print source and/or compile an executable, then validate whether that payload is suitable for worker-based Windows module execution.
 
@@ -38,5 +38,5 @@
 - Modify: `docs/current-status.md`
 - Modify: `docs/testing/windows-baseline.md`
 
-- [ ] Record that the C# payload is the candidate next step for fixing buffered Windows module output.
-- [ ] Leave explicit retest steps for trying it as a worker payload after generation is back.
+- [x] Record that the C# payload was tested as a worker candidate.
+- [x] Record that the in-memory worker experiments were reverted after failing to connect reliably.

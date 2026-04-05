@@ -228,6 +228,28 @@ Conclusion for now:
 - the C# payload is a much stronger candidate for Windows worker payloads than the current PowerShell oneliner
 - but it is not polished enough yet to replace the default Windows shell path everywhere
 
+## Windows Worker Payload Experiment Outcome — 2026-04-04
+
+What was tried:
+
+1. In-memory C# worker via `Add-Type` on the target.
+2. Compiled-local C# worker bytes loaded in-memory on the target via `Assembly.Load`.
+
+Observed outcome:
+
+- neither approach produced a stable, connecting worker shell for real module execution on the target
+- `run winpeas`, `run seatbelt`, `run dotnet`, and `run ps1` all failed with `worker shell did not connect` while those experiments were active
+
+Decision:
+
+- both worker-payload experiments were reverted
+- the current stable worker path remains the detached PowerShell payload
+- the revived C# payload remains useful as a manually launched shell for investigating better Windows shell behavior, but it is not the worker implementation right now
+
+Most promising next direction:
+
+- if Windows module streaming is revisited, start from a better PowerShell worker payload design rather than continuing from the reverted C# worker experiments
+
 Implementation note:
 
 - the current fix uses a minimal internal shell-flavor marker so the TUI can disable local echo only for the C# shell path while preserving the existing PowerShell oneliner behavior

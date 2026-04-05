@@ -156,11 +156,11 @@ First housekeeping pass complete:
 ### Immediate: Windows modules and customs
 1. document any remaining runner/payload fixes needed after real tests
 2. keep native Windows executable runner as a separate future problem
-3. decide whether to attack buffered Windows module output now or after payload/rev work
+3. decide whether to attack buffered Windows module output with a better PowerShell payload or accept it as current limitation
 
 ### Then: Payloads / `rev`
 1. improve the PowerShell oneliner only if real usage still shows pain after module work
-2. test the revived `rev csharp` payload as the Windows worker payload candidate for long-running modules
+2. revisit the revived `rev csharp` payload only for direct shell use unless a new worker approach appears
 3. revisit `Ctrl+C` behavior in the C# shell path
 4. reconsider the `rev` UX as a product feature, not just a payload dump
 5. evaluate clipboard-first subcommands like `rev bash`, `rev ps1`, `rev php`
@@ -186,6 +186,7 @@ First housekeeping pass complete:
 - **Two-computer workflow**: handoff context must live in `docs/`
 - **Windows-first rule**: do not refactor Windows module runners again without fresh baseline evidence in `docs/testing/windows-baseline.md`
 - **Windows payload caveat**: current PowerShell payload behaves like command/response, not a true streaming terminal; see `docs/testing/windows-baseline.md`
+- **Worker payload caveat (2026-04-04):** two in-memory C# worker approaches were attempted and reverted; current stable worker path is still the detached PowerShell payload
 - **Linux gap**: `Ctrl+C` still needs explicit validation on Linux shell relay
 - **Roadmap decision (2026-04-04):** modules/custom Windows execution comes before `rev`/payload product polish; payload work is the next major step after modules
 - **Runner scope decision (2026-04-04):** `run elf` is explicitly scoped to Linux/native Unix targets; native Windows `.exe` execution needs a separate design later
