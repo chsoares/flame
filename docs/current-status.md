@@ -160,7 +160,7 @@ First housekeeping pass complete:
 
 ### Then: Payloads / `rev`
 1. improve the PowerShell oneliner only if real usage still shows pain after module work
-2. validate whether the revived `rev csharp` payload can become the better Windows worker payload
+2. refine the revived `rev csharp` payload so it becomes a reliable Windows worker payload
 3. reconsider the `rev` UX as a product feature, not just a payload dump
 4. evaluate clipboard-first subcommands like `rev bash`, `rev ps1`, `rev php`
 5. keep `rev` tied to the active listener/pivot instead of reintroducing custom IP/port args
@@ -191,6 +191,7 @@ First housekeeping pass complete:
 - **Runner scope decision (2026-04-04):** `run elf` is explicitly scoped to Linux/native Unix targets; native Windows `.exe` execution needs a separate design later
 - **Explicit runner guards (2026-04-04):** unsupported combos should fail early with clear errors (`run sh` on Windows, `run ps1`/`run dotnet` on Linux, `run elf` on Windows)
 - **Windows module caveat (2026-04-04):** `run winpeas` and `run seatbelt` work, but their output is still buffered under the current Windows payload path
+- **C# payload status (2026-04-04):** `rev csharp` now builds and gives a usable detached Windows shell with streaming output, but `Ctrl+C` and some prompt/clipboard edge cases still need refinement before using it as the default worker payload
 
 ## File Map
 

