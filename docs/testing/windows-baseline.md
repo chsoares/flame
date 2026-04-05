@@ -470,6 +470,7 @@ Bugs found and fixed during transfer baseline:
 After fixes:
 
 - upload spinner now shows the correct user-facing filename
+- uploads with empty destination paths no longer land on the target as `tmp_*` helper filenames
 - `Ctrl+C` now cancels binbag/HTTP transfers from the TUI as expected
 
 Current transfer status summary:

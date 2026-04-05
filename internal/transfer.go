@@ -158,6 +158,13 @@ func displayTransferName(path string) string {
 	return name
 }
 
+func effectiveUploadRemotePath(localPath, remotePath string) string {
+	if remotePath != "" {
+		return remotePath
+	}
+	return displayTransferName(localPath)
+}
+
 // done prints a final message via stdout (CLI only — TUI uses doneFn callback).
 func (t *Transferer) done(text string) {
 	if t.progressFn == nil {
@@ -177,9 +184,7 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	}
 
 	// If remotePath is empty, use just the filename (will go to remote cwd)
-	if remotePath == "" {
-		remotePath = filepath.Base(localPath)
-	}
+	remotePath = effectiveUploadRemotePath(localPath, remotePath)
 
 	fileSize := len(data)
 
@@ -1095,9 +1100,7 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 	displayName := displayTransferName(localPath)
 
 	// If remotePath is empty, use filename in current directory
-	if remotePath == "" {
-		remotePath = filename
-	}
+	remotePath = effectiveUploadRemotePath(localPath, remotePath)
 
 	// Get HTTP URL (with pivot if configured)
 	url := GlobalRuntimeConfig.GetHTTPURL(filename)
