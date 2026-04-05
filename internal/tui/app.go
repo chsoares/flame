@@ -608,7 +608,7 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case "pgup", "pgdown", "home", "end":
+	case "pgup", "pgdown":
 		var cmd tea.Cmd
 		a.output, cmd = a.output.Update(msg)
 		hideCmd := a.showScrollbar()

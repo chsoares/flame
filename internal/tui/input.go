@@ -223,6 +223,12 @@ func menuPrompt(sessionID int) string {
 }
 
 func (i *Input) Update(msg tea.Msg) (*Input, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if applyLineEdit(&i.textinput, keyMsg.String()) {
+			return i, nil
+		}
+	}
+
 	var cmd tea.Cmd
 	i.textinput, cmd = i.textinput.Update(msg)
 	return i, cmd
