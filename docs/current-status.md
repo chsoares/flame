@@ -154,9 +154,10 @@ First housekeeping pass complete:
 ## What's Next
 
 ### Immediate: Windows modules and customs
-1. document any remaining runner/payload fixes needed after real tests
-2. keep native Windows executable runner as a separate future problem
-3. decide whether to attack buffered Windows module output with a better PowerShell payload or accept it as current limitation
+1. keep the stable detached PowerShell worker path as the fallback baseline
+2. revisit a dedicated Windows streaming worker only with a fresh protocol design and a Windows test target
+3. keep native Windows executable runner as a separate future problem
+4. decide whether to attack buffered Windows module output with a better PowerShell payload or accept it as current limitation
 
 ### Then: Payloads / `rev`
 1. improve the PowerShell oneliner only if real usage still shows pain after module work
@@ -166,11 +167,20 @@ First housekeeping pass complete:
 5. evaluate clipboard-first subcommands like `rev bash`, `rev ps1`, `rev php`
 
 ### Then: Other priorities
-1. per-command help (TUI modal)
-2. upload/download test matrix
-3. keep `cmd` support as low priority unless real usage proves it matters
-4. audit legacy CLI-era input/output paths that may still leak raw stdout/spinner behavior into the TUI
-5. audit hardcoded UI strings/colors/symbols that bypass shared helpers and make UI maintenance harder
+1. review `rev` UX and validate `ssh` on a real workflow before touching help content
+2. implement the terminal help revamp: keep `help` as the compact index and add `help <command>` detail pages with tab completion
+3. stop after terminal help ships, test it, and validate the content before any TUI help work
+4. design and plan the TUI help modal as a separate later phase
+5. upload/download test matrix
+6. keep `cmd` support as low priority unless real usage proves it matters
+7. audit legacy CLI-era input/output paths that may still leak raw stdout/spinner behavior into the TUI
+8. audit hardcoded UI strings/colors/symbols that bypass shared helpers and make UI maintenance harder
+
+### Help UX roadmap
+- terminal help revamp is the next UI/UX phase once `rev` and `ssh` review work is done
+- Phase 1 keeps `help` as a compact index and adds `help <command>` detail pages with tab completion
+- `run` gets overview help plus specific subtopics such as `help run ps1`
+- Phase 2 is a separate future TUI help-modal project and must not start until terminal help is implemented and validated
 
 ## Important Notes for Handoff
 
@@ -187,6 +197,7 @@ First housekeeping pass complete:
 - **Windows-first rule**: do not refactor Windows module runners again without fresh baseline evidence in `docs/testing/windows-baseline.md`
 - **Windows payload caveat**: current PowerShell payload behaves like command/response, not a true streaming terminal; see `docs/testing/windows-baseline.md`
 - **Worker payload caveat (2026-04-04):** two in-memory C# worker approaches were attempted and reverted; current stable worker path is still the detached PowerShell payload
+- **Worker streaming rollback (2026-04-05):** a dedicated Windows streaming worker was attempted, but repeated `spawn timed out` / `worker shell did not connect` failures forced a rollback to the stable detached PowerShell path
 - **Linux gap**: `Ctrl+C` still needs explicit validation on Linux shell relay
 - **Roadmap decision (2026-04-04):** modules/custom Windows execution comes before `rev`/payload product polish; payload work is the next major step after modules
 - **Runner scope decision (2026-04-04):** `run elf` is explicitly scoped to Linux/native Unix targets; native Windows `.exe` execution needs a separate design later

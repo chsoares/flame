@@ -26,16 +26,107 @@ func parseRevArgs(args []string) (mode string, target string, err error) {
 	if len(args) == 0 {
 		return "default", "", nil
 	}
-	if args[0] != "csharp" {
+	switch args[0] {
+	case "bash", "ps1":
+		if len(args) > 1 {
+			return "", "", fmt.Errorf("usage: rev %s", args[0])
+		}
+		return args[0], "", nil
+	case "csharp", "php":
+		if len(args) > 2 {
+			return "", "", fmt.Errorf("usage: rev %s [output file]", args[0])
+		}
+		if len(args) == 2 {
+			return args[0], args[1], nil
+		}
+		return args[0], "", nil
+	default:
 		return "", "", fmt.Errorf("unknown rev mode: %s", args[0])
 	}
-	if len(args) > 2 {
-		return "", "", fmt.Errorf("usage: rev csharp [output.exe]")
+}
+
+type SSHArgs struct {
+	Target   string
+	Password string
+	KeyPath  string
+	Port     int
+}
+
+func parseSSHArgs(args []string) (SSHArgs, error) {
+	if len(args) < 3 {
+		return SSHArgs{}, fmt.Errorf("usage: ssh user@host (-p <password> | -i <key>) [--port <port>]")
 	}
-	if len(args) == 2 {
-		return "csharp", args[1], nil
+
+	parsed := SSHArgs{Target: args[0], Port: 22}
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "-p":
+			i++
+			if i >= len(args) {
+				return SSHArgs{}, fmt.Errorf("missing value for -p")
+			}
+			parsed.Password = args[i]
+		case "-i":
+			i++
+			if i >= len(args) {
+				return SSHArgs{}, fmt.Errorf("missing value for -i")
+			}
+			parsed.KeyPath = args[i]
+		case "--port":
+			i++
+			if i >= len(args) {
+				return SSHArgs{}, fmt.Errorf("missing value for --port")
+			}
+			port, err := strconv.Atoi(args[i])
+			if err != nil || port <= 0 {
+				return SSHArgs{}, fmt.Errorf("invalid SSH port: %s", args[i])
+			}
+			parsed.Port = port
+		default:
+			return SSHArgs{}, fmt.Errorf("unknown ssh flag: %s", args[i])
+		}
 	}
-	return "csharp", "", nil
+
+	if (parsed.Password == "" && parsed.KeyPath == "") || (parsed.Password != "" && parsed.KeyPath != "") {
+		return SSHArgs{}, fmt.Errorf("use exactly one of -p <password> or -i <key>")
+	}
+
+	return parsed, nil
+}
+
+func waitForSessionCount(countFn func() int, initial int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if countFn() > initial {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("ssh timed out waiting for reverse shell")
+}
+
+type revAction struct {
+	Payload         string
+	OutputPath      string
+	CopyToClipboard bool
+	CompileBinary   bool
+}
+
+func resolveRevAction(gen *ReverseShellGenerator, mode, target string) (revAction, error) {
+	payload, err := gen.PayloadForMode(mode)
+	if err != nil {
+		return revAction{}, err
+	}
+
+	action := revAction{Payload: payload, CopyToClipboard: true}
+	if target != "" {
+		action.OutputPath = target
+		action.CopyToClipboard = false
+		if mode == "csharp" {
+			action.CompileBinary = true
+		}
+	}
+	return action, nil
 }
 
 // Manager gerencia múltiplas sessões de reverse shell
@@ -2360,11 +2451,11 @@ func (m *Manager) handleCommand(command string) {
 	case "spawn":
 		m.handleSpawn()
 	case "ssh":
-		if len(parts) < 2 {
-			fmt.Println(ui.CommandHelp("Usage: ssh user@host"))
+		if len(parts) < 4 {
+			fmt.Println(ui.CommandHelp("Usage: ssh user@host (-p <password> | -i <key>) [--port <port>]"))
 			return
 		}
-		m.handleSSH(parts[1])
+		m.handleSSH(parts[1:])
 	case "rev":
 		m.handleRev(parts[1:])
 	case "sessions", "list", "ls":
@@ -2477,7 +2568,7 @@ func (m *Manager) showHelp() {
 
 	// Connect category
 	lines = append(lines, ui.CommandHelp("connect"))
-	lines = append(lines, ui.Command("rev [csharp [file.exe]]       - Generate reverse shell payloads"))
+	lines = append(lines, ui.Command("rev                          - Show default reverse shell payloads"))
 	lines = append(lines, ui.Command("ssh user@host                - Connect via SSH and execute revshell"))
 	lines = append(lines, "")
 
@@ -2841,18 +2932,33 @@ func (m *Manager) handleRev(args []string) {
 		fmt.Println(gen.GenerateBashBase64())
 		fmt.Println(ui.CommandHelp("PowerShell"))
 		fmt.Println(gen.GeneratePowerShell())
-	case "csharp":
-		source := gen.GenerateCSharpSource()
-		if target == "" {
-			fmt.Println(ui.CommandHelp("CSharp"))
-			fmt.Println(source)
+	case "bash", "ps1", "csharp", "php":
+		action, err := resolveRevAction(gen, mode, target)
+		if err != nil {
+			fmt.Println(ui.Error(err.Error()))
 			return
 		}
-		if err := compileCSharpSource(source, target); err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("CSharp compile failed: %v", err)))
+		if action.CopyToClipboard {
+			if err := copyToClipboard(action.Payload); err != nil {
+				fmt.Println(ui.Error(err.Error()))
+				return
+			}
+			fmt.Println(ui.Success(fmt.Sprintf("%s payload copied to clipboard", strings.ToUpper(mode))))
 			return
 		}
-		fmt.Println(ui.Success(fmt.Sprintf("CSharp payload compiled to: %s", target)))
+		if action.CompileBinary {
+			if err := compileCSharpSource(action.Payload, action.OutputPath); err != nil {
+				fmt.Println(ui.Error(fmt.Sprintf("CSharp compile failed: %v", err)))
+				return
+			}
+			fmt.Println(ui.Success(fmt.Sprintf("CSharp payload compiled to: %s", action.OutputPath)))
+			return
+		}
+		if err := os.WriteFile(action.OutputPath, []byte(action.Payload), 0644); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("failed to write payload: %v", err)))
+			return
+		}
+		fmt.Println(ui.Success(fmt.Sprintf("%s payload written to: %s", strings.ToUpper(mode), action.OutputPath)))
 	}
 }
 
@@ -2955,7 +3061,13 @@ func (m *Manager) StartSpawn() {
 }
 
 // handleSSH connects to a remote host via SSH and executes reverse shell payload
-func (m *Manager) handleSSH(target string) {
+func (m *Manager) handleSSH(args []string) {
+	parsed, err := parseSSHArgs(args)
+	if err != nil {
+		fmt.Println(ui.Error(err.Error()))
+		return
+	}
+
 	// Validate that we have IP and port
 	sshIP := GlobalRuntimeConfig.GetPivotIP()
 	if sshIP == "" {
@@ -2969,16 +3081,24 @@ func (m *Manager) handleSSH(target string) {
 
 	// Create SSH connector
 	connector := NewSSHConnector(sshIP, m.listenerPort)
+	spinID := m.startSpinner(fmt.Sprintf("SSH handoff via %s...", parsed.Target))
+	initialCount := m.GetSessionCount()
 
-	// Connect silently (only SSH password prompt will show)
-	err := connector.ConnectInteractive(target)
-	if err != nil {
-		fmt.Println(ui.Error(err.Error()))
-		return
-	}
+	go func() {
+		defer m.stopSpinner(spinID)
 
-	// Success - session should appear in list automatically via SessionOpened()
-	// No need to print anything here, the notification will appear when session connects
+		if err := connector.ConnectBackground(parsed); err != nil {
+			m.notify(ui.Error(err.Error()) + "\n")
+			m.notifyOverlay(err.Error(), 2)
+			return
+		}
+
+		if err := waitForSessionCount(m.GetSessionCount, initialCount, 5*time.Second); err != nil {
+			m.notify(ui.Error(err.Error()) + "\n")
+			m.notifyOverlay(err.Error(), 2)
+			return
+		}
+	}()
 }
 
 // handleShowConfig displays current runtime configuration
