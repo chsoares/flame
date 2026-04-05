@@ -193,6 +193,19 @@ Follow-up ideas to investigate:
 - reintroduce and test `rev csharp` / generated `shell.exe` in the TUI branch
 - check whether the C# payload provides better streaming and/or interrupt behavior than the current PowerShell payload
 
+## `rev csharp` Direction — 2026-04-04
+
+Progress:
+
+- `rev` no longer accepts custom IP/port override args
+- `rev` now uses the active listener/pivot IP and current listener port only
+- `rev csharp` can print a C# reverse shell source payload
+- `rev csharp shell.exe` can compile a local executable when `mcs` is available
+
+Next Windows streaming question:
+
+- validate whether the revived C# payload can become the better worker payload for long-running Windows modules
+
 Remaining Windows baseline work after pause:
 
 - `upload` / `download`

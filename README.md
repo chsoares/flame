@@ -57,7 +57,7 @@ Back in flame:
 | `modules` | List available modules |
 | `run <module> [args]` | Run a module |
 | `spawn` | Spawn new shell from current session |
-| `rev` | Generate reverse shell payloads |
+| `rev` | Generate reverse shell payloads from the active listener, including `rev csharp` |
 | `ssh user@host` | SSH + auto reverse shell |
 | `config` | Show/save configuration |
 | `set <option> <value>` | Change runtime settings |

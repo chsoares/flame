@@ -957,7 +957,7 @@ Use `run bin` module (disk + cleanup):
 ```
 # Connection automation
 ssh user@host                - Connect via SSH + auto revshell
-rev [ip] [port]              - Generate reverse shell payloads
+rev [csharp [file.exe]]      - Generate reverse shell payloads
 spawn                        - Spawn new shell from current session
 
 # Session management

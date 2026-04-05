@@ -160,10 +160,10 @@ First housekeeping pass complete:
 
 ### Then: Payloads / `rev`
 1. improve the PowerShell oneliner only if real usage still shows pain after module work
-2. reimplement and test `rev csharp` / generated `shell.exe` in the TUI branch
+2. validate whether the revived `rev csharp` payload can become the better Windows worker payload
 3. reconsider the `rev` UX as a product feature, not just a payload dump
 4. evaluate clipboard-first subcommands like `rev bash`, `rev ps1`, `rev php`
-5. decide whether custom IP/port arguments still earn their complexity now that pivoting exists
+5. keep `rev` tied to the active listener/pivot instead of reintroducing custom IP/port args
 
 ### Then: Other priorities
 1. per-command help (TUI modal)

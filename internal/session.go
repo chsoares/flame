@@ -22,6 +22,22 @@ import (
 	"golang.org/x/term"
 )
 
+func parseRevArgs(args []string) (mode string, target string, err error) {
+	if len(args) == 0 {
+		return "default", "", nil
+	}
+	if args[0] != "csharp" {
+		return "", "", fmt.Errorf("unknown rev mode: %s", args[0])
+	}
+	if len(args) > 2 {
+		return "", "", fmt.Errorf("usage: rev csharp [output.exe]")
+	}
+	if len(args) == 2 {
+		return "csharp", args[1], nil
+	}
+	return "csharp", "", nil
+}
+
 // Manager gerencia múltiplas sessões de reverse shell
 type Manager struct {
 	sessions             map[string]*SessionInfo         // Mapa de sessões ativas
@@ -2327,23 +2343,7 @@ func (m *Manager) handleCommand(command string) {
 		}
 		m.handleSSH(parts[1])
 	case "rev":
-		// Optional: rev [ip] [port]
-		ip := GlobalRuntimeConfig.GetPivotIP()
-		port := m.listenerPort
-
-		if len(parts) >= 2 {
-			ip = parts[1]
-		}
-		if len(parts) >= 3 {
-			customPort, err := strconv.Atoi(parts[2])
-			if err != nil {
-				fmt.Println(ui.Error(fmt.Sprintf("Invalid port: %s", parts[2])))
-				return
-			}
-			port = customPort
-		}
-
-		m.handleRev(ip, port)
+		m.handleRev(parts[1:])
 	case "sessions", "list", "ls":
 		m.ListSessions()
 	case "use":
@@ -2454,7 +2454,7 @@ func (m *Manager) showHelp() {
 
 	// Connect category
 	lines = append(lines, ui.CommandHelp("connect"))
-	lines = append(lines, ui.Command("rev [ip] [port]              - Generate reverse shell payloads"))
+	lines = append(lines, ui.Command("rev [csharp [file.exe]]       - Generate reverse shell payloads"))
 	lines = append(lines, ui.Command("ssh user@host                - Connect via SSH and execute revshell"))
 	lines = append(lines, "")
 
@@ -2790,28 +2790,47 @@ func (m *Manager) StartDownload(ctx context.Context, remotePath, localPath strin
 	}()
 }
 
-// handleRev generates and displays reverse shell payloads
-func (m *Manager) handleRev(ip string, port int) {
-	// Validate that we have IP and port
+// handleRev generates and displays reverse shell payloads.
+func (m *Manager) handleRev(args []string) {
+	mode, target, err := parseRevArgs(args)
+	if err != nil {
+		fmt.Println(ui.Error(err.Error()))
+		return
+	}
+
+	ip := GlobalRuntimeConfig.GetPivotIP()
+	port := m.listenerPort
 	if ip == "" {
-		fmt.Println(ui.Error("No IP address available. Please specify IP with: rev <ip> <port>"))
+		fmt.Println(ui.Error("No IP address available from listener or pivot config"))
 		return
 	}
 	if port == 0 {
-		fmt.Println(ui.Error("No port available. Please specify port with: rev <ip> <port>"))
+		fmt.Println(ui.Error("No port available from active listener"))
 		return
 	}
 
-	// Create payload generator
 	gen := NewReverseShellGenerator(ip, port)
 
-	// Bash payloads
-	fmt.Println(ui.CommandHelp("Bash"))
-	fmt.Println(gen.GenerateBash())
-	fmt.Println(gen.GenerateBashBase64())
-	// PowerShell payload
-	fmt.Println(ui.CommandHelp("PowerShell"))
-	fmt.Println(gen.GeneratePowerShell())
+	switch mode {
+	case "default":
+		fmt.Println(ui.CommandHelp("Bash"))
+		fmt.Println(gen.GenerateBash())
+		fmt.Println(gen.GenerateBashBase64())
+		fmt.Println(ui.CommandHelp("PowerShell"))
+		fmt.Println(gen.GeneratePowerShell())
+	case "csharp":
+		source := gen.GenerateCSharpSource()
+		if target == "" {
+			fmt.Println(ui.CommandHelp("CSharp"))
+			fmt.Println(source)
+			return
+		}
+		if err := compileCSharpSource(source, target); err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("CSharp compile failed: %v", err)))
+			return
+		}
+		fmt.Println(ui.Success(fmt.Sprintf("CSharp payload compiled to: %s", target)))
+	}
 }
 
 // handleSpawn spawns a new reverse shell from the currently selected session (CLI mode)
