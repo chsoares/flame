@@ -178,7 +178,7 @@ First housekeeping pass complete:
 8. audit hardcoded UI strings/colors/symbols that bypass shared helpers and make UI maintenance harder
 
 ### Help UX roadmap
-- terminal help revamp is the next UI/UX phase once `rev` and `ssh` review work is done
+- Terminal help revamp is the next UI/UX phase once `rev` and `ssh` review work is done
 - Phase 1 keeps `help` as a compact index and adds `help <command>` detail pages with tab completion
 - `run` gets overview help plus specific subtopics such as `help run ps1`
 - Phase 2 is a separate future TUI help-modal project and must not start until terminal help is implemented and validated
