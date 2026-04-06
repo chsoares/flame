@@ -98,6 +98,37 @@ func (r *ModuleRegistry) ListByCategory() map[string][]Module {
 	return categories
 }
 
+// RunModuleCompletionNames returns module names plus accepted aliases for completion.
+func RunModuleCompletionNames() []string {
+	registry := GetModuleRegistry()
+	seen := make(map[string]struct{})
+	names := make([]string, 0)
+	for _, mod := range registry.List() {
+		name := mod.Name()
+		if _, ok := seen[name]; !ok {
+			names = append(names, name)
+			seen[name] = struct{}{}
+		}
+		if name == "sh" {
+			if _, ok := seen["bash"]; !ok {
+				names = append(names, "bash")
+				seen["bash"] = struct{}{}
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func normalizeRunModuleName(name string) string {
+	switch name {
+	case "bash":
+		return "sh"
+	default:
+		return name
+	}
+}
+
 // ============================================================================
 // Module URLs
 // ============================================================================
