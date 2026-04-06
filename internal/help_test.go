@@ -17,6 +17,29 @@ func TestLookupHelpTopicFindsPrimaryCommand(t *testing.T) {
 	}
 }
 
+func TestHelpTopicsForModalIncludesAllHelpEntries(t *testing.T) {
+	topics := HelpTopicsForModal()
+	for _, want := range []string{"rev", "ssh", "sessions", "use", "kill", "shell", "upload", "download", "spawn", "modules", "run", "run peas", "run lse", "run loot", "run pspy", "run linexp", "run sh", "run ps1", "run dotnet", "run elf", "run py", "run winpeas", "run seatbelt", "binbag", "pivot", "config", "clear", "exit"} {
+		found := false
+		for _, topic := range topics {
+			if topic == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected %q in modal topics, got %v", want, topics)
+		}
+	}
+	for _, bad := range []string{"list", "ls", "quit", "q"} {
+		for _, topic := range topics {
+			if topic == bad {
+				t.Fatalf("did not expect alias or nested topic %q in modal topics, got %v", bad, topics)
+			}
+		}
+	}
+}
+
 func TestLookupHelpTopicResolvesAlias(t *testing.T) {
 	entry, ok := LookupHelpTopic([]string{"list"})
 	if !ok {

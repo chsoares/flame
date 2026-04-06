@@ -93,6 +93,7 @@ type App struct {
 	quitPending   bool
 	quitPendingID int
 	dialog        *Dialog // Modal overlay (nil = no dialog)
+	help          *helpModal
 
 	// PTY resize debounce
 	resizeID int // Incremented on each resize to invalidate stale debounce timers
@@ -162,6 +163,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Modal dialog intercepts all keys
 		if a.dialog != nil {
 			return a.updateDialog(msg)
+		}
+		if a.help != nil {
+			return a.updateHelp(msg)
 		}
 		if a.splash {
 			if msg.String() == "enter" {
@@ -363,6 +367,30 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+func (a App) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "escape", "f1":
+		a.help = nil
+		return a, nil
+	case "up", "k":
+		a.help.MoveUp()
+		return a, nil
+	case "down", "j":
+		a.help.MoveDown()
+		return a, nil
+	case "backspace":
+		a.help.BackspaceFilter()
+		return a, nil
+	case "enter":
+		return a, nil
+	}
+	if len(msg.Runes) == 1 && msg.Runes[0] >= 32 {
+		a.help.SetFilter(a.help.input + string(msg.Runes))
+		return a, nil
+	}
+	return a, nil
+}
+
 // handleMouse routes mouse events to the appropriate component.
 func (a App) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	ox, oy := a.layout.Output.X, a.layout.Output.Y
@@ -556,10 +584,18 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.executeInput(cmd)
 
 	case "up":
+		if a.help != nil {
+			a.help.MoveUp()
+			return a, nil
+		}
 		a.input.HistoryUp()
 		return a, nil
 
 	case "down":
+		if a.help != nil {
+			a.help.MoveDown()
+			return a, nil
+		}
 		a.input.HistoryDown()
 		return a, nil
 
@@ -580,6 +616,15 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.output.SetSize(a.layout.Output.W, a.layout.Output.H)
 		a.input.SetWidth(a.layout.Input.W)
 		a.statusBar.Width = a.width
+		return a, nil
+
+	case "f1":
+		if a.help == nil {
+			modal := newHelpModal()
+			a.help = &modal
+		} else {
+			a.help = nil
+		}
 		return a, nil
 
 	case "f12":
@@ -1212,6 +1257,9 @@ func (a App) View() string {
 			statusView,
 		)
 		result = a.padViewLines(result)
+		if a.help != nil {
+			return a.help.View(a.width, a.height, result)
+		}
 		if a.dialog != nil {
 			return a.dialog.View(a.width, a.height, result)
 		}
@@ -1280,6 +1328,9 @@ func (a App) View() string {
 		statusView,
 	)
 	result = a.padViewLines(result)
+	if a.help != nil {
+		return a.help.View(a.width, a.height, result)
+	}
 	if a.dialog != nil {
 		return a.dialog.View(a.width, a.height, result)
 	}
