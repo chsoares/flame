@@ -1,4 +1,4 @@
-# TUI Current Status — 2026-04-05
+# TUI Current Status — 2026-04-06
 
 ## Docs Map
 
@@ -115,6 +115,13 @@ The module system spawns an invisible "worker session" to execute modules. This 
 - `RunPythonInMemory` — Linux path now uses blocking execution, but Windows still needs a dedicated implementation/refactor
 - `RunPowerShellInMemory` and `RunDotNetInMemory` are now in the blocking worker-session model and validated at the custom-runner level
 
+### Terminal help revamp
+- [x] compact `help` index with grouped categories
+- [x] `help <command>` detail pages with shared help registry
+- [x] tab completion for help topics, including nested `run` topics
+- [x] `binbag` and `pivot` grouped under `network` in the general help
+- [ ] TUI help modal/panel remains a separate follow-up phase
+
 ## Dead Code Audit
 
 First housekeeping pass complete:
@@ -169,19 +176,18 @@ First housekeeping pass complete:
 
 ### Then: Other priorities
 1. review `rev` UX and validate `ssh` on a real workflow before touching help content
-2. implement the terminal help revamp: keep `help` as the compact index and add `help <command>` detail pages with tab completion
-3. stop after terminal help ships, test it, and validate the content before any TUI help work
-4. design and plan the TUI help modal as a separate later phase
+2. keep the terminal help revamp documented as complete and validated
+3. design and plan the TUI help modal/panel as a separate later phase
 5. upload/download test matrix
 6. keep `cmd` support as low priority unless real usage proves it matters
 7. audit legacy CLI-era input/output paths that may still leak raw stdout/spinner behavior into the TUI
 8. audit hardcoded UI strings/colors/symbols that bypass shared helpers and make UI maintenance harder
 
 ### Help UX roadmap
-- terminal help revamp is the next UI/UX phase once `rev` and `ssh` review work is done
-- Phase 1 keeps `help` as a compact index and adds `help <command>` detail pages with tab completion
-- `run` gets overview help plus specific subtopics such as `help run ps1`
-- Phase 2 is a separate future TUI help-modal project and must not start until terminal help is implemented and validated
+- terminal help revamp is complete and validated
+- `help` now stays compact and `help <command>` opens topic detail pages with tab completion
+- `run` includes overview help plus specific subtopics such as `help run ps1`
+- Phase 2 is a separate future TUI help-modal/panel project and should start only after the terminal help behavior is carried into the TUI
 
 ## Important Notes for Handoff
 

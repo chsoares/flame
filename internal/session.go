@@ -27,9 +27,12 @@ func parseRevArgs(args []string) (mode string, target string, err error) {
 		return "default", "", nil
 	}
 	switch args[0] {
-	case "bash", "ps1":
+	case "bash", "sh", "ps1":
 		if len(args) > 1 {
 			return "", "", fmt.Errorf("usage: rev %s", args[0])
+		}
+		if args[0] == "sh" {
+			return "bash", "", nil
 		}
 		return args[0], "", nil
 	case "csharp", "php":
@@ -877,6 +880,14 @@ func (c *FlameCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 	currentArg := c.getCurrentArg(trimmed)
 
 	switch cmd {
+	case "help":
+		if argCount >= 1 {
+			prefix := strings.TrimSpace(strings.Join(parts[1:], " "))
+			if strings.HasSuffix(trimmed, " ") {
+				prefix = ""
+			}
+			return c.completeFromList(prefix, HelpTopicsForCompletion())
+		}
 	case "upload":
 		if argCount == 1 {
 			// First arg: complete local paths + binbag files
@@ -933,13 +944,7 @@ func (c *FlameCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 		}
 	case "run":
 		if argCount == 1 {
-			// Complete module names
-			registry := GetModuleRegistry()
-			var names []string
-			for _, mod := range registry.List() {
-				names = append(names, mod.Name())
-			}
-			return c.completeFromList(currentArg, names)
+			return c.completeFromList(currentArg, RunModuleCompletionNames())
 		} else if argCount == 2 {
 			// For custom modules (sh, elf, ps1, dotnet, py), complete local paths + binbag files
 			if len(parts) >= 2 {
@@ -1796,6 +1801,7 @@ func (m *Manager) handleRunModule(moduleName string, args []string) {
 
 	// Get module from registry
 	registry := GetModuleRegistry()
+	moduleName = normalizeRunModuleName(moduleName)
 	module, exists := registry.Get(moduleName)
 	if !exists {
 		fmt.Println(ui.Error(fmt.Sprintf("Unknown module: %s", moduleName)))
@@ -2472,7 +2478,16 @@ func (m *Manager) handleCommand(command string) {
 
 	switch parts[0] {
 	case "help", "h":
-		m.showHelp()
+		if len(parts) == 1 {
+			m.showHelp()
+			return
+		}
+		rendered, ok := RenderHelpTopic(parts[1:])
+		if !ok {
+			fmt.Println(ui.Warning(fmt.Sprintf("Unknown help topic: %s", strings.Join(parts[1:], " "))))
+			return
+		}
+		fmt.Println(rendered)
 	case "spawn":
 		m.handleSpawn()
 	case "ssh":
@@ -2588,59 +2603,7 @@ func (m *Manager) showMenu() {
 
 // showHelp mostra ajuda dos comandos
 func (m *Manager) showHelp() {
-	// Collect all help lines with categories
-	var lines []string
-
-	// Connect category
-	lines = append(lines, ui.CommandHelp("connect"))
-	lines = append(lines, ui.Command("rev                          - Show default reverse shell payloads"))
-	lines = append(lines, ui.Command("ssh user@host                - Connect via SSH and execute revshell"))
-	lines = append(lines, "")
-
-	// Handler category
-	lines = append(lines, ui.CommandHelp("handler"))
-	lines = append(lines, ui.Command("sessions, list               - List active sessions"))
-	lines = append(lines, ui.Command("use <id>                     - Select session with given ID"))
-	lines = append(lines, ui.Command("kill <id>                    - Kill session with given ID"))
-	lines = append(lines, "")
-
-	// Session category
-	lines = append(lines, ui.CommandHelp("session"))
-	lines = append(lines, ui.Command("shell                        - Enter interactive shell"))
-	lines = append(lines, ui.Command("upload <local> [remote]      - Upload file to remote system"))
-	lines = append(lines, ui.Command("download <remote> [local]    - Download file from remote system"))
-	lines = append(lines, ui.Command("spawn                        - Spawn new shell from active session"))
-	lines = append(lines, "")
-
-	// Modules category
-	lines = append(lines, ui.CommandHelp("modules"))
-	lines = append(lines, ui.Command("modules                      - List available modules"))
-	lines = append(lines, ui.Command("run <module> [args]          - Run a module (e.g., run peas, run lse, run elf)"))
-	lines = append(lines, "")
-
-	// Binbag category
-	lines = append(lines, ui.CommandHelp("binbag"))
-	lines = append(lines, ui.Command("binbag ls                    - List binbag files"))
-	lines = append(lines, ui.Command("binbag on/off                - Enable/disable binbag HTTP server"))
-	lines = append(lines, ui.Command("binbag path <dir>            - Set binbag directory"))
-	lines = append(lines, ui.Command("binbag port <N>              - Set HTTP server port"))
-	lines = append(lines, "")
-
-	// Pivot category
-	lines = append(lines, ui.CommandHelp("pivot"))
-	lines = append(lines, ui.Command("pivot <ip>                   - Route all URLs/payloads through pivot IP"))
-	lines = append(lines, ui.Command("pivot off                    - Disable pivot"))
-	lines = append(lines, "")
-
-	// Program category
-	lines = append(lines, ui.CommandHelp("program"))
-	lines = append(lines, ui.Command("config                       - Show current configuration"))
-	lines = append(lines, ui.Command("help                         - Show this help"))
-	lines = append(lines, ui.Command("clear                        - Clear screen"))
-	lines = append(lines, ui.Command("exit, quit                   - Exit Flame"))
-
-	// Render everything inside a box
-	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Available Commands", ui.SymbolGem), lines))
+	fmt.Println(RenderGeneralHelp())
 }
 
 // GetSessionCount retorna o número de sessões ativas (exclui workers)

@@ -104,6 +104,11 @@ func HelpInfo(text string) string {
 	return fmt.Sprintf("%s%s %s%s", ColorBlue, SymbolCommand, text, ColorReset)
 }
 
+// HelpFooter renders subdued help footer text without a symbol.
+func HelpFooter(text string) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(text)
+}
+
 // TableHeader for table column headers (no symbol, just colored text)
 func TableHeader(text string) string {
 	return fmt.Sprintf("%s%s%s", ColorBlue, text, ColorReset)
