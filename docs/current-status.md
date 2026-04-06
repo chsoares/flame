@@ -1,4 +1,4 @@
-# TUI Current Status — 2026-04-04
+# TUI Current Status — 2026-04-05
 
 ## Docs Map
 
@@ -16,6 +16,7 @@
 - F11 sidebar toggle, F12 attach/detach toggle
 - Per-session output buffers and command history
 - Shell relay with PTY upgrade, SIGWINCH resize
+- SSH first attach keeps PTY upgrade and suppresses probe noise
 - Mouse text selection, clipboard, scrollbar, notification bar, spinner
 - Quit confirmation, ANSI-aware rendering
 - Persistent menu history, session auto-select
