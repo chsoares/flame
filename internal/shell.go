@@ -24,6 +24,7 @@ type Handler struct {
 	originalTerm *term.State  // Estado original do terminal para restaurar
 	onClose      func(string) // Callback quando conexão fechar
 	platform     string       // Platform detected ("windows", "linux", "unknown")
+	shellFlavor  string       // Shell flavor hint (ssh, csharp, etc.)
 	ptyUpgrader  *PTYUpgrader // PTY upgrader (for resize handler cleanup)
 	logWriter    *os.File     // Optional log file for session I/O
 	viewportCols int          // Override PTY cols for TUI mode (0 = auto)
@@ -61,6 +62,11 @@ func (h *Handler) IsPTYUpgraded() bool {
 // SetPlatform define a plataforma detectada (chamado antes de Start())
 func (h *Handler) SetPlatform(platform string) {
 	h.platform = platform
+}
+
+// SetShellFlavor defines the shell flavor hint.
+func (h *Handler) SetShellFlavor(flavor string) {
+	h.shellFlavor = flavor
 }
 
 // SetLogWriter sets the log file for session I/O logging
@@ -103,10 +109,10 @@ func (h *Handler) Start() error {
 	// Remove timeout após conectar
 	h.conn.SetReadDeadline(time.Time{})
 
-	// Tenta upgrade PTY apenas se não for Windows
+	// Tenta upgrade PTY apenas quando permitido pela plataforma/flavor.
 	// Se bem-sucedido, ativa raw mode (como o Penelope faz)
 	ptySuccess := false
-	if h.platform != "windows" {
+	if shouldAttemptPTYUpgrade(h.platform, h.shellFlavor) {
 		ptySuccess = h.AttemptPTYUpgrade()
 	}
 
@@ -364,6 +370,10 @@ func (h *Handler) AttemptPTYUpgrade() bool {
 	}
 	// Falhou ou não foi possível fazer upgrade
 	return false
+}
+
+func shouldAttemptPTYUpgrade(platform, flavor string) bool {
+	return platform != "windows" && flavor != "ssh"
 }
 
 // drainSetupOutput drena output dos comandos de setup do PTY

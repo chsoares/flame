@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chsoares/flame/internal/ui"
 )
 
 func TestBuildSSHCommandPasswordMode(t *testing.T) {
@@ -50,5 +52,12 @@ func TestWaitForNewSessionTimesOutWhenCountDoesNotChange(t *testing.T) {
 	err := waitForSessionCount(func() int { return 1 }, 1, 50*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error")
+	}
+}
+
+func TestSSHErrorMessageDoesNotAddTrailingNewline(t *testing.T) {
+	errMsg := ui.Error("ssh timed out waiting for reverse shell")
+	if strings.HasSuffix(errMsg, "\n") {
+		t.Fatalf("expected no trailing newline, got %q", errMsg)
 	}
 }

@@ -160,6 +160,7 @@ type Manager struct {
 	sessionDisconnFunc   func(int, string)               // Callback for session disconnect (numID, remoteIP)
 	relaySuppressNano    atomic.Int64                    // UnixNano of last stty resize (atomic for goroutine safety)
 	pendingWorker        atomic.Bool                     // Next AddSession will be a hidden worker
+	pendingSSH           atomic.Bool                     // Next AddSession will be an SSH session
 	listenerIP           string                          // IP do listener para geração de payloads
 	listenerPort         int                             // Porta do listener para geração de payloads
 }
@@ -1234,6 +1235,9 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 		if cols > 0 && rows > 0 {
 			handler.SetViewportSize(cols, rows)
 		}
+		if session.ShellFlavor == "ssh" {
+			m.relaySuppressNano.Store(time.Now().UnixNano())
+		}
 		spinID := m.startSpinner("Upgrading to PTY...")
 		handler.AttemptPTYUpgrade()
 		m.stopSpinner(spinID)
@@ -1397,6 +1401,9 @@ func isSttyEcho(data []byte) bool {
 		if clean == "" {
 			continue
 		}
+		if clean == "PTY_TEST_OK" {
+			continue
+		}
 		// Line contains any stty command — definitely echo
 		if strings.Contains(clean, "stty ") {
 			continue
@@ -1492,6 +1499,7 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	// Lock only for map mutation
 	m.mu.Lock()
 	isWorker := m.pendingWorker.CompareAndSwap(true, false)
+	isSSH := m.pendingSSH.CompareAndSwap(true, false)
 	session := &SessionInfo{
 		ID:          id,
 		NumID:       m.nextVisibleSessionID(isWorker),
@@ -1507,6 +1515,10 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	// Check if this is a worker session (spawned for module execution)
 	if isWorker {
 		session.isWorker = true
+	}
+	if isSSH {
+		session.ShellFlavor = "ssh"
+		handler.SetShellFlavor("ssh")
 	}
 	m.sessions[id] = session
 	m.mu.Unlock()
@@ -1544,6 +1556,10 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 			m.selectedSession = session
 		}
 		m.mu.Unlock()
+	}
+
+	if session.ShellFlavor != "unknown" {
+		handler.SetShellFlavor(session.ShellFlavor)
 	}
 
 	// Start session health monitoring
@@ -3076,6 +3092,7 @@ func (m *Manager) handleSSH(args []string) {
 		fmt.Println(ui.Error(err.Error()))
 		return
 	}
+	m.pendingSSH.Store(true)
 
 	// Validate that we have IP and port
 	sshIP := GlobalRuntimeConfig.GetPivotIP()
@@ -3094,19 +3111,20 @@ func (m *Manager) handleSSH(args []string) {
 	initialCount := m.GetSessionCount()
 
 	go func() {
-		defer m.stopSpinner(spinID)
-
 		if err := connector.ConnectBackground(parsed); err != nil {
+			m.stopSpinner(spinID)
 			m.notify(ui.Error(err.Error()) + "\n")
 			m.notifyOverlay(err.Error(), 2)
 			return
 		}
 
 		if err := waitForSessionCount(m.GetSessionCount, initialCount, 10*time.Second); err != nil {
+			m.stopSpinner(spinID)
 			m.notify(ui.Error(err.Error()) + "\n")
 			m.notifyOverlay(err.Error(), 2)
 			return
 		}
+		m.stopSpinner(spinID)
 	}()
 }
 
