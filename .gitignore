@@ -3,6 +3,7 @@ gummy
 
 # Session directories
 .gummy/
+.worktrees/
 
 # Temporary files
 *.swp

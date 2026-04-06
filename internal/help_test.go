@@ -83,6 +83,9 @@ func TestRenderGeneralHelpIncludesDetailHint(t *testing.T) {
 	if !strings.Contains(rendered, "Type 'help <command>' for details") {
 		t.Fatalf("expected detail hint in general help, got %q", rendered)
 	}
+	if strings.Contains(rendered, "┌") || strings.Contains(rendered, "┐") || strings.Contains(rendered, "└") || strings.Contains(rendered, "┘") {
+		t.Fatalf("expected general help without box borders, got %q", rendered)
+	}
 }
 
 func TestHelpFooterIsSymbolFree(t *testing.T) {
@@ -128,6 +131,38 @@ func TestRenderHelpTopicKeepsSimpleCommandsCompact(t *testing.T) {
 	}
 	if strings.Contains(rendered, "examples") {
 		t.Fatalf("did not expect forced examples section for compact help, got %q", rendered)
+	}
+	if strings.Contains(rendered, "┌") || strings.Contains(rendered, "┐") || strings.Contains(rendered, "└") || strings.Contains(rendered, "┘") {
+		t.Fatalf("expected compact help without box borders, got %q", rendered)
+	}
+}
+
+func TestExecuteCommandReportsBoxFreeHelpOutput(t *testing.T) {
+	m := NewManager()
+	got := m.ExecuteCommand("help use")
+	if strings.Contains(got, "┌") || strings.Contains(got, "┐") || strings.Contains(got, "└") || strings.Contains(got, "┘") {
+		t.Fatalf("expected help command output without box borders, got %q", got)
+	}
+}
+
+func TestExecuteCommandReportsBoxFreeListOutput(t *testing.T) {
+	m := NewManager()
+	got := m.ExecuteCommand("sessions")
+	if strings.Contains(got, "┌") || strings.Contains(got, "┐") || strings.Contains(got, "└") || strings.Contains(got, "┘") {
+		t.Fatalf("expected sessions output without box borders, got %q", got)
+	}
+}
+
+func TestExecuteCommandReportsBoxFreeModulesAndConfigOutput(t *testing.T) {
+	m := NewManager()
+	prev := GlobalRuntimeConfig
+	defer func() { GlobalRuntimeConfig = prev }()
+	GlobalRuntimeConfig = &RuntimeConfig{}
+	for _, cmd := range []string{"modules", "config"} {
+		got := m.ExecuteCommand(cmd)
+		if strings.Contains(got, "┌") || strings.Contains(got, "┐") || strings.Contains(got, "└") || strings.Contains(got, "┘") {
+			t.Fatalf("expected %s output without box borders, got %q", cmd, got)
+		}
 	}
 }
 

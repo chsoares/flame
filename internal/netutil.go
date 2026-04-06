@@ -3,6 +3,7 @@ package internal
 import (
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/chsoares/flame/internal/ui"
 )
@@ -103,5 +104,5 @@ func FormatInterfaceList() string {
 		lines = append(lines, ui.Command(fmt.Sprintf("  %s", iface)))
 	}
 
-	return ui.BoxWithTitlePadded(fmt.Sprintf("%s Available Interfaces", ui.SymbolGem), lines, 8)
+	return strings.Join(lines, "\n")
 }

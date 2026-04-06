@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // DialogAction identifies what the dialog is confirming.
@@ -32,35 +31,17 @@ func (d *Dialog) Toggle() {
 
 // View renders the dialog centered on a dark background.
 func (d *Dialog) View(termW, termH int, base string) string {
-	// --- Dialog width: generous like Crush ---
-	dialogW := 52
-	if dialogW > termW-4 {
-		dialogW = termW - 4
-	}
-	innerW := dialogW - 6 // 2 border + 4 padding (2 each side)
-	contentW := innerW - 4
-	if contentW < 1 {
-		contentW = 1
-	}
+	const contentWidth = 42
+
 	centerRow := func(s string) string {
 		w := lipgloss.Width(s)
-		if w >= contentW {
+		if w >= contentWidth {
 			return s
 		}
-		padL := (contentW - w) / 2
-		padR := contentW - w - padL
+		padL := (contentWidth - w) / 2
+		padR := contentWidth - w - padL
 		return strings.Repeat(" ", padL) + s + strings.Repeat(" ", padR)
 	}
-
-	shellName := "quit"
-	if d.Action == DialogKill {
-		shellName = "kill"
-	}
-	headerW := contentW - lipgloss.Width(shellName) - 1
-	if headerW < 1 {
-		headerW = 1
-	}
-	headerRow := styleMagentaBold.Render(shellName) + " " + hatching(headerW)
 
 	// --- Buttons: "Yep!" and "Nope" with underlined Y/N ---
 	btnW := 14
@@ -109,98 +90,27 @@ func (d *Dialog) View(termW, termH int, base string) string {
 	}
 	hintRow := hint("Tab", "toggle") + dot + hint("Enter", "confirm") + dot + hint("Esc", "cancel")
 
-	// --- Build content ---
-	var content []string
-	content = append(content, headerRow)
-	content = append(content, "")
-	content = append(content, centerRow(styleBase.Render(d.Title)))
+	body := []string{"", centerRow(styleBase.Render(d.Title))}
 	if d.SubMessage != "" {
-		content = append(content, centerRow(styleMuted.Render(d.SubMessage)))
+		body = append(body, centerRow(styleMuted.Render(d.SubMessage)))
 	}
-	content = append(content, "")
-	content = append(content, centerRow(buttonRow))
-	content = append(content, "")
-	content = append(content, centerRow(hintRow))
-	content = append(content, "")
+	body = append(body, "", centerRow(buttonRow), "", centerRow(hintRow))
 
-	inner := strings.Join(content, "\n")
-
-	// --- Box with rounded cyan border ---
-	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorMagenta).
-		Padding(0, 2).
-		Width(innerW)
-
-	box := boxStyle.Render(inner)
-
-	return overlayCenteredBox(base, box, termW, termH)
+	return RenderModalShell(base, termW, termH, ModalShell{
+		Title:     shellNameForDialog(d.Action),
+		Width:     52,
+		MaxHeight: 9,
+		Body:      body,
+		Footer:    "",
+		Align:     BodyAlignCenter,
+	})
 }
 
-func overlayCenteredBox(base, box string, termW, termH int) string {
-	if termW <= 0 || termH <= 0 {
-		return base
+func shellNameForDialog(action DialogAction) string {
+	if action == DialogKill {
+		return "kill"
 	}
-
-	lines := strings.Split(base, "\n")
-	if len(lines) < termH {
-		for len(lines) < termH {
-			lines = append(lines, strings.Repeat(" ", termW))
-		}
-	} else if len(lines) > termH {
-		lines = lines[:termH]
-	}
-	for i, line := range lines {
-		w := lipgloss.Width(line)
-		if w < termW {
-			lines[i] = line + strings.Repeat(" ", termW-w)
-		} else if w > termW {
-			lines[i] = ansi.Truncate(line, termW, "")
-		}
-	}
-
-	boxLines := strings.Split(box, "\n")
-	boxH := len(boxLines)
-	boxW := 0
-	for _, line := range boxLines {
-		if w := lipgloss.Width(line); w > boxW {
-			boxW = w
-		}
-	}
-	if boxW <= 0 || boxH <= 0 {
-		return strings.Join(lines, "\n")
-	}
-
-	x := (termW - boxW) / 2
-	if x < 0 {
-		x = 0
-	}
-	y := (termH - boxH) / 2
-	if y < 0 {
-		y = 0
-	}
-
-	for i, boxLine := range boxLines {
-		row := y + i
-		if row < 0 || row >= len(lines) {
-			continue
-		}
-
-		line := lines[row]
-		if lipgloss.Width(line) < termW {
-			line += strings.Repeat(" ", termW-lipgloss.Width(line))
-		}
-
-		left := ansi.Cut(line, 0, x)
-		right := ansi.Cut(line, x+boxW, termW)
-		placed := boxLine
-		if bw := lipgloss.Width(placed); bw > boxW {
-			placed = ansi.Cut(placed, 0, boxW)
-		}
-		lines[row] = left + placed + right
-	}
-
-	return strings.Join(lines, "\n")
+	return "quit"
 }
 
 // confirmQuitDialog builds the dialog for quit with active sessions.

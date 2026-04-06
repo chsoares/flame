@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 
@@ -140,7 +139,7 @@ func RenderGeneralHelp() string {
 		"",
 		ui.HelpFooter("Type 'help <command>' for details"),
 	}
-	return ui.BoxWithTitle(fmt.Sprintf("%s Available Commands", ui.SymbolGem), lines)
+	return strings.Join(lines, "\n")
 }
 
 func RenderHelpTopic(parts []string) (string, bool) {
@@ -171,5 +170,5 @@ func RenderHelpTopic(parts []string) (string, bool) {
 			lines = append(lines, ui.Command(example))
 		}
 	}
-	return ui.BoxWithTitle(entry.Topic, lines), true
+	return strings.Join(lines, "\n"), true
 }

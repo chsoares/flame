@@ -1657,8 +1657,7 @@ func (m *Manager) ListSessions() {
 		}
 	}
 
-	// Render everything inside a box
-	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Active Sessions", ui.SymbolGem), lines))
+	fmt.Println(strings.Join(lines, "\n"))
 }
 
 // UseSession seleciona uma sessão específica (não entra na shell)
@@ -1788,7 +1787,7 @@ func (m *Manager) handleModulesList() {
 	// Add legend at the bottom
 	lines = append(lines, ui.ExecutionModeLegend())
 
-	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Available Modules", ui.SymbolGem), lines))
+	fmt.Println(strings.Join(lines, "\n"))
 }
 
 // handleRunModule executa um módulo
@@ -3117,7 +3116,7 @@ func (m *Manager) handleShowConfig() {
 		lines = append(lines, ui.Command("disabled"))
 	}
 
-	fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Configuration", ui.SymbolGem), lines))
+	fmt.Println(strings.Join(lines, "\n"))
 }
 
 // handleBinbag handles the 'binbag' command and subcommands
@@ -3172,7 +3171,7 @@ func (m *Manager) handleBinbag(args []string) {
 				}
 				lines = append(lines, ui.Command(strings.TrimRight(line, " ")))
 			}
-			fmt.Println(ui.BoxWithTitle(fmt.Sprintf("%s Binbag (%d files)", ui.SymbolGem, len(names)), lines))
+			fmt.Println(strings.Join(lines, "\n"))
 		}
 		return
 	}
