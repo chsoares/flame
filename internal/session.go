@@ -65,7 +65,7 @@ func parseSSHArgs(args []string) (SSHArgs, error) {
 			if i >= len(args) {
 				return SSHArgs{}, fmt.Errorf("missing value for -p")
 			}
-			parsed.Password = args[i]
+			parsed.Password = normalizeSSHSecret(args[i])
 		case "-i":
 			i++
 			if i >= len(args) {
@@ -92,6 +92,15 @@ func parseSSHArgs(args []string) (SSHArgs, error) {
 	}
 
 	return parsed, nil
+}
+
+func normalizeSSHSecret(s string) string {
+	if len(s) >= 2 {
+		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
 }
 
 func waitForSessionCount(countFn func() int, initial int, timeout time.Duration) error {
@@ -3093,7 +3102,7 @@ func (m *Manager) handleSSH(args []string) {
 			return
 		}
 
-		if err := waitForSessionCount(m.GetSessionCount, initialCount, 5*time.Second); err != nil {
+		if err := waitForSessionCount(m.GetSessionCount, initialCount, 10*time.Second); err != nil {
 			m.notify(ui.Error(err.Error()) + "\n")
 			m.notifyOverlay(err.Error(), 2)
 			return

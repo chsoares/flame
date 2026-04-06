@@ -169,6 +169,16 @@ func TestParseSSHArgsPasswordMode(t *testing.T) {
 	}
 }
 
+func TestParseSSHArgsPasswordModeStripsBalancedQuotes(t *testing.T) {
+	args, err := parseSSHArgs([]string{"user@10.10.10.10", "-p", "'Youve_G0t_Mail!'"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if args.Password != "Youve_G0t_Mail!" {
+		t.Fatalf("expected stripped password, got %q", args.Password)
+	}
+}
+
 func TestParseSSHArgsKeyModeWithPort(t *testing.T) {
 	args, err := parseSSHArgs([]string{"user@10.10.10.10", "-i", "id_rsa", "--port", "2222"})
 	if err != nil {
