@@ -174,3 +174,19 @@ func TestInputSubmitDropsConsecutiveDuplicatesInMenuHistory(t *testing.T) {
 		t.Fatalf("expected consecutive duplicate not to be appended, got %#v", got)
 	}
 }
+
+func TestInputHistoryNavigationSuppressesStaleSuggestion(t *testing.T) {
+	input := NewInput()
+	input.menuHistory = []string{"ls", "lalala"}
+	input.SetValue("l")
+
+	input.HistoryUp()
+	input.HistoryUp()
+
+	if got := input.Value(); got != "ls" {
+		t.Fatalf("expected to land on older history entry, got %q", got)
+	}
+	if _, ok := input.Suggestion(); ok {
+		t.Fatal("expected suggestion to be suppressed while navigating history")
+	}
+}

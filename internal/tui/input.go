@@ -214,6 +214,11 @@ func (i *Input) filteredMatches(prefix string) []string {
 }
 
 func (i *Input) updateSuggestions() {
+	if i.historyActive || i.filteredHistory != nil {
+		i.textinput.SetSuggestions(nil)
+		return
+	}
+
 	prefix := i.textinput.Value()
 	if prefix == "" || i.textinput.Position() != len(prefix) {
 		i.textinput.SetSuggestions(nil)
@@ -248,6 +253,7 @@ func (i *Input) HistoryUp() {
 		if i.filteredHistIdx >= 0 && i.filteredHistIdx < len(i.filteredHistory) {
 			i.textinput.SetValue(i.filteredHistory[i.filteredHistIdx])
 			i.textinput.CursorEnd()
+			i.textinput.SetSuggestions(nil)
 		}
 		return
 	}
@@ -262,6 +268,7 @@ func (i *Input) HistoryUp() {
 		}
 		i.textinput.SetValue(hist[i.histIdx])
 		i.textinput.CursorEnd()
+		i.textinput.SetSuggestions(nil)
 		return
 	}
 
@@ -280,6 +287,7 @@ func (i *Input) HistoryUp() {
 		if i.filteredHistIdx >= 0 && i.filteredHistIdx < len(i.filteredHistory) {
 			i.textinput.SetValue(i.filteredHistory[i.filteredHistIdx])
 			i.textinput.CursorEnd()
+			i.textinput.SetSuggestions(nil)
 		}
 		return
 	}
@@ -310,11 +318,13 @@ func (i *Input) HistoryDown() {
 			i.histIdx++
 			i.textinput.SetValue(hist[i.histIdx])
 			i.textinput.CursorEnd()
+			i.textinput.SetSuggestions(nil)
 		} else {
 			i.histIdx = -1
 			i.textinput.SetValue(i.historyPrefix)
 			i.textinput.CursorEnd()
 			i.resetHistoryNavigation()
+			i.textinput.SetSuggestions(nil)
 		}
 		return
 	}
@@ -340,9 +350,11 @@ func (i *Input) HistoryDown() {
 		i.histIdx++
 		i.textinput.SetValue(hist[i.histIdx])
 		i.textinput.CursorEnd()
+		i.textinput.SetSuggestions(nil)
 	} else {
 		i.histIdx = -1
 		i.textinput.SetValue("")
+		i.textinput.SetSuggestions(nil)
 	}
 }
 
