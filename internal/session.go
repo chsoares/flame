@@ -1765,6 +1765,7 @@ func (m *Manager) handleModulesList() {
 	categoryOrder := []string{"linux", "windows", "misc", "custom"}
 
 	// Build module list grouped by category
+	lines = append(lines, ui.ExecutionModeLegend(), "")
 	for _, cat := range categoryOrder {
 		// Skip if category has no modules
 		if len(categories[cat]) == 0 {
@@ -1779,13 +1780,9 @@ func (m *Manager) handleModulesList() {
 		lines = append(lines, "")
 	}
 
-	// Remove trailing empty line
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-
-	// Add legend at the bottom
-	lines = append(lines, ui.ExecutionModeLegend())
 
 	fmt.Println(strings.Join(lines, "\n"))
 }

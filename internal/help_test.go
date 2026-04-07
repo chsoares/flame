@@ -83,6 +83,10 @@ func TestRenderGeneralHelpIncludesDetailHint(t *testing.T) {
 	if !strings.Contains(rendered, "Type 'help <command>' for details") {
 		t.Fatalf("expected detail hint in general help, got %q", rendered)
 	}
+	firstLine := strings.Split(rendered, "\n")[0]
+	if !strings.Contains(firstLine, "Type 'help <command>' for details") {
+		t.Fatalf("expected help footer on first line, got %q", firstLine)
+	}
 	if strings.Contains(rendered, "┌") || strings.Contains(rendered, "┐") || strings.Contains(rendered, "└") || strings.Contains(rendered, "┘") {
 		t.Fatalf("expected general help without box borders, got %q", rendered)
 	}
@@ -163,6 +167,15 @@ func TestExecuteCommandReportsBoxFreeModulesAndConfigOutput(t *testing.T) {
 		if strings.Contains(got, "┌") || strings.Contains(got, "┐") || strings.Contains(got, "└") || strings.Contains(got, "┘") {
 			t.Fatalf("expected %s output without box borders, got %q", cmd, got)
 		}
+	}
+}
+
+func TestModulesOutputPutsLegendFirst(t *testing.T) {
+	m := NewManager()
+	got := m.ExecuteCommand("modules")
+	firstLine := strings.Split(got, "\n")[0]
+	if strings.Contains(firstLine, "linux") || strings.Contains(firstLine, "windows") || strings.Contains(firstLine, "misc") || strings.Contains(firstLine, "custom") {
+		t.Fatalf("expected modules output to start with the legend line, got %q", firstLine)
 	}
 }
 

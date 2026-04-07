@@ -16,9 +16,9 @@ type helpModal struct {
 	topics     []string
 	categories []string
 	index      int
-	offset     int
 	filter     string
 	input      string
+	detail     *internal.HelpEntry
 }
 
 func newHelpModal() helpModal {
@@ -26,13 +26,14 @@ func newHelpModal() helpModal {
 }
 
 func (h helpModal) SelectedTopic() string {
-	if len(h.topics) == 0 {
+	visible := h.selectableTopics()
+	if len(visible) == 0 {
 		return ""
 	}
-	if h.index < 0 || h.index >= len(h.topics) {
-		return h.topics[0]
+	if h.index < 0 || h.index >= len(visible) {
+		return visible[0]
 	}
-	return h.topics[h.index]
+	return visible[h.index]
 }
 
 func (h *helpModal) MoveDown() {
@@ -58,12 +59,24 @@ func (h *helpModal) SetFilter(value string) {
 	h.filter = value
 	h.input = value
 	h.index = 0
-	h.offset = 0
+	h.detail = nil
 }
 
-func (h *helpModal) OpenSelected() {}
+func (h *helpModal) OpenSelected() {
+	topic := h.SelectedTopic()
+	if topic == "" {
+		return
+	}
+	entry, ok := internal.LookupHelpTopic(strings.Fields(topic))
+	if !ok {
+		return
+	}
+	h.detail = &entry
+}
 
-func (h *helpModal) CloseDetail() {}
+func (h *helpModal) CloseDetail() {
+	h.detail = nil
+}
 
 func (h *helpModal) BackspaceFilter() {
 	if h.input == "" {
@@ -72,7 +85,7 @@ func (h *helpModal) BackspaceFilter() {
 	h.input = h.input[:len(h.input)-1]
 	h.filter = h.input
 	h.index = 0
-	h.offset = 0
+	h.detail = nil
 }
 
 func (h helpModal) filteredTopics() []string {
@@ -123,13 +136,37 @@ func (h helpModal) selectableTopics() []string {
 	return out
 }
 
+func (h helpModal) currentSelection() string {
+	visible := h.selectableTopics()
+	if len(visible) == 0 {
+		return ""
+	}
+	if h.index < 0 || h.index >= len(visible) {
+		return visible[0]
+	}
+	return visible[h.index]
+}
+
 func (h *helpModal) View(termW, termH int, base string) string {
+	if h.detail != nil {
+		footer := styleMuted.Bold(true).Render("Backspace") + " " + styleSubtle.Render("back") +
+			styleSubtle.Render(" • ") + styleMuted.Bold(true).Render("Esc") + " " + styleSubtle.Render("close")
+		return RenderModalShell(base, termW, termH, ModalShell{
+			Title:  "help",
+			Width:  52,
+			Body:   append([]string{styleCyan.Render(h.detail.Topic), ""}, strings.Split(internal.RenderHelpEntryDetail(*h.detail), "\n")...),
+			Footer: footer,
+			Align:  BodyAlignLeft,
+		})
+	}
+
 	sections := h.groupedTopics()
+	selectedTopic := h.currentSelection()
 	selectable := h.selectableTopics()
 	if len(selectable) == 0 {
 		h.index = 0
-	} else if h.index >= len(selectable) {
-		h.index = len(selectable) - 1
+	} else if selectedTopic == "" {
+		h.index = 0
 	}
 	filterLine := styleMagentaBold.Render("❯") + " "
 	if h.input == "" {
@@ -139,7 +176,7 @@ func (h *helpModal) View(termW, termH int, base string) string {
 	}
 	footer := styleMuted.Bold(true).Render("Enter") + " " + styleSubtle.Render("details") +
 		styleSubtle.Render(" • ") + styleMuted.Bold(true).Render("Esc") + " " + styleSubtle.Render("close")
-	body := append([]string{filterLine, ""}, buildHelpListBodyLines(sections, h.index, termW, termH)...)
+	body := append([]string{filterLine, ""}, buildHelpListBodyLines(sections, selectedTopic, termW, termH)...)
 	return RenderModalShell(base, termW, termH, ModalShell{
 		Title:  "help",
 		Width:  52,
@@ -149,7 +186,7 @@ func (h *helpModal) View(termW, termH int, base string) string {
 	})
 }
 
-func buildHelpListBodyLines(sections []listSection, selected int, termW, termH int) []string {
+func buildHelpListBodyLines(sections []listSection, selectedTopic string, termW, termH int) []string {
 	dialogW := 52
 	if dialogW > termW-4 {
 		dialogW = termW - 4
@@ -189,19 +226,11 @@ func buildHelpListBodyLines(sections []listSection, selected int, termW, termH i
 		}
 	}
 	selectedRow := -1
-	if selected < 0 {
-		selected = 0
-	}
-	itemIdx := 0
 	for i, row := range flat {
-		if row.kind != "item" {
-			continue
-		}
-		if itemIdx == selected {
+		if row.kind == "item" && row.value == selectedTopic {
 			selectedRow = i
 			break
 		}
-		itemIdx++
 	}
 	if selectedRow < 0 {
 		selectedRow = 0

@@ -284,7 +284,7 @@ func ExecutionModeSymbol(mode string) string {
 // Module execution mode legend (gray text like confirmation hints)
 func ExecutionModeLegend() string {
 	legendStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	return legendStyle.Render(fmt.Sprintf("\nExecution mode: %s In-memory  %s Disk + cleanup  %s Disk without cleanup",
+	return legendStyle.Render(fmt.Sprintf("Execution mode: %s In-memory  %s Disk + cleanup  %s Disk without cleanup",
 		ExecutionModeSymbol("memory"),
 		ExecutionModeSymbol("disk-cleanup"),
 		ExecutionModeSymbol("disk-no-cleanup")))

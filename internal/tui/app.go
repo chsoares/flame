@@ -368,6 +368,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.help == nil {
+		return a, nil
+	}
+	if a.help.detail != nil {
+		switch msg.String() {
+		case "backspace", "esc", "escape":
+			a.help = nil
+			return a, nil
+		case "f1":
+			a.help = nil
+			return a, nil
+		}
+		return a, nil
+	}
 	switch msg.String() {
 	case "esc", "escape", "f1":
 		a.help = nil
@@ -382,6 +396,7 @@ func (a App) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.help.BackspaceFilter()
 		return a, nil
 	case "enter":
+		a.help.OpenSelected()
 		return a, nil
 	}
 	if len(msg.Runes) == 1 && msg.Runes[0] >= 32 {

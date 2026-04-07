@@ -54,6 +54,25 @@ func centerLine(s string, width int) string {
 	return strings.Repeat(" ", padL) + s + strings.Repeat(" ", padR)
 }
 
+func wrapModalLine(line string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	wrapped := ansi.Wrap(line, width, "")
+	if wrapped == "" {
+		return []string{""}
+	}
+	return strings.Split(wrapped, "\n")
+}
+
+func wrapModalLines(lines []string, width int) []string {
+	wrapped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		wrapped = append(wrapped, wrapModalLine(line, width)...)
+	}
+	return wrapped
+}
+
 func RenderModalShell(base string, termW, termH int, shell ModalShell) string {
 	dialogW := shell.Width
 	if dialogW <= 0 {
@@ -87,12 +106,12 @@ func RenderModalShell(base string, termW, termH int, shell ModalShell) string {
 	}
 	bodyRows := maxH - 2
 	if shell.Footer != "" {
-		bodyRows -= 2
+		bodyRows--
 	}
 	if bodyRows < 1 {
 		bodyRows = 1
 	}
-	body := padToHeight(shell.Body, bodyRows)
+	body := padToHeight(wrapModalLines(shell.Body, contentWidth), bodyRows)
 	if shell.Align == BodyAlignCenter {
 		for i, line := range body {
 			body[i] = centerLine(line, contentWidth)
@@ -102,7 +121,7 @@ func RenderModalShell(base string, termW, termH int, shell ModalShell) string {
 	lines := []string{headerRow, ""}
 	lines = append(lines, body...)
 	if shell.Footer != "" {
-		lines = append(lines, "", shell.Footer)
+		lines = append(lines, shell.Footer)
 	}
 
 	box := lipgloss.NewStyle().

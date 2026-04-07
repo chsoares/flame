@@ -108,6 +108,8 @@ func HelpTopicsForCompletion() []string {
 
 func RenderGeneralHelp() string {
 	lines := []string{
+		ui.HelpFooter("Type 'help <command>' for details"),
+		"",
 		ui.CommandHelp("connect"),
 		ui.Command("rev                          - Show reverse shell payloads"),
 		ui.Command("ssh user@host                - Connect via SSH and execute revshell"),
@@ -136,8 +138,6 @@ func RenderGeneralHelp() string {
 		ui.Command("help                         - Show this help"),
 		ui.Command("clear                        - Clear screen"),
 		ui.Command("exit, quit                   - Exit Flame"),
-		"",
-		ui.HelpFooter("Type 'help <command>' for details"),
 	}
 	return strings.Join(lines, "\n")
 }
@@ -147,7 +147,10 @@ func RenderHelpTopic(parts []string) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	return RenderHelpEntryDetail(entry), true
+}
 
+func RenderHelpEntryDetail(entry HelpEntry) string {
 	lines := []string{}
 	if entry.Summary != "" {
 		lines = append(lines, entry.Summary)
@@ -170,5 +173,5 @@ func RenderHelpTopic(parts []string) (string, bool) {
 			lines = append(lines, ui.Command(example))
 		}
 	}
-	return strings.Join(lines, "\n"), true
+	return strings.Join(lines, "\n")
 }

@@ -2,14 +2,13 @@
 
 ## Help Modal
 
-- The help modal is back to the last stable checkpoint: grouped categories in the list view.
-- The shell remains fixed: same header, input line, list area, and footer/status area.
-- The attempted in-place detail/body swap was rolled back.
-- Enter currently does not open a second page.
+- The help modal now opens a detail view from the selected topic.
+- The modal shell is shared with the quit dialog.
+- The help detail uses the same `HelpEntry` data as the terminal help output.
+- Enter opens detail, Backspace returns to the list, and Esc closes the modal.
 
 ## Notes for Next Session
 
-- Start from the categories-in-list shell.
-- Reuse the same modal shell; only the body should ever change.
-- Keep the footer/status hint area fixed.
-- Avoid introducing a separate detail modal/page.
+- Keep the shared modal shell as the single source for modal framing.
+- Keep help content sourced from `internal/help.go`.
+- The terminal help and modules output no longer use box borders.
