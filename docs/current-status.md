@@ -15,6 +15,10 @@
 - Before the v0.9.0 release, finish only:
   - improved autocomplete/suggestion in the input bar
   - add `v0.9.0` to the banner/splash
+  - review pre-launch/startup error output and adapt it to the TUI-era UI style:
+    - replace the old boxed CLI banner with the splash/banner style already used by the TUI
+    - remove legacy padded text formatting in those error screens
+    - use `Interface` in title case
 - Everything else waits until after `1.0`.
 
 ## Release Recommendation
