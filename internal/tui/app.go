@@ -24,6 +24,7 @@ const (
 	notifyDurationLong  = 4 * time.Second // Longer duration (info, error)
 	scrollbarHideDelay  = 1 * time.Second // Hide scrollbar after scroll stops
 	quitPendingTimeout  = 3 * time.Second // Double-press Ctrl+D timeout
+	transferAnimDelay   = 100 * time.Millisecond
 )
 
 // CommandExecutor is the interface the Manager must satisfy for the TUI.
@@ -242,6 +243,25 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusBar.TransferMsg = msg.Filename
 		a.statusBar.TransferRight = msg.Right
 		a.statusBar.TransferUpload = msg.Upload
+		if msg.Upload {
+			a.statusBar.TransferAnimating = false
+			a.statusBar.TransferAnimPhase = 0
+		} else if !a.statusBar.TransferAnimating {
+			a.statusBar.TransferAnimating = true
+			a.statusBar.TransferAnimPhase = 0
+			return a, tea.Tick(transferAnimDelay, func(time.Time) tea.Msg {
+				return transferAnimTickMsg{}
+			})
+		}
+		return a, nil
+
+	case transferAnimTickMsg:
+		if a.statusBar.TransferAnimating && !a.statusBar.TransferUpload {
+			a.statusBar.StepTransferAnimation()
+			return a, tea.Tick(transferAnimDelay, func(time.Time) tea.Msg {
+				return transferAnimTickMsg{}
+			})
+		}
 		return a, nil
 
 	case transferDoneMsg:
@@ -249,6 +269,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusBar.TransferPct = -1
 		a.statusBar.TransferMsg = ""
 		a.statusBar.TransferRight = ""
+		a.statusBar.TransferAnimating = false
+		a.statusBar.TransferAnimPhase = 0
 		a.transferActive = false
 		action := "Download"
 		if msg.Upload {

@@ -25,19 +25,27 @@ type Notification struct {
 
 // StatusBar renders the bottom status line with hotkey hints, or a notification overlay.
 type StatusBar struct {
-	Context        ContextMode
-	TransferPct    int    // -1 = no transfer, 0-100 = progress
-	TransferMsg    string // e.g., "Uploading CLAUDE.md"
-	TransferRight  string // Right side text: "47%" or "15.2 KB"
-	TransferUpload bool   // true=upload, false=download
-	Width          int
-	Notify         *Notification // Active notification (overlays entire bar)
+	Context           ContextMode
+	TransferPct       int    // -1 = no transfer, 0-100 = progress
+	TransferMsg       string // e.g., "Uploading CLAUDE.md"
+	TransferRight     string // Right side text: "47%" or "15.2 KB"
+	TransferUpload    bool   // true=upload, false=download
+	TransferAnimating bool   // true while indeterminate download animation should advance
+	TransferAnimPhase int
+	Width             int
+	Notify            *Notification // Active notification (overlays entire bar)
 }
 
 func NewStatusBar(width int) StatusBar {
 	return StatusBar{
 		TransferPct: -1,
 		Width:       width,
+	}
+}
+
+func (s *StatusBar) StepTransferAnimation() {
+	if s != nil && s.TransferAnimating {
+		s.TransferAnimPhase++
 	}
 }
 
@@ -102,7 +110,7 @@ func (s StatusBar) renderTransferProgress() string {
 
 	label := icon + " " + s.TransferMsg
 	pctStr := s.TransferRight
-	if pctStr == "" {
+	if pctStr == "" && s.TransferUpload {
 		pctStr = fmt.Sprintf("%d%%", s.TransferPct)
 	}
 
@@ -120,24 +128,43 @@ func (s StatusBar) renderTransferProgress() string {
 		barWidth = 5
 	}
 
-	filled := barWidth * s.TransferPct / 100
-	if filled > barWidth {
-		filled = barWidth
-	}
-	empty := barWidth - filled
-
-	// Build hatching bar on colored background
-	var filledBar string
-	for i := 0; i < filled; i++ {
-		filledBar += "/"
-	}
-
 	barStyle := lipgloss.NewStyle().Background(bg).Foreground(lipgloss.Color("0"))
-	emptyStyle := lipgloss.NewStyle().Background(bg)
+	var bar string
+
+	if s.TransferUpload {
+		filled := barWidth * s.TransferPct / 100
+		if filled > barWidth {
+			filled = barWidth
+		}
+		empty := barWidth - filled
+		for i := 0; i < filled; i++ {
+			bar += "/"
+		}
+		bar += fmt.Sprintf("%*s", empty, "")
+	} else {
+		window := barWidth / 3
+		if window < 4 {
+			window = 4
+		}
+		if window > barWidth {
+			window = barWidth
+		}
+		start := 0
+		if barWidth > 0 {
+			start = s.TransferAnimPhase % barWidth
+		}
+		for i := 0; i < barWidth; i++ {
+			pos := (i - start + barWidth) % barWidth
+			if pos < window {
+				bar += "/"
+			} else {
+				bar += " "
+			}
+		}
+	}
 
 	rendered := textStyle.Render(" "+label+" ") +
-		barStyle.Render(filledBar) +
-		emptyStyle.Render(fmt.Sprintf("%*s", empty, "")) +
+		barStyle.Render(bar) +
 		textStyle.Render(" "+pctStr+" ")
 
 	// Fill remaining width

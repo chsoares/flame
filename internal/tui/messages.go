@@ -88,6 +88,9 @@ type transferDoneMsg struct {
 	Upload   bool // true=upload, false=download
 }
 
+// transferAnimTickMsg drives indeterminate download animation.
+type transferAnimTickMsg struct{}
+
 // --- User actions ---
 
 // SendCommandMsg is dispatched when user presses Enter in shell context.
