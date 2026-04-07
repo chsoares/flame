@@ -18,7 +18,7 @@ Flame is a Go TUI for handling reverse shells during CTF work. It gives you a pl
 - Go 1.25.2
 - A Unix-like terminal with alt-screen support
 - Optional clipboard helpers: `wl-copy`, `xclip`, `xsel`, or `pbcopy`
-- Optional tools: `sshpass` for password-based SSH, `mcs` for `rev csharp <file.exe>`
+- Optional tools: `sshpass` for password-based SSH, `dotnet` for `rev csharp <file.exe>`
 
 ## Build
 
