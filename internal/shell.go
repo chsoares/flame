@@ -23,6 +23,8 @@ type Handler struct {
 	sessionID    string       // ID da sessão para logs
 	originalTerm *term.State  // Estado original do terminal para restaurar
 	onClose      func(string) // Callback quando conexão fechar
+	onNotify     func(string) // Output pane callback para TUI
+	onNotifyBar  func(string) // Status bar callback para TUI
 	platform     string       // Platform detected ("windows", "linux", "unknown")
 	shellFlavor  string       // Shell flavor hint (ssh, csharp, etc.)
 	ptyUpgrader  *PTYUpgrader // PTY upgrader (for resize handler cleanup)
@@ -40,12 +42,24 @@ func NewHandler(conn net.Conn, sessionID string) *Handler {
 		sessionID:    sessionID,
 		originalTerm: nil,
 		onClose:      nil,
+		onNotify:     nil,
+		onNotifyBar:  nil,
 	}
 }
 
 // SetCloseCallback define callback para quando conexão fechar
 func (h *Handler) SetCloseCallback(callback func(string)) {
 	h.onClose = callback
+}
+
+// SetNotifyCallback sends fallback messages to the output pane in TUI mode.
+func (h *Handler) SetNotifyCallback(callback func(string)) {
+	h.onNotify = callback
+}
+
+// SetNotifyBarCallback sends fallback messages to the status bar in TUI mode.
+func (h *Handler) SetNotifyBarCallback(callback func(string)) {
+	h.onNotifyBar = callback
 }
 
 // SetViewportSize sets PTY dimensions for TUI mode (viewport instead of full terminal).
@@ -369,6 +383,13 @@ func (h *Handler) AttemptPTYUpgrade() bool {
 		return true
 	}
 	// Falhou ou não foi possível fazer upgrade
+	msg := ui.PTYFailed()
+	if h.onNotify != nil {
+		h.onNotify(msg)
+	}
+	if h.onNotifyBar != nil {
+		h.onNotifyBar(msg)
+	}
 	return false
 }
 

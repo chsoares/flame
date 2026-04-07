@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"unicode"
 
 	"golang.org/x/term"
 
@@ -121,8 +122,8 @@ func parseFlags() *Config {
 	// Custom usage message with Flame styling
 	flag.Usage = func() {
 		// Print banner first
-		fmt.Println(ui.Banner())
 		fmt.Println()
+		fmt.Println(renderStartupSplash())
 
 		// Error message
 		fmt.Println(ui.Error("Either -i <interface> or -ip <address> is required"))
@@ -154,10 +155,9 @@ func parseFlags() *Config {
 	// Both flags provided - error
 	if interfaceFlag != "" && ipFlag != "" {
 		// Print banner first
-		fmt.Println(ui.Banner())
 		fmt.Println()
+		fmt.Println(renderStartupSplash())
 		fmt.Println(ui.Error("Cannot specify both -i and -ip flags"))
-		fmt.Println()
 		fmt.Println(ui.Info("Use either -i <interface> or -ip <address>, not both"))
 		os.Exit(1)
 	}
@@ -167,10 +167,9 @@ func parseFlags() *Config {
 		ip, err := internal.GetIPFromInterface(interfaceFlag)
 		if err != nil {
 			// Print banner first
-			fmt.Println(ui.Banner())
 			fmt.Println()
-			fmt.Println(ui.Error(fmt.Sprintf("%v", err)))
-			fmt.Println()
+			fmt.Println(renderStartupSplash())
+			fmt.Println(ui.Error(titleCaseFirst(fmt.Sprintf("%v", err))))
 			fmt.Println(internal.FormatInterfaceList())
 			os.Exit(1)
 		}
@@ -181,8 +180,8 @@ func parseFlags() *Config {
 		// Validate IP address
 		if !internal.IsValidIP(ipFlag) {
 			// Print banner first
-			fmt.Println(ui.Banner())
 			fmt.Println()
+			fmt.Println(renderStartupSplash())
 			fmt.Println(ui.Error(fmt.Sprintf("Invalid IP address: %s", ipFlag)))
 			os.Exit(1)
 		}
@@ -191,4 +190,21 @@ func parseFlags() *Config {
 	}
 
 	return config
+}
+
+func renderStartupSplash() string {
+	width := 80
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+		width = w
+	}
+	return tui.RenderExitBanner(width)
+}
+
+func titleCaseFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
 }

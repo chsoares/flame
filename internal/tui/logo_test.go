@@ -9,6 +9,13 @@ import (
 	internal "github.com/chsoares/flame/internal"
 )
 
+func TestRenderExitBannerUsesSplash(t *testing.T) {
+	banner := RenderExitBanner(80)
+	if strings.Contains(banner, "╭") || strings.Contains(banner, "╰") {
+		t.Fatalf("expected splash banner, got %q", banner)
+	}
+}
+
 func TestMenuPromptUsesFlameBrand(t *testing.T) {
 	prompt := menuPrompt(0)
 	if !strings.Contains(prompt, "flame") {

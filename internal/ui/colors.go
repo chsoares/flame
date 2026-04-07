@@ -123,43 +123,6 @@ func SessionInactive(text string) string {
 	return fmt.Sprintf("%s%s", text, ColorReset)
 }
 
-// Banner function inspired by gum style
-func Banner() string {
-	// Define styles with Lipgloss
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("5")). // Magenta
-		Bold(true).
-		Padding(0, 1)
-
-	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("6")).
-		Padding(0, 1)
-
-	logo := SymbolLogo
-	title := fmt.Sprintf("flame shell %s", logo)
-
-	return boxStyle.Render(titleStyle.Render(title))
-}
-
-// Subtitle banner for specific contexts
-func SubBanner(subtitle string) string {
-	// Define styles with Lipgloss
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("5")).
-		Padding(0, 1)
-
-	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("6")).
-		Padding(0, 1)
-
-	logo := SymbolLogo
-	title := fmt.Sprintf("%s %s", logo, subtitle)
-
-	return boxStyle.Render(titleStyle.Render(title))
-}
-
 // SectionHeader creates a bordered header for sections (list, help, etc)
 func SectionHeader(title string) string {
 	style := lipgloss.NewStyle().

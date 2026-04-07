@@ -1244,8 +1244,17 @@ func (m *Manager) StartShellRelay(cols, rows int) error {
 			m.relaySuppressNano.Store(time.Now().UnixNano())
 		}
 		spinID := m.startSpinner("Upgrading to PTY...")
-		handler.AttemptPTYUpgrade()
-		m.stopSpinner(spinID)
+		if !handler.AttemptPTYUpgrade() {
+			m.stopSpinner(spinID)
+			if m.notifyTUI != nil {
+				m.notifyTUI(ui.PTYFailed() + "\n")
+			}
+			if m.notifyBar != nil {
+				m.notifyBar(ui.PTYFailed(), 2)
+			}
+		} else {
+			m.stopSpinner(spinID)
+		}
 
 		// Drain any leftover output from PTY setup before relay starts
 		time.Sleep(100 * time.Millisecond)
