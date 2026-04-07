@@ -27,15 +27,18 @@ type FileServer struct {
 	server            *http.Server
 	mu                sync.Mutex
 	running           bool
+	downloadDir       string                           // Where to save received files (default: CWD)
 	transferListeners map[string]chan TransferProgress // Channels to notify transfer progress
 	listenerMu        sync.Mutex
 }
 
 // NewFileServer creates a new file server
 func NewFileServer(binbagPath string, port int) *FileServer {
+	cwd, _ := os.Getwd()
 	return &FileServer{
 		binbagPath:        binbagPath,
 		port:              port,
+		downloadDir:       cwd,
 		transferListeners: make(map[string]chan TransferProgress),
 	}
 }
@@ -94,9 +97,14 @@ func (fs *FileServer) Stop() error {
 	return nil
 }
 
-// ServeHTTP handles HTTP requests
+// ServeHTTP handles HTTP requests (GET = serve file, POST = receive file)
 func (fs *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Extract filename from URL path (Base prevents directory traversal)
+	if r.Method == http.MethodPost || r.Method == http.MethodPut {
+		fs.handleReceive(w, r)
+		return
+	}
+
+	// GET: serve file from binbag
 	filename := filepath.Base(r.URL.Path)
 	filePath := filepath.Join(fs.binbagPath, filename)
 
@@ -164,56 +172,97 @@ func (fs *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // Uses an inactivity timeout that resets on every progress update
 // Returns true if successful, false if failed/timeout
 func (fs *FileServer) WaitForTransfer(filename string, inactivityTimeout time.Duration, progressCallback func(TransferProgress)) bool {
-	// Create channel for this transfer
-	ch := make(chan TransferProgress, 10)
+	err := fs.WaitForTransferCtx(context.Background(), filename, inactivityTimeout, progressCallback)
+	return err == nil
+}
 
-	fs.listenerMu.Lock()
-	fs.transferListeners[filename] = ch
-	fs.listenerMu.Unlock()
-
-	// Cleanup function
-	cleanup := func() {
-		fs.listenerMu.Lock()
-		delete(fs.transferListeners, filename)
-		fs.listenerMu.Unlock()
-	}
-
-	// Use a timer that resets on every progress update
-	timer := time.NewTimer(inactivityTimeout)
-	defer timer.Stop()
-
-	for {
-		select {
-		case progress := <-ch:
-			// Reset timer on every progress update (activity detected)
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(inactivityTimeout)
-
-			// Call progress callback
-			if progressCallback != nil {
-				progressCallback(progress)
-			}
-
-			// Check if done
-			if progress.Done {
-				cleanup()
-				return progress.Success
-			}
-
-		case <-timer.C:
-			// Inactivity timeout reached
-			cleanup()
-			return false
-		}
-	}
+// WaitForTransferCtx waits for transfer completion and can be cancelled via context.
+func (fs *FileServer) WaitForTransferCtx(ctx context.Context, filename string, inactivityTimeout time.Duration, progressCallback func(TransferProgress)) error {
+	ch, cleanup := fs.listenForTransfer(filename)
+	return fs.waitOnTransferChannel(ctx, ch, cleanup, inactivityTimeout, progressCallback)
 }
 
 // notifyProgress notifies listeners about transfer progress
+// handleReceive accepts a file upload via POST (remote → local download)
+func (fs *FileServer) handleReceive(w http.ResponseWriter, r *http.Request) {
+	filename := filepath.Base(r.URL.Path)
+	if filename == "" || filename == "." || filename == "/" {
+		http.Error(w, "filename required in URL path", http.StatusBadRequest)
+		return
+	}
+
+	// Write to temp file in binbag first, then move to download dir
+	tmpPath := filepath.Join(fs.binbagPath, ".dl_"+filename)
+	finalPath := filepath.Join(fs.downloadDir, filename)
+
+	tmpFile, err := os.Create(tmpPath)
+	if err != nil {
+		http.Error(w, "failed to create temp file", http.StatusInternalServerError)
+		fs.notifyProgress(filename, TransferProgress{Done: true, Success: false})
+		return
+	}
+
+	// Copy with progress tracking
+	buf := make([]byte, 32*1024)
+	bytesReceived := int64(0)
+	totalBytes := r.ContentLength // -1 if unknown
+
+	for {
+		n, readErr := r.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
+				tmpFile.Close()
+				os.Remove(tmpPath)
+				http.Error(w, "write error", http.StatusInternalServerError)
+				fs.notifyProgress(filename, TransferProgress{Done: true, Success: false})
+				return
+			}
+			bytesReceived += int64(n)
+			fs.notifyProgress(filename, TransferProgress{
+				BytesTransferred: bytesReceived,
+				TotalBytes:       totalBytes,
+				Done:             false,
+				Success:          true,
+			})
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+			http.Error(w, "read error", http.StatusInternalServerError)
+			fs.notifyProgress(filename, TransferProgress{Done: true, Success: false})
+			return
+		}
+	}
+	tmpFile.Close()
+
+	// Move to final destination (try rename, fall back to copy+delete for cross-device)
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		// Cross-device: copy + delete
+		src, _ := os.ReadFile(tmpPath)
+		if writeErr := os.WriteFile(finalPath, src, 0644); writeErr != nil {
+			os.Remove(tmpPath)
+			http.Error(w, "failed to save file", http.StatusInternalServerError)
+			fs.notifyProgress(filename, TransferProgress{Done: true, Success: false})
+			return
+		}
+		os.Remove(tmpPath)
+	}
+
+	// Success
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "OK %d bytes", bytesReceived)
+
+	fs.notifyProgress(filename, TransferProgress{
+		BytesTransferred: bytesReceived,
+		TotalBytes:       bytesReceived,
+		Done:             true,
+		Success:          true,
+	})
+}
+
 func (fs *FileServer) notifyProgress(filename string, progress TransferProgress) {
 	fs.listenerMu.Lock()
 	defer fs.listenerMu.Unlock()

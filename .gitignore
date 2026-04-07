@@ -1,13 +1,23 @@
 # Binaries
 gummy
+flame
+*.exe
 
 # Session directories
 .gummy/
+.flame/
+.worktrees/
 
 # Temporary files
 *.swp
 *.swo
 *~
+*.out
+coverage.out
+
+# Environment
+.env
+.env.*
 
 # IDE
 .vscode/
@@ -16,3 +26,4 @@ gummy
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini

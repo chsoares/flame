@@ -1,0 +1,1633 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/charmbracelet/x/ansi"
+
+	internal "github.com/chsoares/flame/internal"
+	"github.com/chsoares/flame/internal/ui"
+)
+
+const (
+	selectionClearDelay = 3 * time.Second // Clear highlight after copy
+	notifyDuration      = 2 * time.Second // Notification overlay duration (important)
+	notifyDurationLong  = 4 * time.Second // Longer duration (info, error)
+	scrollbarHideDelay  = 1 * time.Second // Hide scrollbar after scroll stops
+	quitPendingTimeout  = 3 * time.Second // Double-press Ctrl+D timeout
+	transferAnimDelay   = 100 * time.Millisecond
+)
+
+// CommandExecutor is the interface the Manager must satisfy for the TUI.
+type CommandExecutor interface {
+	ExecuteCommand(cmd string) string
+	GetSelectedSessionID() int
+	SessionCount() int
+	GetSessionsForDisplay() string
+	GetActiveSessionDisplay() (ip, whoami, platform string, ok bool)
+	GetSelectedSessionFlavor() string
+	SetSilent(silent bool)
+	SetNotifyFunc(fn func(string))
+	SetNotifyBarFunc(fn func(string, int)) // message, level (0=info, 1=important, 2=error)
+	SetSpinnerFunc(start func(int, string), stop func(int), update func(int, string))
+	SetShellOutputFunc(fn func(string, int, []byte))                 // shell relay output (sessionID, numID, data)
+	SetSessionDisconnectFunc(fn func(int, string))                   // session disconnect (numID, remoteIP)
+	StartShellRelay(cols, rows int) error                            // start reading from selected session's conn
+	StopShellRelay()                                                 // stop relay goroutine
+	WriteToShell(data string) error                                  // write to selected session's conn
+	ResizePTY(cols, rows int)                                        // send stty resize to remote PTY
+	CompleteInput(line string) string                                // tab completion
+	SetTransferProgressFunc(fn func(string, int, string, bool))      // transfer progress (filename, pct, right, upload)
+	SetTransferDoneFunc(fn func(string, bool, error))                // transfer done (filename, upload, error)
+	StartUpload(ctx context.Context, localPath, remotePath string)   // async upload
+	StartDownload(ctx context.Context, remotePath, localPath string) // async download
+	StartSpawn()                                                     // async spawn
+	StartModule(moduleName string, args []string)                    // async module execution
+}
+
+// App is the root Bubble Tea model for the Flame TUI.
+type App struct {
+	// Layout
+	layout Layout
+	width  int
+	height int
+
+	// Components (pointers — strings.Builder and viewport can't be copied by value)
+	header    Header
+	output    *OutputPane
+	input     *Input
+	statusBar StatusBar
+
+	// State
+	splash           bool // Show splash screen before first input
+	focus            FocusMode
+	context          ContextMode
+	sidebarCollapsed bool // F11 toggle — forces compact layout
+
+	// Per-session buffers
+	menuBuffer     *strings.Builder         // Menu output buffer
+	sessionBuffers map[int]*strings.Builder // Per-session shell output buffers
+	sessionPrompts map[int]string           // Last detected remote prompt per session
+	activeSession  int                      // NumID of the session currently shown in viewport (0 = menu)
+
+	// Transfer state
+	transferActive bool               // True while upload/download is in progress (blocks input)
+	transferCancel context.CancelFunc // Cancel function for active transfer
+
+	// Notifications
+	notifyID int // Incremented on each notification to invalidate stale clear timers
+
+	// Scrollbar
+	scrollbarVisible bool
+	scrollbarID      int // Incremented on each scroll to invalidate stale hide timers
+
+	// Quit confirmation
+	quitPending   bool
+	quitPendingID int
+	dialog        *Dialog // Modal overlay (nil = no dialog)
+	help          *helpModal
+
+	// PTY resize debounce
+	resizeID int // Incremented on each resize to invalidate stale debounce timers
+
+	// Backend
+	executor CommandExecutor
+
+	// Config
+	listenerAddr string
+	cwd          string
+	sessionName  string // date-based session identifier
+}
+
+// New creates a new App model.
+func New(executor CommandExecutor, listenerAddr string) App {
+	output := NewOutputPane(80, 20)
+	input := NewInput()
+
+	cwd, _ := os.Getwd()
+	sessionName := time.Now().Format("2006_01_02")
+
+	return App{
+		header:         NewHeader(listenerAddr),
+		output:         &output,
+		input:          &input,
+		statusBar:      NewStatusBar(80),
+		splash:         true,
+		focus:          FocusInput,
+		context:        ContextMenu,
+		menuBuffer:     &strings.Builder{},
+		sessionBuffers: make(map[int]*strings.Builder),
+		sessionPrompts: make(map[int]string),
+		executor:       executor,
+		listenerAddr:   listenerAddr,
+		cwd:            cwd,
+		sessionName:    sessionName,
+	}
+}
+
+func (a App) Init() tea.Cmd {
+	return nil
+}
+
+func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		a.width = msg.Width
+		a.height = msg.Height
+		a.layout = GenerateLayout(msg.Width, msg.Height, a.sidebarCollapsed)
+		a.header.Width = msg.Width
+		a.output.SetSize(a.layout.Output.W, a.layout.Output.H)
+		a.input.SetWidth(a.layout.Input.W)
+		a.statusBar.Width = msg.Width
+		a.syncSessionInfo()
+		// Debounce remote PTY resize — only send stty after 150ms of no resizes
+		if a.context == ContextShell && a.activeSession > 0 {
+			a.resizeID++
+			id := a.resizeID
+			cols, rows := a.layout.Output.W, a.layout.Output.H
+			return a, tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
+				return sendResizeMsg{id: id, cols: cols, rows: rows}
+			})
+		}
+		return a, nil
+
+	case tea.KeyMsg:
+		// Modal dialog intercepts all keys
+		if a.dialog != nil {
+			return a.updateDialog(msg)
+		}
+		if a.help != nil {
+			return a.updateHelp(msg)
+		}
+		if a.splash {
+			if msg.String() == "enter" {
+				cmd := a.input.Submit()
+				a.splash = false
+				if cmd != "" {
+					return a.executeInput(cmd)
+				}
+				return a, nil
+			}
+			if msg.String() == "ctrl+d" {
+				return a.tryQuitCtrlD()
+			}
+			return a.updateInputMode(msg)
+		}
+		switch a.focus {
+		case FocusInput:
+			return a.updateInputMode(msg)
+		case FocusSidebar:
+			return a.updateSidebarMode(msg)
+		}
+
+	case CommandOutputMsg:
+		if a.splash {
+			a.splash = false
+		}
+		// Always accumulate in menu buffer
+		a.menuBuffer.WriteString(msg.Output)
+		if a.activeSession == 0 {
+			// Currently viewing menu — update viewport
+			a.output.Append(msg.Output)
+		}
+		// If viewing a session, menu buffer accumulates silently.
+		// Notification bar handles important events.
+		a.syncSessionInfo()
+		return a, nil
+
+	case tea.MouseMsg:
+		if a.dialog != nil {
+			return a, nil // Block mouse when dialog is open
+		}
+		return a.handleMouse(msg)
+
+	case showNotifyMsg:
+		a.notifyID++
+		id := a.notifyID
+		a.statusBar.Notify = &Notification{Message: msg.Message, Level: msg.Level}
+		duration := notifyDuration
+		if msg.Level == NotifyImportant || msg.Level == NotifyError {
+			duration = notifyDurationLong
+		}
+		return a, tea.Tick(duration, func(time.Time) tea.Msg {
+			return clearNotifyMsg{id: id}
+		})
+
+	case clearNotifyMsg:
+		if msg.id == a.notifyID {
+			a.statusBar.Notify = nil
+		}
+		return a, nil
+
+	case clearSelectionMsg:
+		a.output.ClearSelection()
+		return a, nil
+
+	case clearQuitPendingMsg:
+		if msg.id == a.quitPendingID {
+			a.quitPending = false
+		}
+		return a, nil
+
+	case transferProgressMsg:
+		a.statusBar.TransferPct = msg.Pct
+		a.statusBar.TransferMsg = msg.Filename
+		a.statusBar.TransferRight = msg.Right
+		a.statusBar.TransferUpload = msg.Upload
+		if msg.Upload {
+			a.statusBar.TransferAnimating = false
+			a.statusBar.TransferAnimPhase = 0
+		} else if !a.statusBar.TransferAnimating {
+			a.statusBar.TransferAnimating = true
+			a.statusBar.TransferAnimPhase = 0
+			return a, tea.Tick(transferAnimDelay, func(time.Time) tea.Msg {
+				return transferAnimTickMsg{}
+			})
+		}
+		return a, nil
+
+	case transferAnimTickMsg:
+		if a.statusBar.TransferAnimating && !a.statusBar.TransferUpload {
+			a.statusBar.StepTransferAnimation()
+			return a, tea.Tick(transferAnimDelay, func(time.Time) tea.Msg {
+				return transferAnimTickMsg{}
+			})
+		}
+		return a, nil
+
+	case transferDoneMsg:
+		// Clear progress bar and transfer lock
+		a.statusBar.TransferPct = -1
+		a.statusBar.TransferMsg = ""
+		a.statusBar.TransferRight = ""
+		a.statusBar.TransferAnimating = false
+		a.statusBar.TransferAnimPhase = 0
+		a.transferActive = false
+		action := "Download"
+		if msg.Upload {
+			action = "Upload"
+		}
+		if msg.Err != nil {
+			a.menuAppend(ui.Error(fmt.Sprintf("%s failed: %v", action, msg.Err)) + "\n\n")
+			return a, func() tea.Msg {
+				return showNotifyMsg{
+					Message: fmt.Sprintf("%s failed: %s", action, msg.Filename),
+					Level:   NotifyError,
+				}
+			}
+		}
+		a.menuAppend(ui.Success(fmt.Sprintf("%s complete: %s", action, msg.Filename)) + "\n\n")
+		return a, func() tea.Msg {
+			return showNotifyMsg{
+				Message: fmt.Sprintf("%s complete: %s", action, msg.Filename),
+				Level:   NotifyInfo,
+			}
+		}
+
+	case sendResizeMsg:
+		if msg.id != a.resizeID {
+			return a, nil // Stale — a newer resize superseded this one
+		}
+		a.executor.ResizePTY(msg.cols, msg.rows)
+		return a, nil
+
+	case hideScrollbarMsg:
+		if msg.id == a.scrollbarID {
+			a.scrollbarVisible = false
+		}
+		return a, nil
+
+	case spinnerStartMsg:
+		if a.context == ContextShell {
+			// Don't show viewport spinner in shell mode — use notification bar
+			return a, nil
+		}
+		a.output.StartSpinner(msg.ID, msg.Text)
+		return a, tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
+			return spinnerTickMsg{ID: msg.ID}
+		})
+
+	case spinnerTickMsg:
+		if !a.output.spinnerActive || a.output.spinnerID != msg.ID {
+			return a, nil
+		}
+		a.output.TickSpinner(msg.ID)
+		return a, tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
+			return spinnerTickMsg{ID: msg.ID}
+		})
+
+	case spinnerStopMsg:
+		a.output.StopSpinner(msg.ID)
+		return a, nil
+
+	case spinnerUpdateMsg:
+		a.output.UpdateSpinner(msg.ID, msg.Text)
+		return a, nil
+
+	case shellReadyMsg:
+		if msg.err != nil {
+			a.menuAppend(styleRed.Render("  "+msg.err.Error()) + "\n\n")
+			return a, nil
+		}
+		// Switch context and viewport to session buffer
+		selectedID := a.executor.GetSelectedSessionID()
+
+		a.menuAppend(ui.ShellAttach(fmt.Sprintf("Attached to interactive shell #%d", selectedID)) + "\n\n")
+		a.context = ContextShell
+		a.header.Context = ContextShell
+		a.statusBar.Context = ContextShell
+		a.input.SetContext(ContextShell)
+		a.switchToSession(selectedID)
+		if a.getSessionBuffer(selectedID).Len() == 0 {
+			a.executor.WriteToShell("\n")
+		}
+
+		return a, func() tea.Msg {
+			return showNotifyMsg{
+				Message: fmt.Sprintf("Attached to shell #%d — Press F12 to detach", selectedID),
+				Level:   NotifyInfo,
+			}
+		}
+
+	case ShellOutputMsg:
+		text := sanitizeShellOutput(string(msg.Data))
+		if prompt := extractTrailingShellPrompt(text); prompt != "" {
+			a.sessionPrompts[msg.NumID] = prompt
+		}
+		// Always accumulate in session buffer
+		a.appendToSessionBuffer(msg.NumID, text)
+		// Only update viewport if this session is active
+		if a.activeSession == msg.NumID {
+			a.output.Append(text)
+		}
+		return a, nil
+
+	case SessionDisconnectedMsg:
+		if a.context == ContextShell && a.activeSession == msg.NumID {
+			a.context = ContextMenu
+			a.header.Context = ContextMenu
+			a.statusBar.Context = ContextMenu
+			a.input.SetContext(ContextMenu)
+			a.switchToMenu()
+		}
+		a.syncSessionInfo()
+		return a, nil
+	}
+
+	return a, nil
+}
+
+func (a App) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.help == nil {
+		return a, nil
+	}
+	if a.help.detail != nil {
+		switch msg.String() {
+		case "backspace", "esc", "escape":
+			a.help = nil
+			return a, nil
+		case "f1":
+			a.help = nil
+			return a, nil
+		}
+		return a, nil
+	}
+	switch msg.String() {
+	case "esc", "escape", "f1":
+		a.help = nil
+		return a, nil
+	case "up", "k":
+		a.help.MoveUp()
+		return a, nil
+	case "down", "j":
+		a.help.MoveDown()
+		return a, nil
+	case "backspace":
+		a.help.BackspaceFilter()
+		return a, nil
+	case "enter":
+		a.help.OpenSelected()
+		return a, nil
+	}
+	if len(msg.Runes) == 1 && msg.Runes[0] >= 32 {
+		a.help.SetFilter(a.help.input + string(msg.Runes))
+		return a, nil
+	}
+	return a, nil
+}
+
+// handleMouse routes mouse events to the appropriate component.
+func (a App) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	ox, oy := a.layout.Output.X, a.layout.Output.Y
+	ow, oh := a.layout.Output.W, a.layout.Output.H
+
+	// Translate to output-pane-relative coordinates
+	viewX := msg.X - ox
+	viewY := msg.Y - oy
+
+	inOutput := viewX >= 0 && viewX < ow && viewY >= 0 && viewY < oh
+
+	switch {
+	case msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown:
+		// Scroll: always forward to viewport (even if mouse is slightly outside)
+		var cmd tea.Cmd
+		a.output, cmd = a.output.Update(msg)
+		hideCmd := a.showScrollbar()
+		return a, tea.Batch(cmd, hideCmd)
+
+	case msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress:
+		if !inOutput {
+			// Click outside output pane clears selection
+			a.output.ClearSelection()
+			return a, nil
+		}
+		a.output.HandleMouseDown(viewX, viewY)
+		return a, nil
+
+	case msg.Action == tea.MouseActionMotion:
+		if a.output.selection.Active {
+			// Clamp to output pane bounds
+			if viewX < 0 {
+				viewX = 0
+			}
+			if viewX >= ow {
+				viewX = ow - 1
+			}
+			if viewY < 0 {
+				viewY = 0
+			}
+			if viewY >= oh {
+				viewY = oh - 1
+			}
+			a.output.HandleMouseMotion(viewX, viewY)
+		}
+		return a, nil
+
+	case msg.Action == tea.MouseActionRelease:
+		if a.output.selection.Active {
+			// Clamp to output pane bounds
+			if viewX < 0 {
+				viewX = 0
+			}
+			if viewX >= ow {
+				viewX = ow - 1
+			}
+			if viewY < 0 {
+				viewY = 0
+			}
+			if viewY >= oh {
+				viewY = oh - 1
+			}
+			if a.output.HandleMouseUp(viewX, viewY) {
+				// Selection made — copy and schedule cleanup
+				text := a.output.CopySelection()
+				if text != "" {
+					return a, tea.Batch(
+						func() tea.Msg {
+							return showNotifyMsg{Message: "Selected text copied to clipboard", Level: NotifyInfo}
+						},
+						tea.Tick(selectionClearDelay, func(time.Time) tea.Msg {
+							return clearSelectionMsg{}
+						}),
+					)
+				}
+			}
+		}
+		return a, nil
+	}
+
+	return a, nil
+}
+
+// tryQuitCtrlD implements double-press Ctrl+D with warning notification.
+func (a App) tryQuitCtrlD() (tea.Model, tea.Cmd) {
+	if a.executor.SessionCount() == 0 {
+		return a, tea.Quit
+	}
+	if a.quitPending {
+		return a, tea.Quit
+	}
+	a.quitPending = true
+	a.quitPendingID++
+	id := a.quitPendingID
+	return a, tea.Batch(
+		func() tea.Msg {
+			return showNotifyMsg{
+				Message: "Active sessions! Press Ctrl+D again to quit",
+				Level:   NotifyError,
+			}
+		},
+		tea.Tick(quitPendingTimeout, func(time.Time) tea.Msg {
+			return clearQuitPendingMsg{id: id}
+		}),
+	)
+}
+
+// updateDialog handles key events when a modal dialog is active.
+func (a App) updateDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "tab", "left", "right", "h", "l":
+		a.dialog.Toggle()
+		return a, nil
+	case "enter":
+		if a.dialog.Selected == 0 {
+			// Confirmed
+			switch a.dialog.Action {
+			case DialogQuit:
+				return a, tea.Quit
+			}
+		}
+		a.dialog = nil
+		return a, nil
+	case "escape", "n":
+		a.dialog = nil
+		return a, nil
+	case "y":
+		return a, tea.Quit
+	}
+	return a, nil
+}
+
+func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+
+	// Bang mode: backspace on empty input exits bang mode
+	if a.input.InBangMode() && (key == "backspace" || key == "delete") {
+		if a.input.Value() == "" {
+			a.input.ExitBangMode()
+			return a, nil
+		}
+	}
+
+	// Shell context: ! as first character enters bang mode
+	if a.context == ContextShell && !a.input.InBangMode() && key == "!" {
+		if a.input.Value() == "" {
+			a.input.EnterBangMode()
+			return a, nil // consume the !
+		}
+	}
+
+	switch key {
+	case "ctrl+c", "escape":
+		// Cancel active transfer
+		if a.transferActive && a.transferCancel != nil {
+			a.transferCancel()
+			return a, nil
+		}
+		if key == "ctrl+c" {
+			if a.context == ContextShell && !a.input.InBangMode() {
+				a.executor.WriteToShell("\x03")
+				return a, nil
+			}
+		}
+		if a.input.InBangMode() {
+			a.input.ExitBangMode()
+		}
+		return a, nil
+
+	case "ctrl+d":
+		if a.input.InBangMode() {
+			a.input.ExitBangMode()
+			return a, nil
+		}
+		return a.tryQuitCtrlD()
+
+	case "enter":
+		// Block commands during active transfer or spinner
+		if a.transferActive || a.output.IsSpinnerActive() {
+			return a, nil
+		}
+		cmd := a.input.Submit()
+		if cmd == "" {
+			return a, nil
+		}
+		if a.input.InBangMode() {
+			// Execute as flame command from shell context
+			a.input.ExitBangMode()
+			return a.executeBangCommand(cmd)
+		}
+		return a.executeInput(cmd)
+
+	case "up":
+		if a.help != nil {
+			a.help.MoveUp()
+			return a, nil
+		}
+		a.input.HistoryUp()
+		return a, nil
+
+	case "down":
+		if a.help != nil {
+			a.help.MoveDown()
+			return a, nil
+		}
+		a.input.HistoryDown()
+		return a, nil
+
+	case "right":
+		if a.input.AcceptSuggestion() {
+			return a, nil
+		}
+		var cmd tea.Cmd
+		a.input, cmd = a.input.Update(msg)
+		return a, cmd
+
+	case "tab":
+		if a.context == ContextMenu || a.input.InBangMode() {
+			current := a.input.Value()
+			completed := a.executor.CompleteInput(current)
+			if completed != current {
+				a.input.SetValue(completed)
+			}
+		}
+		return a, nil
+
+	case "f11":
+		a.sidebarCollapsed = !a.sidebarCollapsed
+		a.layout = GenerateLayout(a.width, a.height, a.sidebarCollapsed)
+		a.header.Width = a.width
+		a.output.SetSize(a.layout.Output.W, a.layout.Output.H)
+		a.input.SetWidth(a.layout.Input.W)
+		a.statusBar.Width = a.width
+		return a, nil
+
+	case "f1":
+		if a.help == nil {
+			modal := newHelpModal()
+			a.help = &modal
+		} else {
+			a.help = nil
+		}
+		return a, nil
+
+	case "f12":
+		if a.transferActive {
+			return a, nil // Block detach during transfer
+		}
+		if a.context == ContextShell {
+			a.context = ContextMenu
+			a.header.Context = ContextMenu
+			a.statusBar.Context = ContextMenu
+			a.input.SetContext(ContextMenu)
+			a.switchToMenu()
+			a.menuAppend(ui.ShellDetach("Detached from shell") + "\n\n")
+			return a, nil
+		}
+		// Menu mode: F12 = attach (same as typing "shell")
+		if a.context == ContextMenu {
+			if a.executor.GetSelectedSessionID() == 0 {
+				a.menuAppend(ui.Error("No session selected. Use 'use <id>' first") + "\n\n")
+				return a, nil
+			}
+			cols, rows := a.layout.Output.W, a.layout.Output.H
+			return a, func() tea.Msg {
+				err := a.executor.StartShellRelay(cols, rows)
+				return shellReadyMsg{err: err}
+			}
+		}
+
+	case "pgup", "pgdown":
+		var cmd tea.Cmd
+		a.output, cmd = a.output.Update(msg)
+		hideCmd := a.showScrollbar()
+		return a, tea.Batch(cmd, hideCmd)
+	}
+
+	// Forward to textinput for normal typing
+	var cmd tea.Cmd
+	a.input, cmd = a.input.Update(msg)
+	return a, cmd
+}
+
+func (a App) updateSidebarMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "tab", "escape":
+		a.focus = FocusInput
+		a.input.Focus()
+		return a, nil
+	}
+	return a, nil
+}
+
+func (a App) executeInput(cmd string) (tea.Model, tea.Cmd) {
+	switch a.context {
+	case ContextMenu:
+		// Echo command with styled prompt
+		prompt := styleMagentaBold.Render("❯") + " "
+		a.menuAppend(prompt + styleBase.Render(cmd) + "\n")
+
+		switch {
+		case cmd == "shell":
+			if a.executor.GetSelectedSessionID() == 0 {
+				a.menuAppend(styleMuted.Render("  No session selected. Use 'use <id>' first") + "\n\n")
+				return a, nil
+			}
+			// Start relay async (PTY upgrade blocks ~1s)
+			cols, rows := a.layout.Output.W, a.layout.Output.H
+			return a, func() tea.Msg {
+				err := a.executor.StartShellRelay(cols, rows)
+				return shellReadyMsg{err: err}
+			}
+
+		case cmd == "exit" || cmd == "quit" || cmd == "q":
+			if a.executor.SessionCount() == 0 {
+				return a, tea.Quit
+			}
+			a.dialog = confirmQuitDialog(a.executor.SessionCount())
+			return a, nil
+
+		case cmd == "clear" || cmd == "cls":
+			a.menuBuffer.Reset()
+			a.output.Clear()
+			return a, nil
+
+		case strings.HasPrefix(cmd, "upload "):
+			return a.handleUploadCmd(cmd)
+
+		case strings.HasPrefix(cmd, "download "):
+			return a.handleDownloadCmd(cmd)
+
+		case cmd == "spawn":
+			return a.handleSpawnCmd()
+
+		case strings.HasPrefix(cmd, "kill "):
+			return a.handleKillCmd(cmd)
+
+		case strings.HasPrefix(cmd, "run "):
+			return a.handleRunCmd(cmd)
+
+		default:
+			output := a.executor.ExecuteCommand(cmd)
+			if output != "" {
+				a.menuAppend(output)
+				if !strings.HasSuffix(output, "\n") {
+					a.menuAppend("\n")
+				}
+			}
+			a.menuAppend("\n")
+			a.syncSessionInfo()
+			return a, nil
+		}
+
+	case ContextShell:
+		if !a.input.InBangMode() {
+			prompt := a.sessionPrompts[a.activeSession]
+			if prompt != "" && shouldLocallyEchoCurrentShell(a.executor) {
+				buf := a.getSessionBuffer(a.activeSession)
+				updated := applyLocalShellEcho(buf.String(), prompt, cmd)
+				buf.Reset()
+				buf.WriteString(updated)
+				if a.activeSession == a.executor.GetSelectedSessionID() {
+					a.output.SetContent(updated)
+				}
+			}
+		}
+		if err := a.executor.WriteToShell(cmd + "\n"); err != nil {
+			a.output.Append(styleRed.Render("  Write error: "+err.Error()) + "\n\n")
+			a.context = ContextMenu
+			a.header.Context = ContextMenu
+			a.statusBar.Context = ContextMenu
+			a.input.SetContext(ContextMenu)
+		}
+		return a, nil
+	}
+
+	return a, nil
+}
+
+func extractTrailingShellPrompt(s string) string {
+	trimmed := strings.ReplaceAll(s, "\r\n", "\n")
+	trimmed = strings.ReplaceAll(trimmed, "\r", "")
+	trimmed = strings.TrimRight(trimmed, "\n")
+	if trimmed == "" {
+		return ""
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(last, "PS ") && strings.HasSuffix(last, ">") {
+		return last
+	}
+	if strings.Contains(last, ":\\") && strings.HasSuffix(last, ">") {
+		return last
+	}
+	if strings.HasSuffix(last, "$") || strings.HasSuffix(last, "#") || strings.HasSuffix(last, "%") {
+		return last
+	}
+	return ""
+}
+
+func shouldLocallyEchoShellCommand(platform, flavor string) bool {
+	if flavor == "csharp" {
+		return false
+	}
+	return platform == "windows"
+}
+
+func shouldLocallyEchoCurrentShell(executor CommandExecutor) bool {
+	if executor == nil {
+		return false
+	}
+	_, _, platform, ok := executor.GetActiveSessionDisplay()
+	if !ok {
+		return false
+	}
+	return shouldLocallyEchoShellCommand(platform, executor.GetSelectedSessionFlavor())
+}
+
+func formatLocalShellEcho(prompt, cmd string) string {
+	if prompt == "" {
+		prompt = "$"
+	}
+	return prompt + " " + cmd + "\n"
+}
+
+func applyLocalShellEcho(content, prompt, cmd string) string {
+	echo := formatLocalShellEcho(prompt, cmd)
+	trimmedNewlines := strings.TrimRight(content, "\n")
+	trimmedLine := strings.TrimRight(trimmedNewlines, " ")
+	if strings.HasSuffix(trimmedLine, prompt) {
+		prefix := trimmedLine[:len(trimmedLine)-len(prompt)]
+		return prefix + prompt + " " + cmd + "\n"
+	}
+	if content == "" || strings.HasSuffix(content, "\n") {
+		return content + echo
+	}
+	return content + "\n" + echo
+}
+
+// sanitizeShellOutput normalizes line endings and strips dangerous terminal
+// control sequences from remote shell output. Keeps colors/styles but removes
+// cursor movement, screen clear, alt screen, etc. that would corrupt the TUI.
+// Also filters out stty resize commands that leak from PTY resize operations.
+func sanitizeShellOutput(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "FLAME_CSHARP\n", "")
+	s = strings.ReplaceAll(s, "FLAME_CSHARP", "")
+
+	// Strip dangerous CSI sequences (cursor movement, screen clear, scroll regions)
+	// Keep color/style sequences (SGR: ends with 'm')
+	var result []byte
+	i := 0
+	for i < len(s) {
+		if s[i] == '\033' && i+1 < len(s) {
+			if s[i+1] == '[' {
+				// CSI sequence: \033[ ... <final byte>
+				j := i + 2
+				for j < len(s) && s[j] >= 0x20 && s[j] <= 0x3F {
+					j++ // skip parameter bytes (0-9, ;, etc.)
+				}
+				if j < len(s) {
+					finalByte := s[j]
+					if finalByte == 'm' {
+						// SGR (color/style) — keep it
+						result = append(result, s[i:j+1]...)
+					}
+					// All other CSI sequences (A,B,C,D,H,J,K,L,M,S,T, etc.) — drop
+					i = j + 1
+					continue
+				}
+			} else if s[i+1] == ']' {
+				// OSC sequence: \033] ... ST — drop entirely (title changes etc.)
+				j := i + 2
+				for j < len(s) {
+					if s[j] == '\033' && j+1 < len(s) && s[j+1] == '\\' {
+						j += 2
+						break
+					}
+					if s[j] == '\007' { // BEL also terminates OSC
+						j++
+						break
+					}
+					j++
+				}
+				i = j
+				continue
+			}
+			// Other escape sequences — drop the \033 and next byte
+			i += 2
+			continue
+		}
+		result = append(result, s[i])
+		i++
+	}
+	return string(result)
+}
+
+// stripANSI removes ANSI escape codes from a string.
+func stripANSI(s string) string {
+	var result []byte
+	i := 0
+	for i < len(s) {
+		if s[i] == '\033' && i+1 < len(s) && s[i+1] == '[' {
+			// Skip until we find a letter
+			j := i + 2
+			for j < len(s) && !((s[j] >= 'A' && s[j] <= 'Z') || (s[j] >= 'a' && s[j] <= 'z')) {
+				j++
+			}
+			i = j + 1
+		} else {
+			result = append(result, s[i])
+			i++
+		}
+	}
+	return string(result)
+}
+
+// truncateLine truncates a line (which may contain ANSI codes) to maxWidth display columns.
+// Uses ansi.Truncate for proper handling of escape sequences.
+func truncateLine(line string, maxWidth int) string {
+	return ansi.Truncate(line, maxWidth, "")
+}
+
+// showScrollbar makes the scrollbar visible and returns a cmd to hide it after delay.
+func (a *App) showScrollbar() tea.Cmd {
+	a.scrollbarVisible = true
+	a.scrollbarID++
+	id := a.scrollbarID
+	return tea.Tick(scrollbarHideDelay, func(time.Time) tea.Msg {
+		return hideScrollbarMsg{id: id}
+	})
+}
+
+// menuAppend appends text to the menu buffer and, if menu is active, also to the viewport.
+func (a *App) menuAppend(text string) {
+	// Suppress double blank lines: if buffer ends with \n\n and text starts with \n, skip leading \n
+	buf := a.menuBuffer.String()
+	if strings.HasSuffix(buf, "\n\n") && strings.HasPrefix(text, "\n") {
+		text = strings.TrimLeft(text, "\n")
+		if text == "" {
+			return
+		}
+	}
+	a.menuBuffer.WriteString(text)
+	if a.activeSession == 0 {
+		a.output.Append(text)
+	}
+}
+
+// executeBangCommand runs a flame command from shell mode (!prefix).
+// Output goes to menuBuffer (visible on detach), notifications show immediately.
+func (a App) executeBangCommand(cmd string) (tea.Model, tea.Cmd) {
+	// Echo the bang command in menu buffer
+	prompt := styleMagenta.Bold(true).Render("!") + " "
+	a.menuAppend(prompt + styleBase.Render(cmd) + "\n")
+
+	// Route async commands
+	switch {
+	case strings.HasPrefix(cmd, "upload "):
+		return a.handleUploadCmd(cmd)
+	case strings.HasPrefix(cmd, "download "):
+		return a.handleDownloadCmd(cmd)
+	case cmd == "spawn":
+		return a.handleSpawnCmd()
+	case strings.HasPrefix(cmd, "kill "):
+		return a.handleKillCmd(cmd)
+	case strings.HasPrefix(cmd, "use "):
+		return a.handleUseCmd(cmd)
+	case strings.HasPrefix(cmd, "run "):
+		return a.handleRunCmd(cmd)
+	default:
+		// Sync commands — execute and buffer output
+		output := a.executor.ExecuteCommand(cmd)
+		if output != "" {
+			a.menuAppend(output)
+			if !strings.HasSuffix(output, "\n") {
+				a.menuAppend("\n")
+			}
+		}
+		a.menuAppend("\n")
+		a.syncSessionInfo()
+		return a, nil
+	}
+}
+
+func shouldDetachForBangUse(context ContextMode) bool {
+	return context == ContextShell
+}
+
+func (a App) handleUseCmd(cmd string) (tea.Model, tea.Cmd) {
+	if shouldDetachForBangUse(a.context) {
+		a.context = ContextMenu
+		a.header.Context = ContextMenu
+		a.statusBar.Context = ContextMenu
+		a.input.SetContext(ContextMenu)
+		a.switchToMenu()
+	}
+
+	output := a.executor.ExecuteCommand(cmd)
+	if output != "" {
+		a.menuAppend(output)
+		if !strings.HasSuffix(output, "\n") {
+			a.menuAppend("\n")
+		}
+	}
+	a.menuAppend("\n")
+	a.syncSessionInfo()
+	return a, nil
+}
+
+// handleKillCmd handles kill with proper context switching if killing active session.
+func (a App) handleKillCmd(cmd string) (tea.Model, tea.Cmd) {
+	// If we're in shell mode and killing the active session, switch to menu FIRST
+	if a.context == ContextShell {
+		// Parse session ID from command
+		parts := strings.Fields(cmd)
+		if len(parts) >= 2 {
+			if killID, err := strconv.Atoi(parts[1]); err == nil && killID == a.activeSession {
+				// Killing our own session — detach first
+				a.context = ContextMenu
+				a.header.Context = ContextMenu
+				a.statusBar.Context = ContextMenu
+				a.input.SetContext(ContextMenu)
+				a.switchToMenu()
+			}
+		}
+	}
+
+	// Execute kill
+	output := a.executor.ExecuteCommand(cmd)
+	if output != "" {
+		a.menuAppend(output)
+		if !strings.HasSuffix(output, "\n") {
+			a.menuAppend("\n")
+		}
+	}
+	a.menuAppend("\n")
+	a.syncSessionInfo()
+	return a, nil
+}
+
+// handleRunCmd launches a module asynchronously.
+func (a App) handleRunCmd(cmd string) (tea.Model, tea.Cmd) {
+	parts := strings.Fields(cmd)
+	if len(parts) < 2 {
+		a.menuAppend(ui.CommandHelp("Usage: run <module> [args...]") + "\n")
+		a.menuAppend(ui.Info("Type 'modules' to see available modules") + "\n\n")
+		return a, nil
+	}
+
+	if a.executor.GetSelectedSessionID() == 0 {
+		a.menuAppend(ui.Error("No session selected. Use 'use <id>' first") + "\n\n")
+		return a, nil
+	}
+
+	moduleName := parts[1]
+	args := expandModuleSourceArg(moduleName, parts[2:])
+	a.executor.StartModule(moduleName, args)
+	return a, nil
+}
+
+func expandModuleSourceArg(moduleName string, args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	switch moduleName {
+	case "sh", "elf", "ps1", "dotnet", "py":
+		out := append([]string(nil), args...)
+		out[0] = expandTilde(out[0])
+		return out
+	default:
+		return args
+	}
+}
+
+// handleSpawnCmd launches spawn asynchronously.
+func (a App) handleSpawnCmd() (tea.Model, tea.Cmd) {
+	if a.executor.GetSelectedSessionID() == 0 {
+		a.menuAppend(ui.Error("No session selected. Use 'use <id>' first") + "\n\n")
+		return a, nil
+	}
+
+	a.executor.StartSpawn()
+	return a, nil
+}
+
+// expandTilde replaces a leading ~ with the user's home directory.
+func expandTilde(path string) string {
+	if strings.HasPrefix(path, "~/") || path == "~" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, path[1:])
+		}
+	}
+	return path
+}
+
+// handleUploadCmd parses and launches an async upload (fire-and-forget).
+func (a App) handleUploadCmd(cmd string) (tea.Model, tea.Cmd) {
+	parts := strings.Fields(cmd)
+	if len(parts) < 2 {
+		a.menuAppend(ui.CommandHelp("Usage: upload <local_path> [remote_path]") + "\n\n")
+		return a, nil
+	}
+	localPath := expandTilde(parts[1])
+	remotePath := ""
+	if len(parts) >= 3 {
+		remotePath = parts[2]
+	}
+
+	if a.executor.GetSelectedSessionID() == 0 {
+		a.menuAppend(ui.Error("No session selected. Use 'use <id>' first") + "\n\n")
+		return a, nil
+	}
+
+	// Fire-and-forget — completion arrives via transferDoneFunc → transferDoneMsg
+	ctx, cancel := context.WithCancel(context.Background())
+	a.transferActive = true
+	a.transferCancel = cancel
+	a.executor.StartUpload(ctx, localPath, remotePath)
+	return a, nil
+}
+
+// handleDownloadCmd parses and launches an async download (fire-and-forget).
+func (a App) handleDownloadCmd(cmd string) (tea.Model, tea.Cmd) {
+	parts := strings.Fields(cmd)
+	if len(parts) < 2 {
+		a.menuAppend(ui.CommandHelp("Usage: download <remote_path> [local_path]") + "\n\n")
+		return a, nil
+	}
+	remotePath := parts[1]
+	localPath := ""
+	if len(parts) >= 3 {
+		localPath = expandTilde(parts[2])
+	}
+
+	if a.executor.GetSelectedSessionID() == 0 {
+		a.menuAppend(ui.Error("No session selected. Use 'use <id>' first") + "\n\n")
+		return a, nil
+	}
+
+	// Fire-and-forget — completion arrives via transferDoneFunc → transferDoneMsg
+	ctx, cancel := context.WithCancel(context.Background())
+	a.transferActive = true
+	a.transferCancel = cancel
+	a.executor.StartDownload(ctx, remotePath, localPath)
+	return a, nil
+}
+
+// saveViewportToBuffer saves the current viewport content to the active buffer.
+func (a *App) saveViewportToBuffer() {
+	content := a.output.GetContent()
+	if a.activeSession == 0 {
+		a.menuBuffer.Reset()
+		a.menuBuffer.WriteString(content)
+	} else {
+		buf := a.getSessionBuffer(a.activeSession)
+		buf.Reset()
+		buf.WriteString(content)
+	}
+}
+
+// switchToMenu saves the current buffer and loads the menu buffer into viewport.
+func (a *App) switchToMenu() {
+	a.saveViewportToBuffer()
+	a.activeSession = 0
+	a.output.SetContent(a.menuBuffer.String())
+}
+
+// switchToSession saves the current buffer and loads a session buffer into viewport.
+func (a *App) switchToSession(numID int) {
+	a.saveViewportToBuffer()
+	a.activeSession = numID
+	buf := a.getSessionBuffer(numID)
+	a.output.SetContent(buf.String())
+}
+
+// getSessionBuffer returns the buffer for a session, creating it if needed.
+func (a *App) getSessionBuffer(numID int) *strings.Builder {
+	if buf, ok := a.sessionBuffers[numID]; ok {
+		return buf
+	}
+	buf := &strings.Builder{}
+	a.sessionBuffers[numID] = buf
+	return buf
+}
+
+// appendToSessionBuffer appends text to a session's buffer without affecting the viewport.
+func (a *App) appendToSessionBuffer(numID int, text string) {
+	buf := a.getSessionBuffer(numID)
+	buf.WriteString(text)
+}
+
+func (a *App) syncSessionInfo() {
+	if a.executor == nil {
+		return
+	}
+	a.header.SessionCount = a.executor.SessionCount()
+	a.input.SetSessionID(a.executor.GetSelectedSessionID())
+}
+
+func (a App) View() string {
+	if a.width == 0 || a.height == 0 {
+		return "Initializing..."
+	}
+
+	if a.splash {
+		return a.viewSplash()
+	}
+
+	outputView := a.output.View()
+	inputView := a.input.View()
+	statusView := a.statusBar.View()
+
+	// Truncate output to exact height and width
+	outputLines := strings.Split(outputView, "\n")
+	if len(outputLines) > a.layout.Output.H {
+		outputLines = outputLines[len(outputLines)-a.layout.Output.H:]
+	}
+	for len(outputLines) < a.layout.Output.H {
+		outputLines = append(outputLines, "")
+	}
+	// Clamp each line to output width to prevent bleeding into sidebar on resize
+	for i, line := range outputLines {
+		if lipgloss.Width(line) > a.layout.Output.W {
+			outputLines[i] = truncateLine(line, a.layout.Output.W)
+		}
+	}
+
+	// Truncate input to 1 line and clamp width
+	inputLines := strings.Split(inputView, "\n")
+	inputView = inputLines[0]
+	if lipgloss.Width(inputView) > a.layout.Input.W {
+		inputView = truncateLine(inputView, a.layout.Input.W)
+	}
+
+	// Scrollbar thumb (shared by compact and wide)
+	thumbStart, thumbEnd := -1, -1
+	if a.scrollbarVisible {
+		thumbStart, thumbEnd = a.output.ScrollbarThumb()
+	}
+	scrollThumb := lipgloss.NewStyle().Foreground(colorDim).Render("▐")
+	scrollChar := func(_ int) string { return scrollThumb }
+
+	if a.layout.IsCompact() {
+		// In compact mode, overlay scrollbar on last column of output lines
+		if thumbStart >= 0 {
+			for i := thumbStart; i < thumbEnd && i < len(outputLines); i++ {
+				// Truncate line to width-1 then append thumb
+				outputLines[i] = truncateLine(outputLines[i], a.layout.Output.W-1)
+				lineW := lipgloss.Width(outputLines[i])
+				if lineW < a.layout.Output.W-1 {
+					outputLines[i] += strings.Repeat(" ", a.layout.Output.W-1-lineW)
+				}
+				outputLines[i] += scrollChar(i)
+			}
+		}
+
+		headerView := a.header.View()
+		result := lipgloss.JoinVertical(lipgloss.Left,
+			headerView,
+			strings.Join(outputLines, "\n"),
+			"",
+			inputView,
+			"",
+			statusView,
+		)
+		result = a.padViewLines(result)
+		if a.help != nil {
+			return a.help.View(a.width, a.height, result)
+		}
+		if a.dialog != nil {
+			return a.dialog.View(a.width, a.height, result)
+		}
+		return result
+	}
+
+	// Wide mode: sidebar with branding (no header bar)
+	sidebarContent := a.renderSidebar()
+	sidebarLines := strings.Split(sidebarContent, "\n")
+	sidebarH := a.layout.Sidebar.H
+	for len(sidebarLines) < sidebarH {
+		sidebarLines = append(sidebarLines, "")
+	}
+	if len(sidebarLines) > sidebarH {
+		sidebarLines = sidebarLines[:sidebarH]
+	}
+
+	// Pad line to exact width
+	padLine := func(line string, width int) string {
+		w := lipgloss.Width(line)
+		if w >= width {
+			return line
+		}
+		return line + strings.Repeat(" ", width-w)
+	}
+
+	// Build left column: output + blank + input + blank
+	leftLines := append(outputLines, "", inputView, "")
+
+	// Gap between main and sidebar
+	gap := a.layout.Sidebar.X - a.layout.Output.W
+	if gap < 1 {
+		gap = 1
+	}
+
+	// Merge columns line by line
+	totalH := len(leftLines)
+	if sidebarH > totalH {
+		totalH = sidebarH
+	}
+	var merged []string
+	for i := 0; i < totalH; i++ {
+		left := ""
+		if i < len(leftLines) {
+			left = leftLines[i]
+		}
+		right := ""
+		if i < len(sidebarLines) {
+			right = sidebarLines[i]
+		}
+
+		// Build gap: scrollbar in the middle of the gap for output lines
+		var gapStr string
+		if i < len(outputLines) && thumbStart >= 0 && i >= thumbStart && i < thumbEnd {
+			// Place scrollbar: 1 space + thumb + remaining spaces
+			gapStr = " " + scrollChar(i) + strings.Repeat(" ", gap-2)
+		} else {
+			gapStr = strings.Repeat(" ", gap)
+		}
+
+		merged = append(merged, padLine(left, a.layout.Output.W)+gapStr+padLine(right, a.layout.Sidebar.W))
+	}
+
+	result := lipgloss.JoinVertical(lipgloss.Left,
+		strings.Join(merged, "\n"),
+		statusView,
+	)
+	result = a.padViewLines(result)
+	if a.help != nil {
+		return a.help.View(a.width, a.height, result)
+	}
+	if a.dialog != nil {
+		return a.dialog.View(a.width, a.height, result)
+	}
+	return result
+}
+
+// padViewLines ensures every line is padded to exactly a.width display columns.
+// This prevents rendering artifacts when the terminal shrinks (old longer lines
+// would otherwise remain visible since the new shorter lines don't overwrite them).
+func (a App) padViewLines(view string) string {
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		w := lipgloss.Width(line)
+		if w < a.width {
+			lines[i] = line + strings.Repeat(" ", a.width-w)
+		} else if w > a.width {
+			lines[i] = truncateLine(line, a.width)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// viewSplash renders the splash/landing screen shown before first Enter.
+// Input bar is active and functional. Banner has hatching only on the sides.
+func (a App) viewSplash() string {
+	banner := renderBannerSplash(a.width)
+	inputView := strings.Split(a.input.View(), "\n")[0]
+	statusView := a.statusBar.View()
+
+	// Info lines below the banner
+	info := []string{
+		"",
+		"  " + styleMuted.Render("Listening for connections on ") + styleCyan.Render(a.listenerAddr),
+	}
+	if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.BinbagEnabled {
+		info = append(info, "  "+styleMuted.Render("Binbag serving on ")+styleCyan.Render(fmt.Sprintf("http://%s:%d/", internal.GlobalRuntimeConfig.ListenerIP, internal.GlobalRuntimeConfig.HTTPPort)))
+	}
+	info = append(info, "")
+	info = append(info, "  "+styleSubtle.Render("Type 'help' for available commands"))
+
+	// Build content area: top padding + banner + info
+	bannerLines := strings.Split(banner, "\n")
+	var content []string
+
+	// Push banner down ~1/3 of the screen
+	topPad := 4
+	for i := 0; i < topPad; i++ {
+		content = append(content, "")
+	}
+
+	content = append(content, bannerLines...)
+	content = append(content, info...)
+
+	// Fill remaining space (height - blank - input - blank - status)
+	contentH := a.height - 1 - 1 - 1 - 1 // blank + input + blank + status
+	for len(content) < contentH {
+		content = append(content, "")
+	}
+	if len(content) > contentH {
+		content = content[:contentH]
+	}
+
+	result := strings.Join(content, "\n") + "\n\n" + inputView + "\n\n" + statusView
+	return a.padViewLines(result)
+}
+
+// renderSidebar builds the sidebar content with adaptive branding.
+func (a App) renderSidebar() string {
+	w := a.layout.Sidebar.W
+	if w <= 0 {
+		return ""
+	}
+
+	var lines []string
+
+	// --- Banner (adaptive based on layout mode) ---
+	if a.layout.Mode == LayoutFull {
+		banner := renderBannerFull(w)
+		lines = append(lines, strings.Split(banner, "\n")...)
+	} else {
+		lines = append(lines, renderBannerCompact(w))
+	}
+
+	lines = append(lines, "")
+
+	// --- Listener ---
+	lines = append(lines, " "+styleBase.Render("\uf095")+" "+styleMuted.Render(a.listenerAddr))
+
+	// In Full layout, show pivot, CWD, binbag. Medium skips all to save space for sessions.
+	if a.layout.Mode == LayoutFull {
+		// --- Pivot ---
+		if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.PivotEnabled {
+			lines = append(lines, "")
+			lines = append(lines, " "+styleBase.Render("\uf064")+" "+styleMuted.Render("pivoting enabled"))
+			lines = append(lines, "   "+styleSubtle.Render("via "+internal.GlobalRuntimeConfig.PivotHost))
+		}
+
+		lines = append(lines, "")
+
+		// --- CWD ---
+		prettyPath := a.cwd
+		if home, err := os.UserHomeDir(); err == nil {
+			if rel, err := filepath.Rel(home, a.cwd); err == nil && !strings.HasPrefix(rel, "..") {
+				prettyPath = "~/" + rel
+			}
+		}
+		lines = append(lines, " "+styleBase.Render("\uf07c")+" "+styleMuted.Render(prettyPath))
+
+		lines = append(lines, "")
+
+		// --- Binbag status ---
+		binbagIcon := "\U000f059f" // nf-md-web 󰖟
+		if internal.GlobalRuntimeConfig != nil && internal.GlobalRuntimeConfig.BinbagEnabled {
+			prettyBinbag := internal.GlobalRuntimeConfig.BinbagPath
+			if home, err := os.UserHomeDir(); err == nil {
+				if rel, err := filepath.Rel(home, prettyBinbag); err == nil && !strings.HasPrefix(rel, "..") {
+					prettyBinbag = "~/" + rel
+				}
+			}
+			lines = append(lines, " "+styleBase.Render(binbagIcon)+" "+styleMuted.Render("binbag online"))
+			lines = append(lines, "   "+styleSubtle.Render(prettyBinbag))
+			lines = append(lines, "   "+styleSubtle.Render(fmt.Sprintf(":%d", internal.GlobalRuntimeConfig.HTTPPort)))
+		} else {
+			lines = append(lines, " "+styleSubtle.Render(binbagIcon)+" "+styleMuted.Render("binbag offline"))
+		}
+	}
+
+	lines = append(lines, "")
+
+	// Session count
+	sessionCount := 0
+	if a.executor != nil {
+		sessionCount = a.executor.SessionCount()
+	}
+	// Show counter only in Full mode — Medium saves space
+	if a.layout.Mode == LayoutFull {
+		sessWord := "sessions"
+		if sessionCount == 1 {
+			sessWord = "session"
+		}
+		countStyle := styleBase
+		if sessionCount == 0 {
+			countStyle = styleSubtle
+		}
+		lines = append(lines, " "+countStyle.Render(fmt.Sprintf("%d", sessionCount))+" "+styleMuted.Render(sessWord))
+		lines = append(lines, "")
+	}
+
+	// --- Active session section ---
+	lines = append(lines, sectionHeader("Active", w))
+
+	if ip, whoami, platform, ok := a.executor.GetActiveSessionDisplay(); ok {
+		// Platform icon
+		platIcon := ""
+		switch platform {
+		case "linux":
+			platIcon = " "
+		case "windows":
+			platIcon = " "
+		default:
+			platIcon = " "
+		}
+
+		// Name: whoami as fallback (future: user-set description)
+		name := whoami
+		if name == "" {
+			name = ip
+		}
+		lines = append(lines, " "+styleCyan.Render(platIcon)+styleBase.Render(name))
+		lines = append(lines, "  "+styleMuted.Render(ip))
+		lines = append(lines, "  "+styleMuted.Render(platform))
+	} else {
+		lines = append(lines, styleSubtle.Render("  None"))
+	}
+
+	lines = append(lines, "")
+
+	// --- Sessions section ---
+	lines = append(lines, sectionHeader("Sessions", w))
+
+	if a.executor != nil && sessionCount > 0 {
+		sessionsDisplay := a.executor.GetSessionsForDisplay()
+		sessLines := strings.Split(sessionsDisplay, "\n")
+
+		// Calculate available space for sessions
+		maxLines := a.layout.Sidebar.H - len(lines) - 1 // -1 for safety
+		if maxLines < 2 {
+			maxLines = 2
+		}
+
+		if len(sessLines) <= maxLines {
+			for _, sl := range sessLines {
+				lines = append(lines, " "+sl)
+			}
+		} else {
+			// Show what fits + "+N more"
+			for _, sl := range sessLines[:maxLines-1] {
+				lines = append(lines, " "+sl)
+			}
+			remaining := len(sessLines) - (maxLines - 1)
+			lines = append(lines, " "+styleSubtle.Render(fmt.Sprintf("+%d more", remaining)))
+		}
+	} else {
+		lines = append(lines, styleSubtle.Render("  None"))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// Run starts the Bubble Tea TUI program.
+func Run(executor CommandExecutor, listenerAddr string) error {
+	executor.SetSilent(true)
+
+	app := New(executor, listenerAddr)
+	app.input.LoadHistory()
+	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
+
+	// Wire up background notifications → TUI via program.Send()
+	executor.SetNotifyFunc(func(msg string) {
+		go p.Send(CommandOutputMsg{Output: msg + "\n"})
+	})
+	executor.SetNotifyBarFunc(func(msg string, level int) {
+		go p.Send(showNotifyMsg{Message: msg, Level: NotifyLevel(level)})
+	})
+	executor.SetSpinnerFunc(
+		func(id int, text string) { go p.Send(spinnerStartMsg{ID: id, Text: text}) },
+		func(id int) { go p.Send(spinnerStopMsg{ID: id}) },
+		func(id int, text string) { go p.Send(spinnerUpdateMsg{ID: id, Text: text}) },
+	)
+	executor.SetTransferProgressFunc(func(filename string, pct int, right string, upload bool) {
+		go p.Send(transferProgressMsg{Filename: filename, Pct: pct, Right: right, Upload: upload})
+	})
+	executor.SetTransferDoneFunc(func(filename string, upload bool, err error) {
+		go p.Send(transferDoneMsg{Filename: filename, Upload: upload, Err: err})
+	})
+	executor.SetShellOutputFunc(func(sessionID string, numID int, data []byte) {
+		go p.Send(ShellOutputMsg{SessionID: sessionID, NumID: numID, Data: data})
+	})
+	executor.SetSessionDisconnectFunc(func(numID int, remoteIP string) {
+		go p.Send(SessionDisconnectedMsg{NumID: numID, RemoteIP: remoteIP})
+	})
+
+	_, err := p.Run()
+
+	// Save menu history on exit
+	app.input.SaveHistory()
+
+	executor.StopShellRelay()
+	executor.SetSilent(false)
+	executor.SetNotifyFunc(nil)
+	executor.SetNotifyBarFunc(nil)
+	executor.SetSpinnerFunc(nil, nil, nil)
+	executor.SetTransferProgressFunc(nil)
+	executor.SetTransferDoneFunc(nil)
+	executor.SetShellOutputFunc(nil)
+	executor.SetSessionDisconnectFunc(nil)
+	return err
+}

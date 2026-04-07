@@ -8,8 +8,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-
-	"github.com/chsoares/gummy/internal/ui"
 )
 
 // Listener handles incoming TCP connections
@@ -59,12 +57,7 @@ func (l *Listener) Start() error {
 
 	l.listener = listener
 
-	// Show the actual IP for payload generation, not the bind address
-	displayAddr := addr
-	if l.listenerIP != "" {
-		displayAddr = fmt.Sprintf("%s:%d", l.listenerIP, l.port)
-	}
-	fmt.Println(ui.Info(fmt.Sprintf("Listening for connections on %s", displayAddr)))
+	// Listening message is shown in TUI splash screen
 
 	// Start accepting connections in a goroutine
 	// This is non-blocking, allowing main to continue

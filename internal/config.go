@@ -7,7 +7,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Config holds all gummy configuration
+// Config holds all flame configuration
 type Config struct {
 	Binbag struct {
 		Enabled  bool   `toml:"enabled"`
@@ -15,14 +15,9 @@ type Config struct {
 		HTTPPort int    `toml:"http_port"`
 	} `toml:"binbag"`
 
-	Execution struct {
-		DefaultMode string `toml:"default_mode"` // "stealth" or "speed"
-	} `toml:"execution"`
-
 	Pivot struct {
 		Enabled bool   `toml:"enabled"`
 		Host    string `toml:"host"`
-		Port    int    `toml:"port"`
 	} `toml:"pivot"`
 }
 
@@ -40,31 +35,23 @@ func DefaultConfig() *Config {
 			Path:     filepath.Join(home, "Lab", "binbag"),
 			HTTPPort: 8080,
 		},
-		Execution: struct {
-			DefaultMode string `toml:"default_mode"`
-		}{
-			DefaultMode: "stealth", // Stealth by default
-		},
 		Pivot: struct {
 			Enabled bool   `toml:"enabled"`
 			Host    string `toml:"host"`
-			Port    int    `toml:"port"`
 		}{
 			Enabled: false,
 			Host:    "",
-			Port:    0,
 		},
 	}
 }
 
-// LoadConfig loads config from ~/.gummy/config.toml or returns defaults
+// LoadConfig loads config from ~/.flame/config.toml or returns defaults
 func LoadConfig() (*Config, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if _, err := os.UserHomeDir(); err != nil {
 		return DefaultConfig(), nil
 	}
 
-	configPath := filepath.Join(home, ".gummy", "config.toml")
+	configPath := appDataPath("config.toml")
 
 	// If config doesn't exist, return defaults
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -82,12 +69,11 @@ func LoadConfig() (*Config, error) {
 
 // SaveDefaultConfig creates a default config file if it doesn't exist
 func SaveDefaultConfig() error {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if _, err := os.UserHomeDir(); err != nil {
 		return err
 	}
 
-	configDir := filepath.Join(home, ".gummy")
+	configDir := appDataPath()
 	configPath := filepath.Join(configDir, "config.toml")
 
 	// Don't overwrite existing config
@@ -101,8 +87,8 @@ func SaveDefaultConfig() error {
 	}
 
 	// Create default config file with comments
-	configContent := `# Gummy Configuration File
-# This file is optional - gummy works fine without it!
+	configContent := `# Flame Configuration File
+# This file is optional - flame works fine without it!
 
 [binbag]
 # Enable HTTP file server for fast transfers (100x faster than b64 chunks)
@@ -112,19 +98,11 @@ path = "~/Lab/binbag"
 # HTTP server port for file serving
 http_port = 8080
 
-[execution]
-# Default execution mode on startup: "stealth" or "speed"
-# - stealth: in-memory (curl|bash, Reflection.Load) - no disk artifacts
-# - speed: disk-based (SmartUpload -> execute -> shred) - for large binaries
-# Can be changed at runtime with: set mode <mode>
-default_mode = "stealth"
-
 [pivot]
-# Optional: Use pivot point for HTTP downloads in internal networks
-# When enabled, HTTP URLs use this address instead of direct connection
+# Optional: Route all URLs/payloads through a pivot IP (e.g., ligolo)
+# Only the IP is replaced — ports are preserved from original services
 enabled = false
 host = ""
-port = 0
 `
 
 	return os.WriteFile(configPath, []byte(configContent), 0644)

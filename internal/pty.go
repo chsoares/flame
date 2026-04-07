@@ -13,9 +13,11 @@ import (
 
 // PTYUpgrader gerencia upgrade de shells raw para PTY
 type PTYUpgrader struct {
-	conn       net.Conn
-	sessionID  string
-	stopResize chan struct{} // Signal to stop resize handler goroutine
+	conn         net.Conn
+	sessionID    string
+	stopResize   chan struct{} // Signal to stop resize handler goroutine
+	overrideCols int           // If > 0, use this width instead of auto-detecting
+	overrideRows int           // If > 0, use this height instead of auto-detecting
 }
 
 // NewPTYUpgrader cria um novo upgrader de PTY
@@ -49,10 +51,10 @@ func (p *PTYUpgrader) TryUpgrade() error {
 func (p *PTYUpgrader) detectShell() (string, error) {
 	// Envia comando para detectar shell
 	commands := []string{
-		"echo $0",           // Detecta shell atual
-		"which python3",     // Verifica python3
-		"which python",      // Verifica python
-		"ps -p $$",          // Mostra processo atual
+		"echo $0",       // Detecta shell atual
+		"which python3", // Verifica python3
+		"which python",  // Verifica python
+		"ps -p $$",      // Mostra processo atual
 	}
 
 	for _, cmd := range commands {
@@ -161,8 +163,10 @@ func (p *PTYUpgrader) upgradeGenericShell() error {
 
 // testPTY testa se PTY upgrade foi bem-sucedido
 func (p *PTYUpgrader) testPTY() bool {
-	// Envia comando de teste
-	testCmd := "stty -echo; echo PTY_TEST_OK; stty echo\n"
+	// Envia comando de teste silencioso.
+	// On a real PTY, stty succeeds with no output; on a raw shell,
+	// it typically prints a tty-related error we can detect.
+	testCmd := "stty -echo; stty echo\n"
 	p.conn.Write([]byte(testCmd))
 
 	// Aguarda resposta
@@ -172,11 +176,16 @@ func (p *PTYUpgrader) testPTY() bool {
 	p.conn.SetReadDeadline(time.Time{})
 
 	if err != nil {
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return true
+		}
 		return false
 	}
 
 	response := string(buffer[:n])
-	return strings.Contains(response, "PTY_TEST_OK")
+	return !strings.Contains(strings.ToLower(response), "inappropriate ioctl") &&
+		!strings.Contains(strings.ToLower(response), "not a tty") &&
+		!strings.Contains(strings.ToLower(response), "bad file descriptor")
 }
 
 // completePTYSetup completa configuração PTY
@@ -208,8 +217,19 @@ func (p *PTYUpgrader) completePTYSetup() error {
 	return nil
 }
 
+// SetSize overrides the terminal size used for PTY setup (for TUI mode).
+func (p *PTYUpgrader) SetSize(cols, rows int) {
+	p.overrideCols = cols
+	p.overrideRows = rows
+}
+
 // getTerminalSize obtém dimensões do terminal local
 func (p *PTYUpgrader) getTerminalSize() (int, int) {
+	// Use override if set (TUI mode)
+	if p.overrideCols > 0 && p.overrideRows > 0 {
+		return p.overrideCols, p.overrideRows
+	}
+
 	// Usa stty para obter dimensões do terminal local
 	cmd := exec.Command("stty", "size")
 	cmd.Stdin = os.Stdin

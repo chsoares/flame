@@ -37,18 +37,20 @@ const (
 	ColorBrightWhite   = "\033[97m"
 
 	// Symbols (nerdfont only) - simplified set
-	SymbolDroplet  = "󰗣" // Main gummy theme
-	SymbolTarget   = "󰓾" // Target/session
-	SymbolFire     = "" // Received shell
-	SymbolGem      = "" // Active sessions header
-	SymbolSkull    = "" // Session died
-	SymbolCommand  = "" // Commands/arrows
-	SymbolInfo     = "" // Information
-	SymbolCheck    = "" // Information
-	SymbolDownload = "" // Information
-	SymbolUpload   = "" // Information
-	SymbolError    = "" // Information
-	SymbolWarning  = "" // Information
+	SymbolLogo     = ""      // nf-fa-fire — Main flame theme
+	SymbolTarget   = "󰓾"      // Target/session
+	SymbolFire     = ""      // Received shell
+	SymbolGem      = ""      // Active sessions header
+	SymbolSkull    = ""      // Session died
+	SymbolCommand  = ""      // Commands/arrows
+	SymbolInfo     = ""      // Information
+	SymbolCheck    = ""      // Information
+	SymbolDownload = ""      // Information
+	SymbolUpload   = ""      // Information
+	SymbolError    = ""      // Information
+	SymbolWarning  = ""      // Information
+	SymbolAttach   = "\ue795" // nf-dev-terminal — Shell attach
+	SymbolDetach   = "\uead5" // nf-cod-debug_step_out — Shell detach
 )
 
 // Themed color functions inspired by ezpz scripts
@@ -57,7 +59,7 @@ func Header(text string) string {
 }
 
 func Info(text string) string {
-	return fmt.Sprintf("%s%s %s%s", ColorCyan, SymbolInfo, text, ColorReset)
+	return fmt.Sprintf("%s%s %s%s", ColorYellow, SymbolInfo, text, ColorReset)
 }
 
 func Success(text string) string {
@@ -70,6 +72,14 @@ func Error(text string) string {
 
 func Warning(text string) string {
 	return fmt.Sprintf("%s%s %s%s", ColorMagenta, SymbolWarning, text, ColorReset)
+}
+
+func ShellAttach(text string) string {
+	return fmt.Sprintf("%s%s %s%s", ColorMagenta, SymbolAttach, text, ColorReset)
+}
+
+func ShellDetach(text string) string {
+	return fmt.Sprintf("%s%s %s%s", ColorBlue, SymbolDetach, text, ColorReset)
 }
 
 func Command(text string) string {
@@ -94,6 +104,11 @@ func HelpInfo(text string) string {
 	return fmt.Sprintf("%s%s %s%s", ColorBlue, SymbolCommand, text, ColorReset)
 }
 
+// HelpFooter renders subdued help footer text without a symbol.
+func HelpFooter(text string) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(text)
+}
+
 // TableHeader for table column headers (no symbol, just colored text)
 func TableHeader(text string) string {
 	return fmt.Sprintf("%s%s%s", ColorBlue, text, ColorReset)
@@ -106,43 +121,6 @@ func SessionActive(text string) string {
 
 func SessionInactive(text string) string {
 	return fmt.Sprintf("%s%s", text, ColorReset)
-}
-
-// Banner function inspired by gum style
-func Banner() string {
-	// Define styles with Lipgloss
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("5")). // Magenta
-		Bold(true).
-		Padding(0, 1)
-
-	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("6")).
-		Padding(0, 1)
-
-	droplet := SymbolDroplet
-	title := fmt.Sprintf("gummy shell %s", droplet)
-
-	return boxStyle.Render(titleStyle.Render(title))
-}
-
-// Subtitle banner for specific contexts
-func SubBanner(subtitle string) string {
-	// Define styles with Lipgloss
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("5")).
-		Padding(0, 1)
-
-	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("6")).
-		Padding(0, 1)
-
-	droplet := SymbolDroplet
-	title := fmt.Sprintf("%s %s", droplet, subtitle)
-
-	return boxStyle.Render(titleStyle.Render(title))
 }
 
 // SectionHeader creates a bordered header for sections (list, help, etc)
@@ -203,14 +181,14 @@ func BoxWithTitlePadded(title string, lines []string, paddingRight int) string {
 	return boxStyle.Render(content)
 }
 
-// Prompt with gummy theme
+// Prompt with flame theme
 func Prompt() string {
-	return fmt.Sprintf("%s%s%s gummy%s%s ❯ %s", ColorMagenta, SymbolDroplet, ColorBold, ColorReset, ColorBrightMagenta, ColorReset)
+	return fmt.Sprintf("%s%s%s flame%s%s ❯ %s", ColorMagenta, SymbolLogo, ColorBold, ColorReset, ColorBrightMagenta, ColorReset)
 }
 
 // PromptWithSession shows prompt with selected session number
 func PromptWithSession(sessionID int) string {
-	return fmt.Sprintf("%s%s%s gummy [%d]%s%s ❯ %s", ColorMagenta, SymbolDroplet, ColorBold, sessionID, ColorReset, ColorBrightMagenta, ColorReset)
+	return fmt.Sprintf("%s%s%s flame [%d]%s%s ❯ %s", ColorMagenta, SymbolLogo, ColorBold, sessionID, ColorReset, ColorBrightMagenta, ColorReset)
 }
 
 // PTY status indicators
@@ -225,7 +203,7 @@ func PTYFailed() string {
 // Session management
 func SessionOpened(id int, addr string) string {
 	return fmt.Sprintf("%s%s Reverse shell received on session %d (%s)%s",
-		ColorYellow, SymbolFire, id, addr, ColorReset)
+		ColorCyan, SymbolFire, id, addr, ColorReset)
 }
 
 func SessionClosed(id int, addr string) string {
@@ -269,7 +247,7 @@ func ExecutionModeSymbol(mode string) string {
 // Module execution mode legend (gray text like confirmation hints)
 func ExecutionModeLegend() string {
 	legendStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	return legendStyle.Render(fmt.Sprintf("\nExecution mode: %s In-memory  %s Disk + cleanup  %s Disk without cleanup",
+	return legendStyle.Render(fmt.Sprintf("Execution mode: %s In-memory  %s Disk + cleanup  %s Disk without cleanup",
 		ExecutionModeSymbol("memory"),
 		ExecutionModeSymbol("disk-cleanup"),
 		ExecutionModeSymbol("disk-no-cleanup")))

