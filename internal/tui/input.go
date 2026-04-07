@@ -30,6 +30,7 @@ type Input struct {
 	historyPrefix   string
 	filteredHistory []string
 	filteredHistIdx int
+	historyActive   bool
 }
 
 func NewInput() Input {
@@ -122,6 +123,7 @@ func (i *Input) resetHistoryNavigation() {
 	i.historyPrefix = ""
 	i.filteredHistory = nil
 	i.filteredHistIdx = -1
+	i.historyActive = false
 }
 
 // history returns the active history slice for the current context.
@@ -138,14 +140,24 @@ func (i *Input) history() []string {
 // appendHistory adds a command to the active history.
 func (i *Input) appendHistory(val string) {
 	if i.bangMode {
+		if len(i.menuHistory) > 0 && i.menuHistory[len(i.menuHistory)-1] == val {
+			return
+		}
 		i.menuHistory = append(i.menuHistory, val)
 		return
 	}
 	if i.context == ContextShell && i.sessionID > 0 {
-		i.sessionHistory[i.sessionID] = append(i.sessionHistory[i.sessionID], val)
-	} else {
-		i.menuHistory = append(i.menuHistory, val)
+		hist := i.sessionHistory[i.sessionID]
+		if len(hist) > 0 && hist[len(hist)-1] == val {
+			return
+		}
+		i.sessionHistory[i.sessionID] = append(hist, val)
+		return
 	}
+	if len(i.menuHistory) > 0 && i.menuHistory[len(i.menuHistory)-1] == val {
+		return
+	}
+	i.menuHistory = append(i.menuHistory, val)
 }
 
 // Submit returns the current value and adds it to history.
@@ -226,6 +238,33 @@ func (i *Input) updateSuggestions() {
 // HistoryUp navigates to the previous command in history.
 func (i *Input) HistoryUp() {
 	prefix := i.textinput.Value()
+	if i.filteredHistory != nil {
+		if len(i.filteredHistory) == 0 {
+			return
+		}
+		if i.filteredHistIdx > 0 {
+			i.filteredHistIdx--
+		}
+		if i.filteredHistIdx >= 0 && i.filteredHistIdx < len(i.filteredHistory) {
+			i.textinput.SetValue(i.filteredHistory[i.filteredHistIdx])
+			i.textinput.CursorEnd()
+		}
+		return
+	}
+
+	if i.historyActive {
+		hist := i.history()
+		if len(hist) == 0 {
+			return
+		}
+		if i.histIdx > 0 {
+			i.histIdx--
+		}
+		i.textinput.SetValue(hist[i.histIdx])
+		i.textinput.CursorEnd()
+		return
+	}
+
 	if prefix != "" {
 		if i.filteredHistory == nil {
 			i.historyPrefix = prefix
@@ -249,6 +288,8 @@ func (i *Input) HistoryUp() {
 	if len(hist) == 0 {
 		return
 	}
+	i.historyActive = true
+	i.historyPrefix = prefix
 	if i.histIdx == -1 {
 		i.histIdx = len(hist) - 1
 	} else if i.histIdx > 0 {
@@ -260,6 +301,24 @@ func (i *Input) HistoryUp() {
 
 // HistoryDown navigates to the next command in history.
 func (i *Input) HistoryDown() {
+	if i.historyActive {
+		hist := i.history()
+		if i.histIdx == -1 {
+			return
+		}
+		if i.histIdx < len(hist)-1 {
+			i.histIdx++
+			i.textinput.SetValue(hist[i.histIdx])
+			i.textinput.CursorEnd()
+		} else {
+			i.histIdx = -1
+			i.textinput.SetValue(i.historyPrefix)
+			i.textinput.CursorEnd()
+			i.resetHistoryNavigation()
+		}
+		return
+	}
+
 	if i.filteredHistory != nil {
 		if i.filteredHistIdx < len(i.filteredHistory)-1 {
 			i.filteredHistIdx++

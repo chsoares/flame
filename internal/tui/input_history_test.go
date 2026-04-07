@@ -133,3 +133,44 @@ func TestInputHistoryNavigationUsesSessionHistoryInShellContext(t *testing.T) {
 		t.Fatalf("expected newest shell prefix match, got %q", got)
 	}
 }
+
+func TestInputHistoryNavigationKeepsEmptyInputAsReturnPoint(t *testing.T) {
+	input := NewInput()
+	input.menuHistory = []string{
+		"alpha",
+		"beta",
+		"gamma",
+	}
+
+	input.HistoryUp()
+	if got := input.Value(); got != "gamma" {
+		t.Fatalf("expected newest history entry, got %q", got)
+	}
+
+	input.HistoryUp()
+	if got := input.Value(); got != "beta" {
+		t.Fatalf("expected previous history entry on repeated up, got %q", got)
+	}
+
+	input.HistoryDown()
+	if got := input.Value(); got != "gamma" {
+		t.Fatalf("expected next history entry on down, got %q", got)
+	}
+
+	input.HistoryDown()
+	if got := input.Value(); got != "" {
+		t.Fatalf("expected empty input restored after history end, got %q", got)
+	}
+}
+
+func TestInputSubmitDropsConsecutiveDuplicatesInMenuHistory(t *testing.T) {
+	input := NewInput()
+	input.menuHistory = []string{"run whoami"}
+	input.SetValue("run whoami")
+
+	input.Submit()
+
+	if got := input.menuHistory; len(got) != 1 || got[0] != "run whoami" {
+		t.Fatalf("expected consecutive duplicate not to be appended, got %#v", got)
+	}
+}
