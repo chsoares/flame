@@ -176,13 +176,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return a, nil
 			}
-			// Forward other keys to input (typing works during splash)
 			if msg.String() == "ctrl+d" {
 				return a.tryQuitCtrlD()
 			}
-			var cmd tea.Cmd
-			a.input, cmd = a.input.Update(msg)
-			return a, cmd
+			return a.updateInputMode(msg)
 		}
 		switch a.focus {
 		case FocusInput:
@@ -613,6 +610,14 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		a.input.HistoryDown()
 		return a, nil
+
+	case "right":
+		if a.input.AcceptSuggestion() {
+			return a, nil
+		}
+		var cmd tea.Cmd
+		a.input, cmd = a.input.Update(msg)
+		return a, cmd
 
 	case "tab":
 		if a.context == ContextMenu || a.input.InBangMode() {

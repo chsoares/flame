@@ -7,6 +7,12 @@
 - The help detail uses the same `HelpEntry` data as the terminal help output.
 - Enter opens detail, Backspace returns to the list, and Esc closes the modal.
 
+## Input History
+
+- The TUI input now shows the most recent prefix-matching command as a subtle inline suggestion.
+- Right arrow accepts the inline suggestion without changing `Tab` completion behavior.
+- Up/down now filter history by the typed prefix in both menu and shell inputs while keeping their existing separate history stores.
+
 ## Notes for Next Session
 
 - Keep the shared modal shell as the single source for modal framing.

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	internal "github.com/chsoares/flame/internal"
 )
 
 var flameLogo = []string{
@@ -42,6 +43,7 @@ func renderLogo() []string {
 func renderBannerFull(width int) string {
 	logo := renderLogo()
 	hatchRow := hatching(width)
+	logoWidth := lipgloss.Width(logo[0])
 
 	var lines []string
 
@@ -50,8 +52,15 @@ func renderBannerFull(width int) string {
 	lines = append(lines, hatchRow)
 
 	// Text line
-	label := " " + styleMuted.Render("shell handler")
-	lines = append(lines, label)
+	label := styleMuted.Render(" shell handler")
+	version := internal.Version
+	labelW := lipgloss.Width(label)
+	versionW := lipgloss.Width(version)
+	padW := logoWidth - labelW - versionW
+	if padW < 1 {
+		padW = 1
+	}
+	lines = append(lines, label+strings.Repeat(" ", padW)+styleMuted.Render(version)+" ")
 
 	for _, line := range logo {
 		lines = append(lines, " "+styleMagentaBold.Render(line))
@@ -102,11 +111,13 @@ func renderBannerSplash(width int) string {
 		}
 	}
 	left := hatching(leftHatch)
-	label := left + " " + styleMuted.Render("shell handler")
+	label := left + styleMuted.Render(" shell handler")
 	labelW := lipgloss.Width(label)
+	version := internal.Version
+	versionW := lipgloss.Width(version)
 	// Pad so right hatching starts at same position as logo lines
 	logoEnd := leftHatch + 1 + logoWidth // left pad + logo
-	padW := logoEnd - labelW
+	padW := logoEnd - labelW - versionW - 1
 	if padW < 1 {
 		padW = 1
 	}
@@ -114,7 +125,7 @@ func renderBannerSplash(width int) string {
 	if rightFill < 0 {
 		rightFill = 0
 	}
-	lines = append(lines, label+strings.Repeat(" ", padW)+hatching(rightFill))
+	lines = append(lines, label+strings.Repeat(" ", padW)+styleMuted.Render(version)+" "+hatching(rightFill))
 
 	// Logo lines with hatching on both sides
 	for _, logoLine := range logo {

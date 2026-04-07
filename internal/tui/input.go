@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -24,6 +25,11 @@ type Input struct {
 	menuHistory    []string         // Menu command history
 	sessionHistory map[int][]string // Per-session shell command history
 	histIdx        int
+
+	// Transient prefix-filtered navigation state
+	historyPrefix   string
+	filteredHistory []string
+	filteredHistIdx int
 }
 
 func NewInput() Input {
@@ -34,14 +40,18 @@ func NewInput() Input {
 	ti.TextStyle = lipgloss.NewStyle().Foreground(colorBase)
 	ti.Cursor.Style = lipgloss.NewStyle().Foreground(colorMagenta)
 	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(colorSubtle)
+	ti.CompletionStyle = lipgloss.NewStyle().Foreground(colorSubtle)
+	ti.ShowSuggestions = true
+	ti.KeyMap.AcceptSuggestion = key.NewBinding()
 	ti.Placeholder = "Type a command..."
 
 	return Input{
-		textinput:      ti,
-		prompt:         menuPrompt(0),
-		context:        ContextMenu,
-		histIdx:        -1,
-		sessionHistory: make(map[int][]string),
+		textinput:       ti,
+		prompt:          menuPrompt(0),
+		context:         ContextMenu,
+		histIdx:         -1,
+		filteredHistIdx: -1,
+		sessionHistory:  make(map[int][]string),
 	}
 }
 
@@ -58,7 +68,7 @@ func (i *Input) SetWidth(w int) {
 func (i *Input) SetContext(ctx ContextMode) {
 	i.context = ctx
 	i.bangMode = false
-	i.histIdx = -1 // Reset history navigation on context switch
+	i.resetHistoryNavigation()
 	i.textinput.TextStyle = lipgloss.NewStyle().Foreground(colorBase)
 	if ctx == ContextShell {
 		i.textinput.Placeholder = "Type a shell command..."
@@ -66,11 +76,13 @@ func (i *Input) SetContext(ctx ContextMode) {
 		i.textinput.Placeholder = "Type a command..."
 	}
 	i.updatePrompt()
+	i.updateSuggestions()
 }
 
 func (i *Input) SetSessionID(id int) {
 	i.sessionID = id
 	i.updatePrompt()
+	i.updateSuggestions()
 }
 
 func (i *Input) SetShellPrompt(prompt string) {
@@ -95,12 +107,21 @@ func (i *Input) Value() string {
 func (i *Input) SetValue(s string) {
 	i.textinput.SetValue(s)
 	i.textinput.CursorEnd()
+	i.updateSuggestions()
 }
 
 // Clear resets the input text.
 func (i *Input) Clear() {
 	i.textinput.SetValue("")
+	i.resetHistoryNavigation()
+	i.updateSuggestions()
+}
+
+func (i *Input) resetHistoryNavigation() {
 	i.histIdx = -1
+	i.historyPrefix = ""
+	i.filteredHistory = nil
+	i.filteredHistIdx = -1
 }
 
 // history returns the active history slice for the current context.
@@ -137,8 +158,93 @@ func (i *Input) Submit() string {
 	return val
 }
 
+func (i *Input) currentSuggestion() (string, bool) {
+	prefix := i.textinput.Value()
+	if prefix == "" || i.textinput.Position() != len(prefix) {
+		return "", false
+	}
+
+	current := i.textinput.CurrentSuggestion()
+	if current == "" || current == prefix {
+		return "", false
+	}
+	return current, true
+}
+
+func (i *Input) Suggestion() (string, bool) {
+	return i.currentSuggestion()
+}
+
+func (i *Input) AcceptSuggestion() bool {
+	suggestion, ok := i.currentSuggestion()
+	if !ok {
+		return false
+	}
+	i.textinput.SetValue(suggestion)
+	i.textinput.CursorEnd()
+	i.resetHistoryNavigation()
+	return true
+}
+
+func (i *Input) filteredMatches(prefix string) []string {
+	if prefix == "" {
+		return nil
+	}
+
+	hist := i.history()
+	matches := make([]string, 0, len(hist))
+	for _, entry := range hist {
+		if strings.HasPrefix(entry, prefix) {
+			matches = append(matches, entry)
+		}
+	}
+	return matches
+}
+
+func (i *Input) updateSuggestions() {
+	prefix := i.textinput.Value()
+	if prefix == "" || i.textinput.Position() != len(prefix) {
+		i.textinput.SetSuggestions(nil)
+		return
+	}
+
+	matches := i.filteredMatches(prefix)
+	if len(matches) == 0 {
+		i.textinput.SetSuggestions(nil)
+		return
+	}
+
+	reversed := make([]string, 0, len(matches))
+	for idx := len(matches) - 1; idx >= 0; idx-- {
+		if matches[idx] != prefix {
+			reversed = append(reversed, matches[idx])
+		}
+	}
+	i.textinput.SetSuggestions(reversed)
+}
+
 // HistoryUp navigates to the previous command in history.
 func (i *Input) HistoryUp() {
+	prefix := i.textinput.Value()
+	if prefix != "" {
+		if i.filteredHistory == nil {
+			i.historyPrefix = prefix
+			i.filteredHistory = i.filteredMatches(prefix)
+			i.filteredHistIdx = len(i.filteredHistory)
+		}
+		if len(i.filteredHistory) == 0 {
+			return
+		}
+		if i.filteredHistIdx > 0 {
+			i.filteredHistIdx--
+		}
+		if i.filteredHistIdx >= 0 && i.filteredHistIdx < len(i.filteredHistory) {
+			i.textinput.SetValue(i.filteredHistory[i.filteredHistIdx])
+			i.textinput.CursorEnd()
+		}
+		return
+	}
+
 	hist := i.history()
 	if len(hist) == 0 {
 		return
@@ -154,6 +260,19 @@ func (i *Input) HistoryUp() {
 
 // HistoryDown navigates to the next command in history.
 func (i *Input) HistoryDown() {
+	if i.filteredHistory != nil {
+		if i.filteredHistIdx < len(i.filteredHistory)-1 {
+			i.filteredHistIdx++
+			i.textinput.SetValue(i.filteredHistory[i.filteredHistIdx])
+			i.textinput.CursorEnd()
+			return
+		}
+		i.textinput.SetValue(i.historyPrefix)
+		i.textinput.CursorEnd()
+		i.resetHistoryNavigation()
+		return
+	}
+
 	hist := i.history()
 	if i.histIdx == -1 {
 		return
@@ -171,21 +290,23 @@ func (i *Input) HistoryDown() {
 // EnterBangMode switches the input to flame command mode (! prefix in shell).
 func (i *Input) EnterBangMode() {
 	i.bangMode = true
-	i.histIdx = -1
+	i.resetHistoryNavigation()
 	i.prompt = styleMagenta.Bold(true).Render("!") + " "
 	i.textinput.Placeholder = "upload, download, run, spawn..."
 	i.textinput.TextStyle = lipgloss.NewStyle().Foreground(colorMagenta)
 	i.SetWidth(i.width)
+	i.updateSuggestions()
 }
 
 // ExitBangMode switches back to normal shell input.
 func (i *Input) ExitBangMode() {
 	i.bangMode = false
-	i.histIdx = -1
+	i.resetHistoryNavigation()
 	i.textinput.Placeholder = "Type a shell command..."
 	i.textinput.TextStyle = lipgloss.NewStyle().Foreground(colorBase)
 	i.prompt = styleCyan.Render("$") + " "
 	i.SetWidth(i.width)
+	i.updateSuggestions()
 }
 
 // InBangMode returns whether ! command mode is active.
@@ -224,13 +345,27 @@ func menuPrompt(sessionID int) string {
 
 func (i *Input) Update(msg tea.Msg) (*Input, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg.String() == "right" && i.AcceptSuggestion() {
+			return i, nil
+		}
 		if applyLineEdit(&i.textinput, keyMsg.String()) {
+			i.resetHistoryNavigation()
+			i.updateSuggestions()
 			return i, nil
 		}
 	}
 
 	var cmd tea.Cmd
 	i.textinput, cmd = i.textinput.Update(msg)
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "left", "right", "up", "down":
+			// Navigation keys preserve current suggestion/navigation state.
+		default:
+			i.resetHistoryNavigation()
+		}
+	}
+	i.updateSuggestions()
 	return i, cmd
 }
 

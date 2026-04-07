@@ -1,11 +1,40 @@
 package tui
 
 import (
+	"context"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+type tabPreservingExecutor struct{}
+
+func (tabPreservingExecutor) ExecuteCommand(string) string  { return "" }
+func (tabPreservingExecutor) GetSelectedSessionID() int     { return 0 }
+func (tabPreservingExecutor) SessionCount() int             { return 0 }
+func (tabPreservingExecutor) GetSessionsForDisplay() string { return "" }
+func (tabPreservingExecutor) GetActiveSessionDisplay() (string, string, string, bool) {
+	return "", "", "", false
+}
+func (tabPreservingExecutor) GetSelectedSessionFlavor() string                               { return "" }
+func (tabPreservingExecutor) SetSilent(bool)                                                 {}
+func (tabPreservingExecutor) SetNotifyFunc(func(string))                                     {}
+func (tabPreservingExecutor) SetNotifyBarFunc(func(string, int))                             {}
+func (tabPreservingExecutor) SetSpinnerFunc(func(int, string), func(int), func(int, string)) {}
+func (tabPreservingExecutor) SetShellOutputFunc(func(string, int, []byte))                   {}
+func (tabPreservingExecutor) SetSessionDisconnectFunc(func(int, string))                     {}
+func (tabPreservingExecutor) StartShellRelay(int, int) error                                 { return nil }
+func (tabPreservingExecutor) StopShellRelay()                                                {}
+func (tabPreservingExecutor) WriteToShell(string) error                                      { return nil }
+func (tabPreservingExecutor) ResizePTY(int, int)                                             {}
+func (tabPreservingExecutor) CompleteInput(line string) string                               { return line + "/completed" }
+func (tabPreservingExecutor) SetTransferProgressFunc(func(string, int, string, bool))        {}
+func (tabPreservingExecutor) SetTransferDoneFunc(func(string, bool, error))                  {}
+func (tabPreservingExecutor) StartUpload(context.Context, string, string)                    {}
+func (tabPreservingExecutor) StartDownload(context.Context, string, string)                  {}
+func (tabPreservingExecutor) StartSpawn()                                                    {}
+func (tabPreservingExecutor) StartModule(string, []string)                                   {}
 
 func newTestInput(value string, cursor int) textinput.Model {
 	ti := textinput.New()
@@ -201,6 +230,48 @@ func TestInputUpdateUsesSharedLineEditHelper(t *testing.T) {
 		}
 		if got := app.input.textinput.Position(); got != len("alpha ") {
 			t.Fatalf("expected cursor at %d, got %d", len("alpha "), got)
+		}
+	})
+
+	t.Run("app input mode right accepts suggestion", func(t *testing.T) {
+		app := New(nil, "127.0.0.1:4444")
+		app.splash = false
+		app.context = ContextMenu
+		app.input.menuHistory = []string{"run whoami", "run rev bash"}
+		app.input.SetValue("run")
+
+		app.updateInputMode(tea.KeyMsg{Type: tea.KeyRight})
+
+		if got := app.input.Value(); got != "run rev bash" {
+			t.Fatalf("expected right to accept suggestion, got %q", got)
+		}
+	})
+
+	t.Run("app input mode tab still uses executor completion", func(t *testing.T) {
+		app := New(tabPreservingExecutor{}, "127.0.0.1:4444")
+		app.splash = false
+		app.context = ContextMenu
+		app.input.SetValue("download path/to/f")
+
+		app.updateInputMode(tea.KeyMsg{Type: tea.KeyTab})
+
+		if got := app.input.Value(); got != "download path/to/f/completed" {
+			t.Fatalf("expected tab completion path preserved, got %q", got)
+		}
+	})
+
+	t.Run("splash tab also uses executor completion", func(t *testing.T) {
+		app := New(tabPreservingExecutor{}, "127.0.0.1:4444")
+		app.splash = true
+		app.context = ContextMenu
+		app.input.menuHistory = []string{"run ps1"}
+		app.input.SetValue("r")
+
+		model, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})
+		updated := model.(App)
+
+		if got := updated.input.Value(); got != "r/completed" {
+			t.Fatalf("expected splash tab completion path preserved, got %q", got)
 		}
 	})
 }
