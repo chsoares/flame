@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] - 2026-04-08
+
+### Fixed
+
+- Stabilized `run` worker uploads when binbag is disabled.
+- Fixed worker-session startup so in-memory module uploads no longer race session detection.
+- Moved `run` transfer progress and cancellation onto the same TUI path as upload/download.
+
 ## [0.9.0] - 2026-04-07
 
 ### Added

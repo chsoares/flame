@@ -2,8 +2,8 @@
 
 ## Release State
 
-- `v0.9.0` is the feature-complete release checkpoint for the current TUI surface.
-- The app version string is `v0.9.0` and must stay aligned with tags and release docs.
+- `v0.9.1` is the current patch release checkpoint for the current TUI surface.
+- The app version string is `v0.9.1` and must stay aligned with tags and release docs.
 - Older exploratory planning docs have been trimmed; the active handoff lives in the pre-`1.0` roadmap and plan below.
 
 ## Next Work

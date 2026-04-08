@@ -4,7 +4,7 @@ Flame is a Go TUI for handling reverse shells during CTF work. The shipping prod
 
 ## Project Overview
 
-Flame listens for reverse shells, tracks multiple sessions, lets the operator switch between them, exposes an interactive shell view, supports upload and download, runs built-in modules in worker sessions, generates payloads, and can bootstrap a callback through SSH. `v0.9.0` is feature complete and is followed by a planned pre-`1.0` architecture cleanup.
+Flame listens for reverse shells, tracks multiple sessions, lets the operator switch between them, exposes an interactive shell view, supports upload and download, runs built-in modules in worker sessions, generates payloads, and can bootstrap a callback through SSH. `v0.9.1` is the current patch release and is followed by a planned pre-`1.0` architecture cleanup.
 
 ## Build And Test
 
