@@ -27,7 +27,7 @@ func NewSSHConnector(ip string, port int) *SSHConnector {
 
 func (s *SSHConnector) buildCommand(args SSHArgs) (*exec.Cmd, error) {
 	payload := s.generatePayload()
-	baseArgs := []string{"-T", "-p", strconv.Itoa(args.Port)}
+	baseArgs := []string{"-T", "-o", "StrictHostKeyChecking=accept-new", "-p", strconv.Itoa(args.Port)}
 
 	if args.KeyPath != "" {
 		sshArgs := append(baseArgs, "-i", args.KeyPath, args.Target, payload)
@@ -75,7 +75,7 @@ func (s *SSHConnector) Connect(target string) error {
 	// Build SSH command
 	// ssh -t forces pseudo-terminal allocation (needed for interactive shells)
 	// We execute the payload directly
-	sshCmd := exec.Command("ssh", "-t", sshTarget, payload)
+	sshCmd := exec.Command("ssh", "-t", "-o", "StrictHostKeyChecking=accept-new", sshTarget, payload)
 
 	// Connect stdin/stdout/stderr to allow interaction
 	sshCmd.Stdin = os.Stdin
@@ -125,7 +125,7 @@ func (s *SSHConnector) ConnectInteractive(target string) error {
 	// -T: disable pseudo-terminal allocation (no banner)
 	// -o StrictHostKeyChecking=no: auto-accept host keys (optional, for convenience)
 	// -o LogLevel=ERROR: suppress SSH messages
-	sshCmd := exec.Command("ssh", "-T", "-o", "LogLevel=ERROR", sshTarget, payload)
+	sshCmd := exec.Command("ssh", "-T", "-o", "StrictHostKeyChecking=accept-new", "-o", "LogLevel=ERROR", sshTarget, payload)
 	sshCmd.Stdin = os.Stdin
 	sshCmd.Stdout = os.Stdout
 	sshCmd.Stderr = os.Stderr

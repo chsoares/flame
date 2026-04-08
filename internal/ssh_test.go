@@ -22,7 +22,7 @@ func TestBuildSSHCommandPasswordMode(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	joined := strings.Join(cmd.Args, " ")
-	checks := []string{"sshpass", "-e", "ssh", "-T", "-p 22", "user@host"}
+	checks := []string{"sshpass", "-e", "ssh", "-T", "-p 22", "-o StrictHostKeyChecking=accept-new", "user@host"}
 	for _, check := range checks {
 		if !strings.Contains(joined, check) {
 			t.Fatalf("expected %q in %q", check, joined)
@@ -40,7 +40,7 @@ func TestBuildSSHCommandKeyModeWithCustomPort(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	joined := strings.Join(cmd.Args, " ")
-	checks := []string{"ssh", "-T", "-i id_rsa", "-p 2222", "user@host"}
+	checks := []string{"ssh", "-T", "-i id_rsa", "-p 2222", "-o StrictHostKeyChecking=accept-new", "user@host"}
 	for _, check := range checks {
 		if !strings.Contains(joined, check) {
 			t.Fatalf("expected %q in %q", check, joined)
