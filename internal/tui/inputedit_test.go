@@ -34,7 +34,37 @@ func (tabPreservingExecutor) SetTransferDoneFunc(func(string, bool, error))     
 func (tabPreservingExecutor) StartUpload(context.Context, string, string)                    {}
 func (tabPreservingExecutor) StartDownload(context.Context, string, string)                  {}
 func (tabPreservingExecutor) StartSpawn()                                                    {}
-func (tabPreservingExecutor) StartModule(string, []string)                                   {}
+func (tabPreservingExecutor) StartModule(context.Context, string, []string)                  {}
+
+type moduleContextRecorder struct {
+	ctx context.Context
+}
+
+func (m *moduleContextRecorder) ExecuteCommand(string) string  { return "" }
+func (m *moduleContextRecorder) GetSelectedSessionID() int     { return 1 }
+func (m *moduleContextRecorder) SessionCount() int             { return 1 }
+func (m *moduleContextRecorder) GetSessionsForDisplay() string { return "" }
+func (m *moduleContextRecorder) GetActiveSessionDisplay() (string, string, string, bool) {
+	return "", "", "", false
+}
+func (m *moduleContextRecorder) GetSelectedSessionFlavor() string                               { return "" }
+func (m *moduleContextRecorder) SetSilent(bool)                                                 {}
+func (m *moduleContextRecorder) SetNotifyFunc(func(string))                                     {}
+func (m *moduleContextRecorder) SetNotifyBarFunc(func(string, int))                             {}
+func (m *moduleContextRecorder) SetSpinnerFunc(func(int, string), func(int), func(int, string)) {}
+func (m *moduleContextRecorder) SetShellOutputFunc(func(string, int, []byte))                   {}
+func (m *moduleContextRecorder) SetSessionDisconnectFunc(func(int, string))                     {}
+func (m *moduleContextRecorder) StartShellRelay(int, int) error                                 { return nil }
+func (m *moduleContextRecorder) StopShellRelay()                                                {}
+func (m *moduleContextRecorder) WriteToShell(string) error                                      { return nil }
+func (m *moduleContextRecorder) ResizePTY(int, int)                                             {}
+func (m *moduleContextRecorder) CompleteInput(line string) string                               { return line }
+func (m *moduleContextRecorder) SetTransferProgressFunc(func(string, int, string, bool))        {}
+func (m *moduleContextRecorder) SetTransferDoneFunc(func(string, bool, error))                  {}
+func (m *moduleContextRecorder) StartUpload(context.Context, string, string)                    {}
+func (m *moduleContextRecorder) StartDownload(context.Context, string, string)                  {}
+func (m *moduleContextRecorder) StartSpawn()                                                    {}
+func (m *moduleContextRecorder) StartModule(ctx context.Context, _ string, _ []string)          { m.ctx = ctx }
 
 func newTestInput(value string, cursor int) textinput.Model {
 	ti := textinput.New()
@@ -272,6 +302,43 @@ func TestInputUpdateUsesSharedLineEditHelper(t *testing.T) {
 
 		if got := updated.input.Value(); got != "r/completed" {
 			t.Fatalf("expected splash tab completion path preserved, got %q", got)
+		}
+	})
+
+	t.Run("handle run command stores cancellable module context", func(t *testing.T) {
+		exec := &moduleContextRecorder{}
+		app := New(exec, "127.0.0.1:4444")
+		app.splash = false
+		app.context = ContextMenu
+
+		model, _ := app.handleRunCmd("run peas")
+		updated := model.(App)
+
+		if updated.transferCancel == nil {
+			t.Fatal("expected module run to register a cancel func")
+		}
+		if exec.ctx == nil {
+			t.Fatal("expected module run to receive a context")
+		}
+		select {
+		case <-exec.ctx.Done():
+			t.Fatal("expected fresh module context to be active")
+		default:
+		}
+	})
+
+	t.Run("ctrl+c cancels active module spinner", func(t *testing.T) {
+		app := New(tabPreservingExecutor{}, "127.0.0.1:4444")
+		app.splash = false
+		app.context = ContextMenu
+		cancelled := false
+		app.transferCancel = func() { cancelled = true }
+		app.output.StartSpinner(1, "Loading module")
+
+		app.updateInputMode(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+		if !cancelled {
+			t.Fatal("expected ctrl+c to cancel active module operation")
 		}
 	})
 }

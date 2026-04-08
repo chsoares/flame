@@ -29,17 +29,3 @@ func TestShouldUseWorkerForSpawn(t *testing.T) {
 		t.Fatal("expected windows spawn to use worker path")
 	}
 }
-
-func TestResolveWorkerPlatformFallsBackToParent(t *testing.T) {
-	got := resolveWorkerPlatform("unknown", "windows")
-	if got != "windows" {
-		t.Fatalf("expected fallback to parent platform, got %q", got)
-	}
-}
-
-func TestResolveWorkerPlatformKeepsDetectedValue(t *testing.T) {
-	got := resolveWorkerPlatform("windows", "linux")
-	if got != "windows" {
-		t.Fatalf("expected detected platform to win, got %q", got)
-	}
-}

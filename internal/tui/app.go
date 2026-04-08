@@ -39,19 +39,19 @@ type CommandExecutor interface {
 	SetNotifyFunc(fn func(string))
 	SetNotifyBarFunc(fn func(string, int)) // message, level (0=info, 1=important, 2=error)
 	SetSpinnerFunc(start func(int, string), stop func(int), update func(int, string))
-	SetShellOutputFunc(fn func(string, int, []byte))                 // shell relay output (sessionID, numID, data)
-	SetSessionDisconnectFunc(fn func(int, string))                   // session disconnect (numID, remoteIP)
-	StartShellRelay(cols, rows int) error                            // start reading from selected session's conn
-	StopShellRelay()                                                 // stop relay goroutine
-	WriteToShell(data string) error                                  // write to selected session's conn
-	ResizePTY(cols, rows int)                                        // send stty resize to remote PTY
-	CompleteInput(line string) string                                // tab completion
-	SetTransferProgressFunc(fn func(string, int, string, bool))      // transfer progress (filename, pct, right, upload)
-	SetTransferDoneFunc(fn func(string, bool, error))                // transfer done (filename, upload, error)
-	StartUpload(ctx context.Context, localPath, remotePath string)   // async upload
-	StartDownload(ctx context.Context, remotePath, localPath string) // async download
-	StartSpawn()                                                     // async spawn
-	StartModule(moduleName string, args []string)                    // async module execution
+	SetShellOutputFunc(fn func(string, int, []byte))                   // shell relay output (sessionID, numID, data)
+	SetSessionDisconnectFunc(fn func(int, string))                     // session disconnect (numID, remoteIP)
+	StartShellRelay(cols, rows int) error                              // start reading from selected session's conn
+	StopShellRelay()                                                   // stop relay goroutine
+	WriteToShell(data string) error                                    // write to selected session's conn
+	ResizePTY(cols, rows int)                                          // send stty resize to remote PTY
+	CompleteInput(line string) string                                  // tab completion
+	SetTransferProgressFunc(fn func(string, int, string, bool))        // transfer progress (filename, pct, right, upload)
+	SetTransferDoneFunc(fn func(string, bool, error))                  // transfer done (filename, upload, error)
+	StartUpload(ctx context.Context, localPath, remotePath string)     // async upload
+	StartDownload(ctx context.Context, remotePath, localPath string)   // async download
+	StartSpawn()                                                       // async spawn
+	StartModule(ctx context.Context, moduleName string, args []string) // async module execution
 }
 
 // App is the root Bubble Tea model for the Flame TUI.
@@ -239,6 +239,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case transferProgressMsg:
+		if msg.Pct < 0 {
+			a.statusBar.TransferPct = -1
+			a.statusBar.TransferMsg = ""
+			a.statusBar.TransferRight = ""
+			a.statusBar.TransferAnimating = false
+			a.statusBar.TransferAnimPhase = 0
+			return a, nil
+		}
 		a.statusBar.TransferPct = msg.Pct
 		a.statusBar.TransferMsg = msg.Filename
 		a.statusBar.TransferRight = msg.Right
@@ -272,6 +280,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusBar.TransferAnimating = false
 		a.statusBar.TransferAnimPhase = 0
 		a.transferActive = false
+		a.transferCancel = nil
+		if msg.Filename == "" {
+			return a, nil
+		}
 		action := "Download"
 		if msg.Upload {
 			action = "Upload"
@@ -579,7 +591,7 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "ctrl+c", "escape":
 		// Cancel active transfer
-		if a.transferActive && a.transferCancel != nil {
+		if a.transferCancel != nil && (a.transferActive || a.output.IsSpinnerActive()) {
 			a.transferCancel()
 			return a, nil
 		}
@@ -1088,7 +1100,9 @@ func (a App) handleRunCmd(cmd string) (tea.Model, tea.Cmd) {
 
 	moduleName := parts[1]
 	args := expandModuleSourceArg(moduleName, parts[2:])
-	a.executor.StartModule(moduleName, args)
+	ctx, cancel := context.WithCancel(context.Background())
+	a.transferCancel = cancel
+	a.executor.StartModule(ctx, moduleName, args)
 	return a, nil
 }
 

@@ -87,3 +87,29 @@ func TestTransferProgressDownloadDoesNotStartASecondAnimationLoop(t *testing.T) 
 		t.Fatal("expected repeated download progress to reuse the existing animation loop")
 	}
 }
+
+func TestTransferProgressNegativePctClearsStatusBar(t *testing.T) {
+	a := New(nil, "127.0.0.1:4444")
+	a.statusBar.Width = 120
+	a.statusBar.TransferPct = 42
+	a.statusBar.TransferMsg = "Uploading linpeas"
+	a.statusBar.TransferRight = "42%"
+	a.statusBar.TransferUpload = true
+	a.statusBar.TransferAnimating = true
+
+	model, cmd := a.Update(transferProgressMsg{Pct: -1})
+	app := model.(App)
+
+	if app.statusBar.TransferPct != -1 {
+		t.Fatalf("expected cleared transfer pct, got %d", app.statusBar.TransferPct)
+	}
+	if app.statusBar.TransferMsg != "" || app.statusBar.TransferRight != "" {
+		t.Fatalf("expected cleared transfer fields, got %q / %q", app.statusBar.TransferMsg, app.statusBar.TransferRight)
+	}
+	if app.statusBar.TransferAnimating {
+		t.Fatal("expected transfer animation to stop")
+	}
+	if cmd != nil {
+		t.Fatal("expected no follow-up command when clearing transfer progress")
+	}
+}
