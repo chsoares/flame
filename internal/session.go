@@ -395,7 +395,8 @@ func (s *SessionInfo) RunScriptInMemory(ctx context.Context, scriptSource string
 	} else {
 		// B64: upload to variable, then execute
 		varName := fmt.Sprintf("_flame_script_%d", time.Now().UnixNano())
-		if err := t.UploadToBashVariable(context.Background(), localPath, varName); err != nil {
+		t.ptyUpgraded = s.Handler != nil && s.Handler.IsPTYUpgraded()
+		if err := t.UploadToBashVariable(ctx, localPath, varName); err != nil {
 			if cleanup != nil {
 				cleanup()
 			}
@@ -822,6 +823,7 @@ func (s *SessionInfo) RunPythonInMemory(ctx context.Context, scriptSource string
 		remoteCmd = buildUnixPythonHTTPCommand(httpURL, args)
 	} else {
 		varName := fmt.Sprintf("_flame_py_%d", time.Now().UnixNano())
+		t.ptyUpgraded = s.Handler != nil && s.Handler.IsPTYUpgraded()
 		if err := t.UploadToBashVariable(ctx, localPath, varName); err != nil {
 			return fmt.Errorf("upload to memory failed: %w", err)
 		}

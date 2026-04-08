@@ -408,6 +408,15 @@ func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varNam
 	spinner.Start(fmt.Sprintf("Loading %s to memory... 0 B / %s (0%s)", filepath.Base(localPath), formatSize(fileSize), "%"))
 	defer spinner.Stop()
 
+	if t.ptyUpgraded {
+		_, _ = t.conn.Write([]byte("stty -echo\n"))
+		time.Sleep(100 * time.Millisecond)
+		defer func() {
+			_, _ = t.conn.Write([]byte("stty echo\n"))
+			time.Sleep(100 * time.Millisecond)
+		}()
+	}
+
 	// Drain leftover data
 	t.drainConnection()
 
@@ -421,7 +430,11 @@ func (t *Transferer) UploadToBashVariable(ctx context.Context, localPath, varNam
 
 	// Send file in chunks, concatenating to variable
 	config := DefaultTransferConfig()
-	chunks := splitIntoChunks(encoded, config.ChunkSize)
+	chunkSize := config.ChunkSize
+	if t.ptyUpgraded {
+		chunkSize = 1024
+	}
+	chunks := splitIntoChunks(encoded, chunkSize)
 
 	bytesSent := 0
 
