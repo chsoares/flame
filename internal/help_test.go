@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -295,5 +297,35 @@ func TestCompleteInputCompletesMultiWordHelpTopic(t *testing.T) {
 	got := m.CompleteInput("help run do")
 	if got != "help run dotnet" {
 		t.Fatalf("expected multi-word help topic completion, got %q", got)
+	}
+}
+
+func TestCompleteInputIsCaseInsensitiveForCommands(t *testing.T) {
+	m := NewManager()
+	got := m.CompleteInput("HE")
+	if got != "help" {
+		t.Fatalf("expected case-insensitive command completion, got %q", got)
+	}
+}
+
+func TestCompleteInputIsCaseInsensitiveForLocalPaths(t *testing.T) {
+	dir := t.TempDir()
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get wd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+
+	if err := os.WriteFile(filepath.Join(dir, "Lab"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	m := NewManager()
+	got := m.CompleteInput("upload l")
+	if got != "upload Lab" {
+		t.Fatalf("expected case-insensitive local path completion, got %q", got)
 	}
 }

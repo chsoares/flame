@@ -846,15 +846,29 @@ type FlameCompleter struct {
 
 // Do implements the AutoCompleter interface
 func (c *FlameCompleter) Do(line []rune, pos int) (newLine [][]rune, length int) {
-	lineStr := string(line[:pos])
-	trimmed := strings.TrimLeft(lineStr, " \t")
+	values, replLen := c.completeValues(string(line[:pos]))
+	if len(values) == 0 {
+		return nil, 0
+	}
 
+	matches := make([][]rune, 0, len(values))
+	for _, value := range values {
+		valueRunes := []rune(value)
+		if len(valueRunes) < replLen {
+			continue
+		}
+		matches = append(matches, valueRunes[replLen:])
+	}
+
+	return matches, replLen
+}
+
+func (c *FlameCompleter) completeValues(line string) ([]string, int) {
+	trimmed := strings.TrimLeft(line, " \t")
 	commands := []string{"upload", "download", "list", "use", "shell", "kill", "help", "exit", "clear", "ssh", "rev", "spawn", "run", "modules", "binbag", "pivot", "config"}
 
-	// Nothing typed yet, show all commands
 	if trimmed == "" {
-		matches, repl := c.completeFromList("", commands)
-		return matches, repl
+		return commands, 0
 	}
 
 	parts := strings.Fields(trimmed)
@@ -862,17 +876,12 @@ func (c *FlameCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 		return nil, 0
 	}
 
-	// Still typing the command (no space yet)
 	if len(parts) == 1 && !strings.HasSuffix(trimmed, " ") {
-		prefix := parts[0]
-		matches, repl := c.completeFromList(prefix, commands)
-		return matches, repl
+		return c.completeFromListValues(parts[0], commands)
 	}
 
 	cmd := parts[0]
 	argCount := len(parts) - 1
-
-	// If the line ends with a space, we're starting a new argument
 	if strings.HasSuffix(trimmed, " ") {
 		argCount++
 	}
@@ -886,96 +895,78 @@ func (c *FlameCompleter) Do(line []rune, pos int) (newLine [][]rune, length int)
 			if strings.HasSuffix(trimmed, " ") {
 				prefix = ""
 			}
-			return c.completeFromList(prefix, HelpTopicsForCompletion())
+			return c.completeFromListValues(prefix, HelpTopicsForCompletion())
 		}
 	case "upload":
 		if argCount == 1 {
-			// First arg: complete local paths + binbag files
-			localMatches, localLen := c.completeLocalPath(currentArg)
-
-			// If binbag enabled and no path separator in arg, also offer binbag files
-			if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled &&
-				!strings.ContainsAny(currentArg, "/\\") {
+			values, replLen := c.completeLocalPathValues(currentArg)
+			if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled && !strings.ContainsAny(currentArg, "/\\") {
 				entries, err := os.ReadDir(GlobalRuntimeConfig.BinbagPath)
 				if err == nil {
 					seen := make(map[string]bool)
-					// Track existing matches to deduplicate
-					for _, m := range localMatches {
-						seen[string(m)] = true
+					for _, value := range values {
+						seen[value] = true
 					}
 					for _, entry := range entries {
 						if entry.IsDir() || strings.HasPrefix(entry.Name(), "tmp_") {
 							continue
 						}
 						name := entry.Name()
-						if strings.HasPrefix(name, currentArg) {
-							suffix := []rune(name[len(currentArg):])
-							key := string(suffix)
-							if !seen[key] {
-								localMatches = append(localMatches, suffix)
-								seen[key] = true
-							}
+						if hasPrefixFold(name, currentArg) && !seen[name] {
+							values = append(values, name)
+							seen[name] = true
 						}
 					}
 				}
 			}
-			return localMatches, localLen
+			return values, replLen
 		} else if argCount == 2 {
-			// Second arg: complete remote paths
-			return c.completeRemotePath(currentArg)
+			return c.completeRemotePathValues(currentArg)
 		}
 	case "download":
 		if argCount == 1 {
-			// First arg: complete remote paths
-			return c.completeRemotePath(currentArg)
+			return c.completeRemotePathValues(currentArg)
 		} else if argCount == 2 {
-			// Second arg: complete local paths
-			return c.completeLocalPath(currentArg)
+			return c.completeLocalPathValues(currentArg)
 		}
 	case "binbag":
 		if argCount == 1 {
-			return c.completeFromList(currentArg, []string{"ls", "on", "off", "path", "port"})
-		} else if argCount == 2 && len(parts) >= 2 && parts[1] == "path" {
-			return c.completeLocalPath(currentArg)
+			return c.completeFromListValues(currentArg, []string{"ls", "on", "off", "path", "port"})
+		} else if argCount == 2 && len(parts) >= 2 && hasPrefixFold(parts[1], "path") {
+			return c.completeLocalPathValues(currentArg)
 		}
 	case "pivot":
 		if argCount == 1 {
-			return c.completeFromList(currentArg, []string{"off"})
+			return c.completeFromListValues(currentArg, []string{"off"})
 		}
 	case "run":
 		if argCount == 1 {
-			return c.completeFromList(currentArg, RunModuleCompletionNames())
+			return c.completeFromListValues(currentArg, RunModuleCompletionNames())
 		} else if argCount == 2 {
-			// For custom modules (sh, elf, ps1, dotnet, py), complete local paths + binbag files
 			if len(parts) >= 2 {
-				switch parts[1] {
+				switch strings.ToLower(parts[1]) {
 				case "sh", "elf", "ps1", "dotnet", "py":
-					localMatches, localLen := c.completeLocalPath(currentArg)
-					if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled &&
-						!strings.ContainsAny(currentArg, "/\\") {
+					values, replLen := c.completeLocalPathValues(currentArg)
+					if GlobalRuntimeConfig != nil && GlobalRuntimeConfig.BinbagEnabled && !strings.ContainsAny(currentArg, "/\\") {
 						entries, err := os.ReadDir(GlobalRuntimeConfig.BinbagPath)
 						if err == nil {
 							seen := make(map[string]bool)
-							for _, m := range localMatches {
-								seen[string(m)] = true
+							for _, value := range values {
+								seen[value] = true
 							}
 							for _, entry := range entries {
 								if entry.IsDir() || strings.HasPrefix(entry.Name(), "tmp_") {
 									continue
 								}
 								name := entry.Name()
-								if strings.HasPrefix(name, currentArg) {
-									suffix := []rune(name[len(currentArg):])
-									key := string(suffix)
-									if !seen[key] {
-										localMatches = append(localMatches, suffix)
-										seen[key] = true
-									}
+								if hasPrefixFold(name, currentArg) && !seen[name] {
+									values = append(values, name)
+									seen[name] = true
 								}
 							}
 						}
 					}
-					return localMatches, localLen
+					return values, replLen
 				}
 			}
 		}
@@ -1000,18 +991,7 @@ func (c *FlameCompleter) getCurrentArg(line string) string {
 
 // completeFromList completes from a list of strings
 func (c *FlameCompleter) completeFromList(prefix string, list []string) ([][]rune, int) {
-	var candidates []string
-	for _, item := range list {
-		if strings.HasPrefix(item, prefix) {
-			candidates = append(candidates, item)
-		}
-	}
-
-	sort.Strings(candidates)
-
-	prefixRunes := []rune(prefix)
-	removeLen := len(prefixRunes)
-
+	candidates, removeLen := c.completeFromListValues(prefix, list)
 	matches := make([][]rune, 0, len(candidates))
 	for _, item := range candidates {
 		itemRunes := []rune(item)
@@ -1024,8 +1004,34 @@ func (c *FlameCompleter) completeFromList(prefix string, list []string) ([][]run
 	return matches, removeLen
 }
 
+func (c *FlameCompleter) completeFromListValues(prefix string, list []string) ([]string, int) {
+	var candidates []string
+	for _, item := range list {
+		if hasPrefixFold(item, prefix) {
+			candidates = append(candidates, item)
+		}
+	}
+
+	sort.Strings(candidates)
+	return candidates, len([]rune(prefix))
+}
+
 // completeLocalPath completes local file paths
 func (c *FlameCompleter) completeLocalPath(arg string) ([][]rune, int) {
+	candidates, replacementLen := c.completeLocalPathValues(arg)
+	matches := make([][]rune, 0, len(candidates))
+	for _, suggestion := range candidates {
+		suggestionRunes := []rune(suggestion)
+		if len([]rune(arg)) > len(suggestionRunes) {
+			continue
+		}
+		matches = append(matches, suggestionRunes[len([]rune(arg)):])
+	}
+
+	return matches, replacementLen
+}
+
+func (c *FlameCompleter) completeLocalPathValues(arg string) ([]string, int) {
 	replacementLen := utf8.RuneCountInString(arg)
 
 	dirPart, basePart := splitPathForCompletion(arg)
@@ -1052,7 +1058,7 @@ func (c *FlameCompleter) completeLocalPath(arg string) ([][]rune, int) {
 	var suggestions []string
 	for _, entry := range entries {
 		name := entry.Name()
-		if basePart != "" && !strings.HasPrefix(name, basePart) {
+		if basePart != "" && !hasPrefixFold(name, basePart) {
 			continue
 		}
 
@@ -1060,28 +1066,25 @@ func (c *FlameCompleter) completeLocalPath(arg string) ([][]rune, int) {
 		if entry.IsDir() {
 			suggestion += string(os.PathSeparator)
 		}
-		if strings.HasPrefix(suggestion, arg) || arg == "" {
+		if hasPrefixFold(suggestion, arg) || arg == "" {
 			suggestions = append(suggestions, suggestion)
 		}
 	}
 
 	sort.Strings(suggestions)
+	return suggestions, replacementLen
+}
 
-	argRunes := []rune(arg)
-	matches := make([][]rune, 0, len(suggestions))
-	for _, suggestion := range suggestions {
-		suggestionRunes := []rune(suggestion)
-		if len(argRunes) > len(suggestionRunes) {
-			continue
-		}
-		matches = append(matches, suggestionRunes[len(argRunes):])
-	}
-
-	return matches, replacementLen
+func hasPrefixFold(s, prefix string) bool {
+	return strings.HasPrefix(strings.ToLower(s), strings.ToLower(prefix))
 }
 
 // completeRemotePath attempts to complete remote file paths
 func (c *FlameCompleter) completeRemotePath(prefix string) ([][]rune, int) {
+	return nil, utf8.RuneCountInString(prefix)
+}
+
+func (c *FlameCompleter) completeRemotePathValues(prefix string) ([]string, int) {
 	return nil, utf8.RuneCountInString(prefix)
 }
 
@@ -3274,31 +3277,30 @@ func (m *Manager) handlePivot(args []string) {
 // If no matches, returns the original line unchanged.
 func (m *Manager) CompleteInput(line string) string {
 	completer := &FlameCompleter{manager: m}
-	runes := []rune(line)
-	matches, replLen := completer.Do(runes, len(runes))
+	values, replLen := completer.completeValues(line)
 
-	if len(matches) == 0 {
+	if len(values) == 0 {
 		return line
 	}
 
 	// Single match — apply it
-	if len(matches) == 1 {
+	if len(values) == 1 {
 		prefix := line[:len(line)-replLen]
-		return prefix + string(runes[len(runes)-replLen:]) + string(matches[0])
+		return prefix + values[0]
 	}
 
 	// Multiple matches — find longest common prefix
-	lcp := matches[0]
-	for _, m := range matches[1:] {
+	lcp := values[0]
+	for _, value := range values[1:] {
 		i := 0
-		for i < len(lcp) && i < len(m) && lcp[i] == m[i] {
+		for i < len(lcp) && i < len(value) && lcp[i] == value[i] {
 			i++
 		}
 		lcp = lcp[:i]
 	}
 	if len(lcp) > 0 {
 		prefix := line[:len(line)-replLen]
-		return prefix + string(runes[len(runes)-replLen:]) + string(lcp)
+		return prefix + lcp
 	}
 
 	return line
