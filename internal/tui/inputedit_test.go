@@ -36,39 +36,6 @@ func (tabPreservingExecutor) StartDownload(context.Context, string, string)     
 func (tabPreservingExecutor) StartSpawn()                                                    {}
 func (tabPreservingExecutor) StartModule(string, []string)                                   {}
 
-type ctrlCRecorderExecutor struct {
-	writes []string
-}
-
-func (e *ctrlCRecorderExecutor) ExecuteCommand(string) string  { return "" }
-func (e *ctrlCRecorderExecutor) GetSelectedSessionID() int     { return 0 }
-func (e *ctrlCRecorderExecutor) SessionCount() int             { return 0 }
-func (e *ctrlCRecorderExecutor) GetSessionsForDisplay() string { return "" }
-func (e *ctrlCRecorderExecutor) GetActiveSessionDisplay() (string, string, string, bool) {
-	return "", "", "", false
-}
-func (e *ctrlCRecorderExecutor) GetSelectedSessionFlavor() string                               { return "" }
-func (e *ctrlCRecorderExecutor) SetSilent(bool)                                                 {}
-func (e *ctrlCRecorderExecutor) SetNotifyFunc(func(string))                                     {}
-func (e *ctrlCRecorderExecutor) SetNotifyBarFunc(func(string, int))                             {}
-func (e *ctrlCRecorderExecutor) SetSpinnerFunc(func(int, string), func(int), func(int, string)) {}
-func (e *ctrlCRecorderExecutor) SetShellOutputFunc(func(string, int, []byte))                   {}
-func (e *ctrlCRecorderExecutor) SetSessionDisconnectFunc(func(int, string))                     {}
-func (e *ctrlCRecorderExecutor) StartShellRelay(int, int) error                                 { return nil }
-func (e *ctrlCRecorderExecutor) StopShellRelay()                                                {}
-func (e *ctrlCRecorderExecutor) WriteToShell(data string) error {
-	e.writes = append(e.writes, data)
-	return nil
-}
-func (e *ctrlCRecorderExecutor) ResizePTY(int, int)                                      {}
-func (e *ctrlCRecorderExecutor) CompleteInput(line string) string                        { return line }
-func (e *ctrlCRecorderExecutor) SetTransferProgressFunc(func(string, int, string, bool)) {}
-func (e *ctrlCRecorderExecutor) SetTransferDoneFunc(func(string, bool, error))           {}
-func (e *ctrlCRecorderExecutor) StartUpload(context.Context, string, string)             {}
-func (e *ctrlCRecorderExecutor) StartDownload(context.Context, string, string)           {}
-func (e *ctrlCRecorderExecutor) StartSpawn()                                             {}
-func (e *ctrlCRecorderExecutor) StartModule(string, []string)                            {}
-
 func newTestInput(value string, cursor int) textinput.Model {
 	ti := textinput.New()
 	ti.SetValue(value)
@@ -193,20 +160,6 @@ func TestInputUpdateUsesSharedLineEditHelper(t *testing.T) {
 		input.Update(tea.KeyMsg{Type: tea.KeyEnd})
 		if got := input.textinput.Position(); got != len("alpha beta gamma") {
 			t.Fatalf("expected end to move cursor to %d via shared helper, got %d", len("alpha beta gamma"), got)
-		}
-	})
-
-	t.Run("app menu ctrl+c interrupts active module spinner", func(t *testing.T) {
-		exec := &ctrlCRecorderExecutor{}
-		app := New(exec, "127.0.0.1:4444")
-		app.splash = false
-		app.context = ContextMenu
-		app.output.StartSpinner(1, "Running module")
-
-		app.updateInputMode(tea.KeyMsg{Type: tea.KeyCtrlC})
-
-		if len(exec.writes) != 1 || exec.writes[0] != "\x03" {
-			t.Fatalf("expected ctrl+c to send interrupt to shell, got %#v", exec.writes)
 		}
 	})
 

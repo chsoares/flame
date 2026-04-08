@@ -583,12 +583,6 @@ func (a App) updateInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.transferCancel()
 			return a, nil
 		}
-		if key == "ctrl+c" && a.context == ContextMenu && a.output.IsSpinnerActive() {
-			if a.executor != nil {
-				_ = a.executor.WriteToShell("\x03")
-			}
-			return a, nil
-		}
 		if key == "ctrl+c" {
 			if a.context == ContextShell && !a.input.InBangMode() {
 				a.executor.WriteToShell("\x03")

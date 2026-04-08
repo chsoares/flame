@@ -1865,17 +1865,6 @@ func (m *Manager) StartModule(moduleName string, args []string) {
 	spinID := m.startSpinner(fmt.Sprintf("Spawning worker shell for %s...", moduleName))
 
 	go func() {
-		wasRelaying := session.relayActive
-		if wasRelaying {
-			m.StopShellRelay()
-			time.Sleep(600 * time.Millisecond)
-		}
-		defer func() {
-			if wasRelaying {
-				m.StartShellRelay(0, 0)
-			}
-		}()
-
 		// Like Penelope: spawn a NEW session to run the module.
 		// The main session stays free for shell interaction.
 		spawnIP := GlobalRuntimeConfig.GetPivotIP()
